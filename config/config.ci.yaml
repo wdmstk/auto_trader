@@ -1,0 +1,21 @@
+system:
+  env: ci
+  mode: dry_run
+
+exchange:
+  name: binance
+  margin_type: isolated
+  max_leverage: 1
+
+risk:
+  max_risk_per_trade_pct: 0.5
+  max_symbol_exposure_pct: 10.0
+  max_portfolio_exposure_pct: 30.0
+  max_drawdown_pct: 10.0
+
+runtime:
+  emergency_stop_enabled: true
+
+logging:
+  level: INFO
+  jsonl_path: logs/auto_trader.ci.jsonl

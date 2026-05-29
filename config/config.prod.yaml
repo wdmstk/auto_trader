@@ -1,0 +1,21 @@
+system:
+  env: prod
+  mode: production
+
+exchange:
+  name: binance
+  margin_type: isolated
+  max_leverage: 1
+
+risk:
+  max_risk_per_trade_pct: 0.5
+  max_symbol_exposure_pct: 8.0
+  max_portfolio_exposure_pct: 25.0
+  max_drawdown_pct: 8.0
+
+runtime:
+  emergency_stop_enabled: true
+
+logging:
+  level: WARN
+  jsonl_path: logs/auto_trader.prod.jsonl

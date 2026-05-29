@@ -1,0 +1,21 @@
+system:
+  env: local
+  mode: dry_run
+
+exchange:
+  name: binance
+  margin_type: isolated
+  max_leverage: 2
+
+risk:
+  max_risk_per_trade_pct: 1.0
+  max_symbol_exposure_pct: 20.0
+  max_portfolio_exposure_pct: 60.0
+  max_drawdown_pct: 15.0
+
+runtime:
+  emergency_stop_enabled: true
+
+logging:
+  level: INFO
+  jsonl_path: logs/auto_trader.local.jsonl
