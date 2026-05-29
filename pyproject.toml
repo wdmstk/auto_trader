@@ -11,6 +11,7 @@ requires-python = ">=3.12"
 dependencies = [
   "pydantic>=2.8.0,<3.0.0",
   "PyYAML>=6.0.1,<7.0.0",
+  "pyarrow>=18.0.0,<19.0.0",
 ]
 
 [project.optional-dependencies]
@@ -48,3 +49,7 @@ strict = true
 warn_unused_configs = true
 mypy_path = "src"
 packages = ["auto_trader"]
+
+[[tool.mypy.overrides]]
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
