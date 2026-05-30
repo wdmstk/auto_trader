@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from auto_trader.exchange.gateway import GatewayConfig, OrderGateway
 from auto_trader.exchange.idempotency import build_client_order_id
@@ -87,3 +89,47 @@ def test_partial_fill_state_update() -> None:
     filled = gw.apply_fill_update(partial, 1.0)
     assert partial.status == "partial_filled"
     assert filled.status == "filled"
+
+
+def test_runtime_gate_blocks_when_trading_disabled(tmp_path: Path) -> None:
+    runtime_state = tmp_path / "control_state.json"
+    runtime_state.write_text(
+        json.dumps(
+            {
+                "trading_enabled": False,
+                "emergency_stop": False,
+                "close_all_requested": False,
+                "updated_at": datetime.now(UTC).isoformat(),
+            },
+            ensure_ascii=True,
+        ),
+        encoding="utf-8",
+    )
+    transport = FlakyTransport(0)
+    gw = OrderGateway(transport, GatewayConfig(runtime_state_path=str(runtime_state)))
+    ev = gw.submit(_req())
+    assert ev.status == "rejected"
+    assert ev.reason == "runtime_trading_disabled"
+    assert transport.calls == 0
+
+
+def test_runtime_gate_blocks_on_emergency_stop(tmp_path: Path) -> None:
+    runtime_state = tmp_path / "control_state.json"
+    runtime_state.write_text(
+        json.dumps(
+            {
+                "trading_enabled": True,
+                "emergency_stop": True,
+                "close_all_requested": True,
+                "updated_at": datetime.now(UTC).isoformat(),
+            },
+            ensure_ascii=True,
+        ),
+        encoding="utf-8",
+    )
+    transport = FlakyTransport(0)
+    gw = OrderGateway(transport, GatewayConfig(runtime_state_path=str(runtime_state)))
+    ev = gw.submit(_req())
+    assert ev.status == "rejected"
+    assert ev.reason == "runtime_emergency_stop"
+    assert transport.calls == 0

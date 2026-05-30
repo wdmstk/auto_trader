@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Protocol
 
 from auto_trader.exchange.models import OrderEvent, OrderRequest, now_utc
@@ -17,6 +19,7 @@ class GatewayConfig:
     max_retries: int = 3
     reconnect_backoff_ms: int = 200
     stale_signal_ttl_sec: int = 15
+    runtime_state_path: str | None = None
 
 
 class OrderGateway:
@@ -31,6 +34,15 @@ class OrderGateway:
 
     def submit(self, req: OrderRequest) -> OrderEvent:
         requested_at = now_utc()
+        runtime_block_reason = _runtime_gate_reason(self.config.runtime_state_path)
+        if runtime_block_reason is not None:
+            return _event(
+                req=req,
+                order_id="",
+                status="rejected",
+                reason=runtime_block_reason,
+                requested_at=requested_at,
+            )
         if req.client_order_id in self._seen_client_ids:
             return _event(
                 req=req,
@@ -112,6 +124,25 @@ class OrderGateway:
 
 def _is_stale(signal_ts: datetime, now: datetime, ttl_sec: int) -> bool:
     return now - signal_ts > timedelta(seconds=ttl_sec)
+
+
+def _runtime_gate_reason(runtime_state_path: str | None) -> str | None:
+    if not runtime_state_path:
+        return None
+    path = Path(runtime_state_path)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return "runtime_state_invalid"
+    trading_enabled = bool(payload.get("trading_enabled", False))
+    emergency_stop = bool(payload.get("emergency_stop", False))
+    if emergency_stop:
+        return "runtime_emergency_stop"
+    if not trading_enabled:
+        return "runtime_trading_disabled"
+    return None
 
 
 def _event(
