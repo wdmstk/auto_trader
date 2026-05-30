@@ -1,20 +1,20 @@
 # Phase 9 実装チェックリスト（Stress Testing）
 
 ## 実装項目
-- [ ] baselineバックテスト実行機能
-- [ ] volatility 2x シナリオ実装
-- [ ] flash crash シナリオ実装
-- [ ] low liquidity シナリオ実装
-- [ ] spread widening シナリオ実装
-- [ ] API timeout シナリオ実装
-- [ ] シナリオ比較レポート出力
+- [x] baselineバックテスト実行機能
+- [x] volatility 2x シナリオ実装
+- [x] flash crash シナリオ実装
+- [x] low liquidity シナリオ実装
+- [x] spread widening シナリオ実装
+- [x] API timeout シナリオ実装
+- [x] シナリオ比較レポート出力
 
 ## Done定義
-- [ ] 5シナリオが独立に再現実行できる
-- [ ] baseline差分（PF/DD/MonthlyPnL）が算出される
-- [ ] failure_count が記録される
-- [ ] catastrophic劣化ケースを検知できる
-- [ ] ユニット/統合テストが通る
+- [x] 5シナリオが独立に再現実行できる
+- [x] baseline差分（PF/DD/MonthlyPnL）が算出される
+- [x] failure_count が記録される
+- [x] catastrophic劣化ケースを検知できる
+- [x] ユニット/統合テストが通る
 
 ## レビュー観点
 1. シナリオ変形が価格/コストへ実際に反映されること
