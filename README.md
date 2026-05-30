@@ -81,6 +81,8 @@ required checks 検証:
 .venv/bin/python scripts/validate_required_checks.py
 ```
 
+CIでは `validate-gates` ジョブが同検証を自動実行します。
+
 ## 設定ファイル
 
 - `config/config.local.yaml`
