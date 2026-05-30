@@ -1,4 +1,4 @@
-# ドキュメント運用ガイド（Phase 0-18）
+# ドキュメント運用ガイド（Phase 0-19）
 
 ## 目的
 この `docs/` は、`base_policy.md` を実装可能な仕様に落とすための設計基盤です。
@@ -12,7 +12,7 @@
 
 ## ディレクトリ構成
 - `docs/adr/`: Architecture Decision Records
-- `docs/specs/`: Phase別の実装仕様（Phase 0-18）
+- `docs/specs/`: Phase別の実装仕様（Phase 0-19）
 - `docs/implementation/`: 実装チェックリスト、テスト戦略、リスク登録簿
 
 ## Doc First ルール（必須）
