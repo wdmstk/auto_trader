@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 from auto_trader.notify.channels import EmailNotifier, Notifier, SlackNotifier, WebhookNotifier
+from auto_trader.notify.config import build_notifiers_from_env
+from auto_trader.notify.models import AlertMessage
 from auto_trader.notify.pipeline import run_notification_pipeline
+from auto_trader.notify.runner import run_notify_watch
 from auto_trader.notify.service import NotifyPolicy
 
 
@@ -18,6 +22,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--warning-to-slack", action="store_true")
     p.add_argument("--warning-to-email", action="store_true")
     p.add_argument("--warning-to-webhook", action="store_true")
+    p.add_argument("--watch", action="store_true")
+    p.add_argument("--interval-sec", type=float, default=5.0)
+    p.add_argument("--max-iterations", type=int, default=None)
+    p.add_argument("--test-alert", action="store_true")
+    p.add_argument("--from-env", action="store_true")
 
     p.add_argument("--slack-webhook-url", default=None)
     p.add_argument("--webhook-url", default=None)
@@ -30,7 +39,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = _build_parser().parse_args()
-    notifiers = _build_notifiers(args)
+    notifiers = build_notifiers_from_env() if args.from_env else _build_notifiers(args)
     if not notifiers:
         print(json.dumps({"error": "no notifier configured"}, ensure_ascii=True))
         return 1
@@ -41,6 +50,44 @@ def main() -> int:
         warning_to_webhook=bool(args.warning_to_webhook),
         cooldown_sec=int(args.cooldown_sec),
     )
+    if args.test_alert:
+        alert = AlertMessage(
+            alert_code="TEST_ALERT",
+            severity="critical",
+            detected_at=datetime.now(UTC).isoformat(),
+            source="notify_cli",
+            summary="manual test alert",
+            action_required="verify notification channel delivery",
+        )
+        rows = []
+        for notifier in notifiers:
+            r = notifier.send(alert)
+            rows.append(
+                {
+                    "channel": r.channel,
+                    "alert_code": r.alert_code,
+                    "sent_at": datetime.now(UTC).isoformat(),
+                    "success": r.success,
+                    "response_code": r.response_code,
+                    "error_reason": r.error_reason,
+                }
+            )
+        print(json.dumps({"count": len(rows), "results": rows}, ensure_ascii=True))
+        return 0
+
+    if args.watch:
+        count = run_notify_watch(
+            alerts_path=Path(args.alerts_path),
+            notifiers=notifiers,
+            output_dir=Path(args.output_dir),
+            policy=policy,
+            state_path=Path(args.state_path),
+            interval_sec=float(args.interval_sec),
+            max_iterations=args.max_iterations,
+        )
+        print(json.dumps({"watch": True, "iterations": count}, ensure_ascii=True))
+        return 0
+
     out_df, saved = run_notification_pipeline(
         alerts_path=Path(args.alerts_path),
         notifiers=notifiers,

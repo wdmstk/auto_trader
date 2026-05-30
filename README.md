@@ -114,6 +114,12 @@ python -m auto_trader.notify \
   --output-dir data/ops \
   --webhook-url https://example.com/webhook \
   --warning-to-webhook
+
+# 環境変数から読込 + 疎通試験
+python -m auto_trader.notify --from-env --test-alert
+
+# 常駐監視
+python -m auto_trader.notify --from-env --watch --interval-sec 5 --output-dir data/ops
 ```
 
 ## 次の実装対象
