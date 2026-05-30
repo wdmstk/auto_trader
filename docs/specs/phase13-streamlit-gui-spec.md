@@ -17,6 +17,9 @@
   - `PnL`, `Regime`, `Exposure`, `Risk`, `API`
 - 操作イベントログ
   - `action, requested_at, applied_at, result`
+- Runtime制御状態
+  - `data/runtime/control_state.json`
+  - `trading_enabled, emergency_stop, close_all_requested, updated_at`
 
 ## 前提条件
 - GUIは装飾目的でなく、運用判断と誤操作防止が主目的。
@@ -29,6 +32,7 @@
 
 2. Controls
 - `START`, `STOP`, `EMERGENCY_STOP`, `EMERGENCY_CANCEL`, `CLOSE_ALL` を提供。
+- 操作イベントは `data/gui/control_events.jsonl` へ追記し、runtime watcher が反映する。
 
 3. Visualization
 - ローソク足 + regime overlay + entry/exit overlay。
@@ -41,5 +45,6 @@
 
 ## テスト観点
 - ボタン操作が対応イベントを発行すること。
+- 操作イベントが runtime handler に伝播し `control_state.json` が更新されること。
 - stale状態を警告できること。
 - HIGH_VOL/EMERGENCYが視覚的に識別可能であること。
