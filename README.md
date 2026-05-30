@@ -86,6 +86,14 @@ python -m auto_trader.runtime
 python -m auto_trader.runtime --watch --interval-sec 2
 ```
 
+## Opsアラート評価
+
+```bash
+python -m auto_trader.ops \
+  --runtime-state-path data/runtime/control_state.json \
+  --risk-eval-path data/risk/risk_eval.parquet
+```
+
 ## 次の実装対象
 
 1. Phase 1: Binance OHLCV取得・正規化・Parquet保存
