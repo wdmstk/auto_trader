@@ -106,6 +106,16 @@ python -m auto_trader.ops \
   --watch --interval-sec 5 --output-dir data/ops
 ```
 
+## 通知チャネル連携（Phase 15）
+
+```bash
+python -m auto_trader.notify \
+  --alerts-path data/ops/alerts.parquet \
+  --output-dir data/ops \
+  --webhook-url https://example.com/webhook \
+  --warning-to-webhook
+```
+
 ## 次の実装対象
 
 1. Phase 1: Binance OHLCV取得・正規化・Parquet保存
