@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from auto_trader.gui.overlay import build_overlay_frame
 from auto_trader.gui.state import ControlEvent, append_control_event, emergency_badge, is_stale
 
 DATA_DIR = Path("data")
@@ -116,12 +117,19 @@ def main() -> None:
 
     st.subheader("Chart Overlay")
     if not ohlcv_df.empty:
-        chart = ohlcv_df[["timestamp", "close"]].copy()
-        chart["timestamp"] = pd.to_datetime(chart["timestamp"], utc=True)
-        chart = chart.set_index("timestamp")
-        st.line_chart(chart["close"])
-        if not signal_df.empty and "entry_signal" in signal_df.columns:
-            st.caption("Signal overlay source loaded")
+        overlay = build_overlay_frame(
+            ohlcv_df=ohlcv_df,
+            signal_df=signal_df,
+            regime_df=regime_df,
+            risk_df=risk_df,
+        )
+        if overlay.empty:
+            st.info("Overlay data unavailable")
+        else:
+            chart = overlay.set_index("timestamp")
+            st.line_chart(chart[["close", "entry_marker", "exit_marker", "risk_block_marker"]])
+            st.line_chart(chart[["ml_score", "regime_band"]])
+            st.caption("Overlay: close + entry/exit/risk markers, ml_score, regime_band")
     else:
         st.info("No OHLCV data available for chart")
 

@@ -3,7 +3,7 @@
 ## 実装項目
 - [x] ダッシュボード主要パネル実装（PnL/Regime/Exposure/Risk/API）
 - [x] 操作ボタン実装（START/STOP/EMERGENCY系）
-- [ ] チャートoverlay実装（regime/entry/exit/ml/risk）
+- [x] チャートoverlay実装（regime/entry/exit/ml/risk）
 - [x] 操作イベントログ表示実装
 - [x] staleデータ警告実装
 - [x] control bridge 実装（GUI event -> runtime handler）
