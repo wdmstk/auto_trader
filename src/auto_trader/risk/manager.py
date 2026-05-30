@@ -133,4 +133,7 @@ def _to_datetime_utc(v: object) -> datetime:
         ts = ts.tz_localize("UTC")
     else:
         ts = ts.tz_convert("UTC")
-    return cast(datetime, ts.to_pydatetime())
+    dt = ts.to_pydatetime()
+    if not isinstance(dt, datetime):
+        raise TypeError("timestamp conversion failed")
+    return dt
