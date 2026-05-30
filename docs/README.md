@@ -1,4 +1,4 @@
-# ドキュメント運用ガイド（Phase 0-3）
+# ドキュメント運用ガイド（Phase 0-4）
 
 ## 目的
 この `docs/` は、`base_policy.md` を実装可能な仕様に落とすための設計基盤です。
@@ -14,6 +14,12 @@
 - `docs/adr/`: Architecture Decision Records
 - `docs/specs/`: Phase 0-3 の実装仕様
 - `docs/implementation/`: 実装チェックリスト、テスト戦略、リスク登録簿
+
+## Doc First ルール（必須）
+- 実装開始前に、対象PhaseのSpecを `docs/specs/` に追加または更新する。
+- Specに未記載のI/O契約はコードへ持ち込まない。
+- 実装中に設計変更が発生した場合、先にSpec/ADRを更新してからコード変更する。
+- `spec-review` が未作成のPhaseは、コミット前にレビュー結果を `docs/implementation/` に残す。
 
 ## ADR ルール
 - 命名: `NNNN-title.md`（4桁連番）
