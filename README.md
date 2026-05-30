@@ -76,6 +76,11 @@ PRE_COMMIT_HOME=.cache/pre-commit pre-commit run --all-files
 - `nightly`: 毎日 UTC 18:00（JST 03:00）に full/smoke を自動実行
 - 成果物: `smoke-report.xml`, `full-report.xml` を artifact 保存
 
+required checks 検証:
+```bash
+.venv/bin/python scripts/validate_required_checks.py
+```
+
 ## 設定ファイル
 
 - `config/config.local.yaml`
