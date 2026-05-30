@@ -6,7 +6,7 @@
 - [x] 部分クローズ反映ロジック実装
 - [x] add_count管理実装
 - [x] symbol/portfolio exposure算出実装
-- [ ] 異常約定時の安全停止実装
+- [x] 異常約定時の安全停止実装
 
 ## Done定義
 - [x] avg_entry更新がテストで再現する

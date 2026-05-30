@@ -1,8 +1,8 @@
 # Phase 10 実装チェックリスト（Exchange Integration）
 
 ## 実装項目
-- [ ] REST実行クライアント実装
-- [ ] WebSocket受信クライアント実装
+- [x] REST実行クライアント実装
+- [x] WebSocket受信クライアント実装
 - [x] reconnect/retry実装
 - [x] 冪等発注キー実装
 - [x] reject/partial fill状態遷移実装

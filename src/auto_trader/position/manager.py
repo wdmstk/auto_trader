@@ -17,8 +17,14 @@ class PositionManager:
     def __init__(self, config: PositionConfig | None = None) -> None:
         self.config = config or PositionConfig()
         self._positions: dict[str, PositionState] = {}
+        self._emergency_stopped = False
 
     def apply_fill(self, fill: FillEvent) -> PositionState:
+        if self._emergency_stopped:
+            raise RuntimeError("position manager is emergency stopped")
+        if _invalid_fill(fill):
+            self._emergency_stopped = True
+            raise ValueError("invalid fill detected; emergency stop engaged")
         pos = self._positions.get(fill.symbol)
         if pos is None:
             created = PositionState(
@@ -64,6 +70,12 @@ class PositionManager:
 
     def all_positions(self) -> list[PositionState]:
         return list(self._positions.values())
+
+    def emergency_stopped(self) -> bool:
+        return self._emergency_stopped
+
+    def clear_emergency_stop(self) -> None:
+        self._emergency_stopped = False
 
     def exposure_snapshot(
         self,
@@ -141,3 +153,15 @@ def _calc_unrealized_pnl_pct(side: str, avg_entry: float, mark_price: float) -> 
     if side == "buy":
         return (mark_price - avg_entry) / avg_entry
     return (avg_entry - mark_price) / avg_entry
+
+
+def _invalid_fill(fill: FillEvent) -> bool:
+    if not fill.symbol:
+        return True
+    if fill.side not in {"buy", "sell"}:
+        return True
+    if fill.qty <= 0.0:
+        return True
+    if fill.price <= 0.0:
+        return True
+    return False

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from auto_trader.position.manager import PositionConfig, PositionManager
 from auto_trader.position.models import FillEvent
 
@@ -70,3 +72,29 @@ def test_exposure_and_risk_block() -> None:
     snap = pm.exposure_snapshot(mark_prices={"BTCUSDT": 100.0}, equity=500.0)
     assert snap["BTCUSDT_exposure_pct"] > 0
     assert pm.risk_blocked(mark_prices={"BTCUSDT": 100.0}, equity=500.0, symbol="BTCUSDT")
+
+
+def test_invalid_fill_triggers_emergency_stop() -> None:
+    pm = PositionManager(PositionConfig())
+    with pytest.raises(ValueError):
+        pm.apply_fill(
+            FillEvent(
+                symbol="BTCUSDT",
+                side="buy",
+                qty=0.0,
+                price=100.0,
+                filled_at=_ts(),
+            )
+        )
+    assert pm.emergency_stopped() is True
+
+    with pytest.raises(RuntimeError):
+        pm.apply_fill(
+            FillEvent(
+                symbol="BTCUSDT",
+                side="buy",
+                qty=1.0,
+                price=100.0,
+                filled_at=_ts(),
+            )
+        )
