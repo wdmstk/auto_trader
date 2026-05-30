@@ -6,6 +6,7 @@ __pycache__/
 .cache/
 *.pyc
 logs/
+data/
 
 # Local agent/tool metadata
 .agents/
