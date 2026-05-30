@@ -92,6 +92,12 @@ python -m auto_trader.runtime --watch --interval-sec 2
 python -m auto_trader.ops \
   --runtime-state-path data/runtime/control_state.json \
   --risk-eval-path data/risk/risk_eval.parquet
+
+# 永続化（parquet/jsonl）
+python -m auto_trader.ops \
+  --runtime-state-path data/runtime/control_state.json \
+  --risk-eval-path data/risk/risk_eval.parquet \
+  --output-dir data/ops
 ```
 
 ## 次の実装対象
