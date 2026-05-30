@@ -63,6 +63,12 @@ pytest -q
 PRE_COMMIT_HOME=.cache/pre-commit pre-commit run --all-files
 ```
 
+## CI
+
+- GitHub Actions: `.github/workflows/ci.yml`
+- `quality`: `ruff / mypy / pytest`
+- `smoke`: `tests/test_e2e_smoke.py`
+
 ## 設定ファイル
 
 - `config/config.local.yaml`

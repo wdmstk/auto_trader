@@ -2,9 +2,9 @@
 
 | ADR | 要点 | 反映先Spec |
 |---|---|---|
-| 0001 | regime/risk/execution/observability優先 | phase0-development-foundation-spec, phase1-data-infrastructure-spec, phase2-feature-engine-spec, phase3-regime-classifier-spec, phase5-range-strategy-spec, phase6-trend-strategy-spec, phase7-ml-pipeline-spec, phase8-backtesting-spec, phase9-stress-testing-spec, phase10-exchange-integration-spec, phase11-position-management-spec, phase12-risk-management-spec, phase13-streamlit-gui-spec, phase14-operations-runbook-spec, phase15-notification-channels-spec, phase16-notify-operations-spec, phase17-end-to-end-smoke-spec |
-| 0002 | isolated・低レバ・DD優先・段階デプロイ | phase0-development-foundation-spec, phase3-regime-classifier-spec, phase10-exchange-integration-spec, phase14-operations-runbook-spec, phase15-notification-channels-spec, phase16-notify-operations-spec, phase17-end-to-end-smoke-spec |
-| 0003 | MLはエントリーフィルタ、TP/SL二値、no shuffle/no leakage | phase2-feature-engine-spec, phase3-regime-classifier-spec, phase4-label-generation-spec, phase5-range-strategy-spec, phase6-trend-strategy-spec, phase7-ml-pipeline-spec, phase8-backtesting-spec, phase17-end-to-end-smoke-spec |
+| 0001 | regime/risk/execution/observability優先 | phase0-development-foundation-spec, phase1-data-infrastructure-spec, phase2-feature-engine-spec, phase3-regime-classifier-spec, phase5-range-strategy-spec, phase6-trend-strategy-spec, phase7-ml-pipeline-spec, phase8-backtesting-spec, phase9-stress-testing-spec, phase10-exchange-integration-spec, phase11-position-management-spec, phase12-risk-management-spec, phase13-streamlit-gui-spec, phase14-operations-runbook-spec, phase15-notification-channels-spec, phase16-notify-operations-spec, phase17-end-to-end-smoke-spec, phase18-ci-smoke-automation-spec |
+| 0002 | isolated・低レバ・DD優先・段階デプロイ | phase0-development-foundation-spec, phase3-regime-classifier-spec, phase10-exchange-integration-spec, phase14-operations-runbook-spec, phase15-notification-channels-spec, phase16-notify-operations-spec, phase17-end-to-end-smoke-spec, phase18-ci-smoke-automation-spec |
+| 0003 | MLはエントリーフィルタ、TP/SL二値、no shuffle/no leakage | phase2-feature-engine-spec, phase3-regime-classifier-spec, phase4-label-generation-spec, phase5-range-strategy-spec, phase6-trend-strategy-spec, phase7-ml-pipeline-spec, phase8-backtesting-spec, phase17-end-to-end-smoke-spec, phase18-ci-smoke-automation-spec |
 
 ## レビュー観点
 1. ADRで定義した禁止事項がSpecで禁止されているか
