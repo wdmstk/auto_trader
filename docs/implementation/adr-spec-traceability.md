@@ -2,8 +2,8 @@
 
 | ADR | 要点 | 反映先Spec |
 |---|---|---|
-| 0001 | regime/risk/execution/observability優先 | phase0-development-foundation-spec, phase1-data-infrastructure-spec, phase2-feature-engine-spec, phase3-regime-classifier-spec, phase5-range-strategy-spec, phase6-trend-strategy-spec, phase7-ml-pipeline-spec, phase8-backtesting-spec, phase9-stress-testing-spec, phase10-exchange-integration-spec, phase11-position-management-spec, phase12-risk-management-spec, phase13-streamlit-gui-spec |
-| 0002 | isolated・低レバ・DD優先・段階デプロイ | phase0-development-foundation-spec, phase3-regime-classifier-spec, phase10-exchange-integration-spec |
+| 0001 | regime/risk/execution/observability優先 | phase0-development-foundation-spec, phase1-data-infrastructure-spec, phase2-feature-engine-spec, phase3-regime-classifier-spec, phase5-range-strategy-spec, phase6-trend-strategy-spec, phase7-ml-pipeline-spec, phase8-backtesting-spec, phase9-stress-testing-spec, phase10-exchange-integration-spec, phase11-position-management-spec, phase12-risk-management-spec, phase13-streamlit-gui-spec, phase14-operations-runbook-spec |
+| 0002 | isolated・低レバ・DD優先・段階デプロイ | phase0-development-foundation-spec, phase3-regime-classifier-spec, phase10-exchange-integration-spec, phase14-operations-runbook-spec |
 | 0003 | MLはエントリーフィルタ、TP/SL二値、no shuffle/no leakage | phase2-feature-engine-spec, phase3-regime-classifier-spec, phase4-label-generation-spec, phase5-range-strategy-spec, phase6-trend-strategy-spec, phase7-ml-pipeline-spec, phase8-backtesting-spec |
 
 ## レビュー観点
