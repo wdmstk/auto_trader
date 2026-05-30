@@ -76,3 +76,16 @@ sudo systemctl status auto-trader-runtime.service
 sudo systemctl stop auto-trader-runtime.service
 ```
 - 発注ゲートのみ残す場合は `runtime_state_path` を維持し、`trading_enabled=false` で安全停止する。
+
+## 訓練シナリオ（最低月次）
+1. Runtime stale 発生
+- 想定: watcher停止で `RUNTIME_STALE` がwarning→criticalへ遷移。
+- 期待: `EMERGENCY_STOP` 実施、復旧後3サイクル正常確認。
+
+2. DD breach 発生
+- 想定: `RISK_DD_BREACH` critical発火。
+- 期待: 新規建て停止、手動承認なしで再開しない。
+
+3. Emergency active 継続
+- 想定: `EMERGENCY_ACTIVE` 継続中に通常再開要求が来る。
+- 期待: `EMERGENCY_CANCEL` 監査ログ確認後のみ再開判断。
