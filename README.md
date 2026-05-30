@@ -122,6 +122,16 @@ python -m auto_trader.notify --from-env --test-alert
 python -m auto_trader.notify --from-env --watch --interval-sec 5 --output-dir data/ops
 ```
 
+## E2Eスモーク（Phase 17）
+
+```bash
+python -m auto_trader.e2e \
+  --signals-path data/signals/BTCUSDT_1m_range_signals.parquet \
+  --risk-eval-path data/risk/risk_eval.parquet \
+  --runtime-state-path data/runtime/control_state.json \
+  --output-dir data/e2e
+```
+
 ## 次の実装対象
 
 1. Phase 1: Binance OHLCV取得・正規化・Parquet保存
