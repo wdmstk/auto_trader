@@ -74,6 +74,18 @@ PRE_COMMIT_HOME=.cache/pre-commit pre-commit run --all-files
 - `BINANCE_API_KEY`
 - `BINANCE_API_SECRET`
 
+## Runtime制御イベント反映
+
+GUIの操作イベント（`data/gui/control_events.jsonl`）を runtime state に反映します。
+
+```bash
+# 1回処理
+python -m auto_trader.runtime
+
+# 監視モード（2秒間隔）
+python -m auto_trader.runtime --watch --interval-sec 2
+```
+
 ## 次の実装対象
 
 1. Phase 1: Binance OHLCV取得・正規化・Parquet保存
