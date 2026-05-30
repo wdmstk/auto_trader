@@ -59,6 +59,11 @@ pip install -e ".[dev]"
 ```bash
 ruff check .
 mypy src
+
+# smoke（高速）
+pytest -q -m smoke
+
+# full（回帰全体）
 pytest -q
 PRE_COMMIT_HOME=.cache/pre-commit pre-commit run --all-files
 ```
@@ -66,8 +71,8 @@ PRE_COMMIT_HOME=.cache/pre-commit pre-commit run --all-files
 ## CI
 
 - GitHub Actions: `.github/workflows/ci.yml`
-- `quality`: `ruff / mypy / pytest`
-- `smoke`: `tests/test_e2e_smoke.py`
+- `full`: `ruff / mypy / pytest -q`
+- `smoke`: `pytest -q -m smoke`
 
 ## 設定ファイル
 

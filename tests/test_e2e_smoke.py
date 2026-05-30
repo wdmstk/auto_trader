@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pandas as pd
+import pytest
 
 from auto_trader.e2e.smoke import run_e2e_smoke
 
@@ -85,3 +86,6 @@ def test_e2e_smoke_blocks_on_runtime_emergency(tmp_path: Path) -> None:
     stages = cast(list[dict[str, Any]], out["stages"])
     order_stage = [s for s in stages if s["stage"] == "order_gate_check"][0]
     assert order_stage["error_reason"] == "runtime_emergency_stop"
+
+
+pytestmark = pytest.mark.smoke

@@ -4,8 +4,12 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from auto_trader.gui.state import Action, ControlEvent, append_control_event
 from auto_trader.runtime.control import process_control_events_once
+
+pytestmark = pytest.mark.smoke
 
 
 def _append(log_path: Path, action: Action, ts: datetime) -> None:

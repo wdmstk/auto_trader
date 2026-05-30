@@ -10,6 +10,8 @@ import pytest
 
 from auto_trader.orchestrator.dryrun import run_dryrun_orchestration
 
+pytestmark = pytest.mark.smoke
+
 
 def _write_inputs(base: Path, *, regime: str = "RANGE") -> tuple[Path, Path, Path]:
     ts = datetime(2026, 1, 1, tzinfo=UTC)

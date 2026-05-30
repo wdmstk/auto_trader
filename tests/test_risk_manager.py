@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import cast
 
 import pandas as pd
+import pytest
 
 from auto_trader.risk.manager import (
     RiskConfig,
@@ -11,6 +12,8 @@ from auto_trader.risk.manager import (
     build_concentration_score,
     evaluate_portfolio_risk,
 )
+
+pytestmark = pytest.mark.smoke
 
 
 def test_dd_limit_blocks() -> None:

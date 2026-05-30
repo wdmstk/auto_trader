@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  quality:
+  full:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,7 +22,7 @@ jobs:
         run: ruff check .
       - name: Mypy
         run: mypy src
-      - name: Pytest
+      - name: Pytest Full
         run: pytest -q
 
   smoke:
@@ -37,5 +37,5 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-      - name: Phase17 Smoke Tests
-        run: pytest -q tests/test_e2e_smoke.py
+      - name: Pytest Smoke
+        run: pytest -q -m smoke
