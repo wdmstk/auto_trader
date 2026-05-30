@@ -244,4 +244,5 @@ def _to_datetime_utc(v: object) -> datetime:
         ts = ts.tz_localize("UTC")
     else:
         ts = ts.tz_convert("UTC")
-    return cast(datetime, ts.to_pydatetime())
+    py_dt = ts.to_pydatetime()
+    return cast(datetime, py_dt)
