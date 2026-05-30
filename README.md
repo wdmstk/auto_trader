@@ -98,6 +98,12 @@ python -m auto_trader.ops \
   --runtime-state-path data/runtime/control_state.json \
   --risk-eval-path data/risk/risk_eval.parquet \
   --output-dir data/ops
+
+# 監視モード（5秒間隔で評価＋保存）
+python -m auto_trader.ops \
+  --runtime-state-path data/runtime/control_state.json \
+  --risk-eval-path data/risk/risk_eval.parquet \
+  --watch --interval-sec 5 --output-dir data/ops
 ```
 
 ## 次の実装対象
