@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import random
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
+from auto_trader.exchange.errors import ErrorCode
 from auto_trader.exchange.models import OrderEvent, OrderRequest, now_utc
 
 
@@ -20,14 +24,22 @@ class GatewayConfig:
     reconnect_backoff_ms: int = 200
     stale_signal_ttl_sec: int = 15
     runtime_state_path: str | None = None
+    backoff_base_sec: float = 0.2
+    max_backoff_sec: float = 5.0
 
 
 class OrderGateway:
-    def __init__(self, transport: ExchangeTransport, config: GatewayConfig | None = None) -> None:
+    def __init__(
+        self,
+        transport: ExchangeTransport,
+        config: GatewayConfig | None = None,
+        sleeper: Callable[[float], None] | None = None,
+    ) -> None:
         self.transport = transport
         self.config = config or GatewayConfig()
         self._seen_client_ids: set[str] = set()
         self._connected = True
+        self._sleep = sleeper or time.sleep
 
     def set_connected(self, connected: bool) -> None:
         self._connected = connected
@@ -40,7 +52,7 @@ class OrderGateway:
                 req=req,
                 order_id="",
                 status="rejected",
-                reason=runtime_block_reason,
+                reason=runtime_block_reason.value,
                 requested_at=requested_at,
             )
         if req.client_order_id in self._seen_client_ids:
@@ -48,7 +60,7 @@ class OrderGateway:
                 req=req,
                 order_id="",
                 status="rejected",
-                reason="duplicate_client_order_id",
+                reason=ErrorCode.DUPLICATE_CLIENT_ORDER_ID.value,
                 requested_at=requested_at,
             )
         if _is_stale(req.signal_ts, requested_at, self.config.stale_signal_ttl_sec):
@@ -56,7 +68,7 @@ class OrderGateway:
                 req=req,
                 order_id="",
                 status="rejected",
-                reason="stale_signal",
+                reason=ErrorCode.STALE_SIGNAL.value,
                 requested_at=requested_at,
             )
         if req.regime == "HIGH_VOL" or (not req.pass_filter):
@@ -64,22 +76,23 @@ class OrderGateway:
                 req=req,
                 order_id="",
                 status="rejected",
-                reason="gating_blocked",
+                reason=ErrorCode.GATING_BLOCKED.value,
                 requested_at=requested_at,
             )
 
         self._seen_client_ids.add(req.client_order_id)
         sent_at: datetime | None = None
         ack_at: datetime | None = None
-        last_reason = "unknown"
+        last_error = ErrorCode.UNKNOWN_ERROR
         order_id = ""
 
-        for _ in range(self.config.max_retries + 1):
+        for attempt in range(self.config.max_retries + 1):
             if not self._connected:
                 self._reconnect()
             sent_at = now_utc()
             ok, remote_order_id, reason = self.transport.send_order(req)
-            last_reason = reason
+            err = _classify_reason(reason)
+            last_error = err
             if ok:
                 order_id = remote_order_id
                 ack_at = now_utc()
@@ -87,16 +100,24 @@ class OrderGateway:
                     req=req,
                     order_id=order_id,
                     status="ack",
-                    reason=reason,
+                    reason=err.value if err != ErrorCode.UNKNOWN_ERROR else reason,
                     requested_at=requested_at,
                     sent_at=sent_at,
                     ack_at=ack_at,
                 )
+            if attempt < self.config.max_retries and _retryable(err):
+                wait_sec = _wait_seconds(
+                    reason=reason,
+                    attempt=attempt,
+                    base=self.config.backoff_base_sec,
+                    max_wait=self.config.max_backoff_sec,
+                )
+                self._sleep(wait_sec)
         return _event(
             req=req,
             order_id=order_id,
             status="rejected",
-            reason=f"retry_exhausted:{last_reason}",
+            reason=f"retry_exhausted:{last_error.value}",
             requested_at=requested_at,
             sent_at=sent_at,
         )
@@ -126,7 +147,7 @@ def _is_stale(signal_ts: datetime, now: datetime, ttl_sec: int) -> bool:
     return now - signal_ts > timedelta(seconds=ttl_sec)
 
 
-def _runtime_gate_reason(runtime_state_path: str | None) -> str | None:
+def _runtime_gate_reason(runtime_state_path: str | None) -> ErrorCode | None:
     if not runtime_state_path:
         return None
     path = Path(runtime_state_path)
@@ -135,14 +156,60 @@ def _runtime_gate_reason(runtime_state_path: str | None) -> str | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return "runtime_state_invalid"
+        return ErrorCode.RUNTIME_STATE_INVALID
     trading_enabled = bool(payload.get("trading_enabled", False))
     emergency_stop = bool(payload.get("emergency_stop", False))
     if emergency_stop:
-        return "runtime_emergency_stop"
+        return ErrorCode.RUNTIME_EMERGENCY_STOP
     if not trading_enabled:
-        return "runtime_trading_disabled"
+        return ErrorCode.RUNTIME_TRADING_DISABLED
     return None
+
+
+def _classify_reason(reason: str) -> ErrorCode:
+    r = reason.lower()
+    if "rate_limit" in r or "429" in r or "418" in r:
+        return ErrorCode.RATE_LIMIT
+    if "timeout" in r:
+        return ErrorCode.TIMEOUT
+    if "network" in r:
+        return ErrorCode.NETWORK_ERROR
+    if "5xx" in r or "server_error" in r:
+        return ErrorCode.SERVER_ERROR
+    if r.startswith("accepted"):
+        return ErrorCode.UNKNOWN_ERROR
+    return ErrorCode.UNKNOWN_ERROR
+
+
+def _retryable(code: ErrorCode) -> bool:
+    retryable = {
+        ErrorCode.RATE_LIMIT,
+        ErrorCode.NETWORK_ERROR,
+        ErrorCode.TIMEOUT,
+        ErrorCode.SERVER_ERROR,
+    }
+    return code in retryable
+
+
+def _wait_seconds(*, reason: str, attempt: int, base: float, max_wait: float) -> float:
+    retry_after = _parse_retry_after(reason)
+    if retry_after is not None:
+        return min(retry_after, max_wait)
+    exp = base * (2**attempt)
+    jitter = float(random.uniform(0.0, base))
+    return float(min(exp + jitter, max_wait))
+
+
+def _parse_retry_after(reason: str) -> float | None:
+    # expected sample: "rate_limit:retry_after=2.5"
+    key = "retry_after="
+    if key not in reason:
+        return None
+    raw = reason.split(key, 1)[1]
+    try:
+        return float(raw)
+    except ValueError:
+        return None
 
 
 def _event(
