@@ -106,6 +106,10 @@ python -m auto_trader.runtime
 python -m auto_trader.runtime --watch --interval-sec 2
 ```
 
+補足（Durability）:
+- state 書き込みは `atomic write + lock + backup recovery` を適用済みです。
+- 対象: `positions.parquet`, `gateway_state.json`, `runtime/control_state.json`, `ops/notify_state.json`
+
 ## Opsアラート評価
 
 ```bash
