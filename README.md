@@ -112,6 +112,7 @@ python -m auto_trader.runtime --watch --interval-sec 2
 
 長時間連続運転の実証:
 - `docs/implementation/longrun-validation-playbook.md`
+- `docs/implementation/longrun-validation-record-2026-05-31.md`（初回証跡）
 
 ## Opsアラート評価
 
