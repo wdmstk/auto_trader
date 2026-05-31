@@ -21,6 +21,43 @@
 - [ ] runtime/notify/ops の運用手順が現行ドキュメントと一致
 - [ ] 監視用ログ保存先を確保（最低48時間分）
 
+## 事前セットアップ（必須）
+`RUNTIME_STATE_INVALID` と `RISK_DATA_INVALID` を防ぐため、watch開始前に実施する。
+
+```bash
+cd /home/komug/projects/auto_trader
+. .venv/bin/activate
+
+# runtime state 初期化
+mkdir -p data/runtime data/gui
+: > data/gui/control_events.jsonl
+python -m auto_trader.runtime --max-iterations 1
+
+# risk input/eval 初期化
+mkdir -p data/risk
+python - << 'PY'
+import pandas as pd
+from datetime import datetime, timezone
+pd.DataFrame([{
+  "timestamp": datetime.now(timezone.utc).isoformat(),
+  "symbol": "BTCUSDT",
+  "current_equity": 1000.0,
+  "equity_peak": 1000.0,
+  "symbol_exposure_pct": 10.0,
+  "portfolio_exposure_pct": 20.0,
+  "concentration_score": 0.3
+}]).to_parquet("data/risk/risk_input.parquet", index=False)
+PY
+python -m auto_trader.risk \
+  --input-path data/risk/risk_input.parquet \
+  --output-path data/risk/risk_eval.parquet
+```
+
+確認コマンド:
+```bash
+ls -l data/runtime/control_state.json data/risk/risk_eval.parquet
+```
+
 ## 実証シナリオ
 1. 通常連続運転（8時間以上）
 - 目的: watcher停止やstate異常なく連続稼働できることを確認する。
