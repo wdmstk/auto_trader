@@ -4,7 +4,8 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from auto_trader.exchange.gateway import GatewayConfig, OrderGateway
+from auto_trader.exchange.errors import ErrorCode, RateLimitError
+from auto_trader.exchange.gateway import GatewayConfig, OrderGateway, classify_error
 from auto_trader.exchange.idempotency import build_client_order_id
 from auto_trader.exchange.models import OrderRequest
 
@@ -158,3 +159,31 @@ def test_rate_limit_retries_with_retry_after() -> None:
     assert ev.status == "ack"
     assert t.calls == 2
     assert waits == [0.5]
+
+
+def test_classify_error_returns_code_and_exception() -> None:
+    code, err = classify_error("rate_limit:retry_after=1.5")
+    assert code == ErrorCode.RATE_LIMIT
+    assert isinstance(err, RateLimitError)
+    assert err.code == ErrorCode.RATE_LIMIT
+
+
+def test_gateway_persists_state_and_recovers_from_backup(tmp_path: Path) -> None:
+    state_path = tmp_path / "gateway_state.json"
+    transport = FlakyTransport(0)
+    gw = OrderGateway(
+        transport,
+        GatewayConfig(max_retries=1, state_path=str(state_path)),
+    )
+    req = _req(client_order_id="cid_state_test")
+    ev = gw.submit(req)
+    assert ev.status == "ack"
+    assert state_path.exists()
+    backup = state_path.with_suffix(".json.bak")
+    assert backup.exists()
+
+    state_path.write_text("{broken json", encoding="utf-8")
+    gw2 = OrderGateway(transport, GatewayConfig(max_retries=1, state_path=str(state_path)))
+    duplicate = gw2.submit(req)
+    assert duplicate.status == "rejected"
+    assert duplicate.reason == "DUPLICATE_CLIENT_ORDER_ID"
