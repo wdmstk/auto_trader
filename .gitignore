@@ -11,3 +11,4 @@ data/
 # Local agent/tool metadata
 .agents/
 .codex/
+tree.txt
