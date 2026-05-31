@@ -1,6 +1,6 @@
 # Notify 運用ガイド（Phase 16）
 
-- Version: 1.0
+- Version: 1.1
 - Date: 2026-05-31
 - Related Spec: phase16-notify-operations-spec.md
 
@@ -25,6 +25,11 @@ python -m auto_trader.notify --from-env --test-alert
 python -m auto_trader.notify --from-env --watch --interval-sec 5 --output-dir data/ops
 ```
 
+## Durability方針
+- `notify_state.json` は `atomic write + lock file + backup recovery` で更新される。
+- lock取得失敗時はタイムアウトで失敗し、状態ファイルは保全される。
+- primary破損時は `notify_state.json.bak` から復旧を試行する。
+
 ## systemd 例
 - テンプレート: `ops/systemd/auto-trader-notify.service.example`
 
@@ -44,6 +49,8 @@ sudo systemctl status auto-trader-notify.service
 - `data/ops/notifications.jsonl` が更新されること
 - `success=false` が増加していないこと
 - `alert_code=NOTIFY_CHANNEL_DEGRADED` が発生していないこと
+- `data/ops/notify_state.json.lock` が長時間残留していないこと
+- `data/ops/notify_state.json.bak` が存在し、更新追従していること
 
 ## 障害時切り分け
 1. `--test-alert` でチャネル個別疎通確認
