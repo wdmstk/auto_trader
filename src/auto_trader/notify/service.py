@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from auto_trader.notify.channels import Notifier
 from auto_trader.notify.models import SendResult, alert_from_row
+from auto_trader.stateio import FileLock, atomic_write_json, read_json_with_recovery
 
 
 @dataclass(frozen=True)
@@ -25,10 +25,15 @@ class NotificationService:
         notifiers: list[Notifier],
         policy: NotifyPolicy | None = None,
         state_path: str | Path = "data/ops/notify_state.json",
+        lock_timeout_sec: float = 1.0,
     ) -> None:
         self.notifiers = notifiers
         self.policy = policy or NotifyPolicy()
         self.state_path = Path(state_path)
+        self.lock_timeout_sec = lock_timeout_sec
+
+    def _lock_path(self) -> Path:
+        return self.state_path.with_suffix(f"{self.state_path.suffix}.lock")
 
     def dispatch(self, alert_rows: list[dict[str, str]]) -> list[dict[str, object]]:
         out: list[dict[str, object]] = []
@@ -103,12 +108,8 @@ class NotificationService:
         return (now - prev_dt).total_seconds() < self.policy.cooldown_sec
 
     def _read_state(self) -> dict[str, str]:
-        if not self.state_path.exists():
-            return {}
-        try:
-            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
+        with FileLock(self._lock_path(), timeout_sec=self.lock_timeout_sec):
+            payload = read_json_with_recovery(self.state_path)
         if not isinstance(payload, dict):
             return {}
         out: dict[str, str] = {}
@@ -117,5 +118,6 @@ class NotificationService:
         return out
 
     def _write_state(self, state: dict[str, str]) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(json.dumps(state, ensure_ascii=True), encoding="utf-8")
+        payload: dict[str, object] = {k: v for k, v in state.items()}
+        with FileLock(self._lock_path(), timeout_sec=self.lock_timeout_sec):
+            atomic_write_json(self.state_path, payload)

@@ -12,6 +12,9 @@
 - [x] gateway 動的state（未約定注文/seen client id）永続化実装
 - [x] 破損時のバックアップ復旧実装
 - [x] 永続化系ユニットテスト追加（lock/復旧含む）
+- [x] runtime/control state 書き込みへ durability 基盤適用
+- [x] notify state 書き込みへ durability 基盤適用
+- [x] runtime/control・notify の復旧/lock テスト追加
 
 ## Done定義
 - [x] 429相当で待機再試行される
@@ -20,3 +23,4 @@
 - [x] 競合時に破壊的上書きしない
 - [x] 破損ファイルから復旧できる
 - [x] ユニットテストが通る
+- [x] runtime/control・notify でも破損復旧できる

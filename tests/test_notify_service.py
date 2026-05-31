@@ -3,9 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 from auto_trader.notify.channels import Notifier
 from auto_trader.notify.models import AlertMessage, SendResult
 from auto_trader.notify.service import NotificationService, NotifyPolicy
+from auto_trader.stateio import StateLockTimeoutError
 
 
 @dataclass
@@ -102,3 +105,31 @@ def test_channel_degraded_emitted_after_consecutive_failures(tmp_path: Path) -> 
     out = svc.dispatch([_alert("critical")])
     codes = {str(r["alert_code"]) for r in out}
     assert "NOTIFY_CHANNEL_DEGRADED" in codes
+
+
+def test_notify_state_recovers_from_backup_when_primary_is_corrupted(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    svc = NotificationService(
+        notifiers=[DummyNotifier("webhook")],
+        policy=NotifyPolicy(cooldown_sec=3600),
+        state_path=state_path,
+    )
+    svc.dispatch([_alert("critical")])
+    svc.dispatch([_alert("warning")])  # creates backup
+    state_path.write_text("{broken", encoding="utf-8")
+
+    out = svc.dispatch([_alert("critical")])
+    assert len(out) == 0
+
+
+def test_notify_write_fails_when_lock_is_held(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    svc = NotificationService(
+        notifiers=[DummyNotifier("webhook")],
+        state_path=state_path,
+        lock_timeout_sec=0.01,
+    )
+    lock_path = state_path.with_suffix(".json.lock")
+    lock_path.write_text("locked", encoding="utf-8")
+    with pytest.raises(StateLockTimeoutError):
+        svc.dispatch([_alert("critical")])
