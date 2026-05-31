@@ -65,7 +65,6 @@
 - `runtime/control_state.json`
 - `notify_state.json`
 - 適用ポリシーは 5 と同一（atomic / lock / backup recovery）
-
 ## 失敗モードと対策
 - 429連発: backoff上限と試行回数で暴走防止。
 - 未知reason: `UNKNOWN_ERROR` へフォールバックして追跡可能化。
