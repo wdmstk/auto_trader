@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pandas as pd
 
 from auto_trader.position.models import PositionState
+from auto_trader.stateio import FileLock, atomic_write_file
 
 
 class PositionStore:
-    def __init__(self, root_dir: str | Path) -> None:
+    def __init__(self, root_dir: str | Path, *, lock_timeout_sec: float = 1.0) -> None:
         self.root_dir = Path(root_dir)
         self.root_dir.mkdir(parents=True, exist_ok=True)
+        self.lock_timeout_sec = lock_timeout_sec
 
     def path(self) -> Path:
         return self.root_dir / "positions.parquet"
+
+    def lock_path(self) -> Path:
+        return self.root_dir / "positions.parquet.lock"
 
     def save(self, positions: list[PositionState]) -> Path:
         rows = [
@@ -28,5 +34,52 @@ class PositionStore:
             }
             for p in positions
         ]
-        pd.DataFrame(rows).to_parquet(self.path(), index=False)
-        return self.path()
+        with FileLock(self.lock_path(), timeout_sec=self.lock_timeout_sec):
+            return atomic_write_file(self.path(), writer=lambda p: _write_parquet(rows, p))
+
+    def load(self) -> list[PositionState]:
+        with FileLock(self.lock_path(), timeout_sec=self.lock_timeout_sec):
+            df = _read_parquet_with_recovery(self.path())
+        out: list[PositionState] = []
+        for _, row in df.iterrows():
+            updated_at = row["updated_at"]
+            if hasattr(updated_at, "to_pydatetime"):
+                updated_at = updated_at.to_pydatetime()
+            out.append(
+                PositionState(
+                    symbol=str(row["symbol"]),
+                    side=str(row["side"]),  # type: ignore[arg-type]
+                    qty=float(row["qty"]),
+                    avg_entry=float(row["avg_entry"]),
+                    unrealized_pnl_pct=float(row["unrealized_pnl_pct"]),
+                    add_count=int(row["add_count"]),
+                    updated_at=updated_at,
+                )
+            )
+        return out
+
+
+def _write_parquet(rows: list[dict[str, object]], path: Path) -> None:
+    pd.DataFrame(rows).to_parquet(path, index=False)
+    with path.open("rb") as f:
+        os.fsync(f.fileno())
+
+
+def _read_parquet_with_recovery(path: Path) -> pd.DataFrame:
+    backup = path.with_suffix(f"{path.suffix}.bak")
+    try:
+        return pd.read_parquet(path)
+    except Exception:
+        if backup.exists():
+            return pd.read_parquet(backup)
+    return pd.DataFrame(
+        columns=[
+            "symbol",
+            "side",
+            "qty",
+            "avg_entry",
+            "unrealized_pnl_pct",
+            "add_count",
+            "updated_at",
+        ]
+    )

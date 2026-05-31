@@ -15,3 +15,42 @@ class ErrorCode(StrEnum):
     TIMEOUT = "TIMEOUT"
     SERVER_ERROR = "SERVER_ERROR"
     UNKNOWN_ERROR = "UNKNOWN_ERROR"
+
+
+class GatewayError(Exception):
+    def __init__(self, code: ErrorCode, reason: str) -> None:
+        super().__init__(reason)
+        self.code = code
+        self.reason = reason
+
+
+class RateLimitError(GatewayError):
+    pass
+
+
+class NetworkError(GatewayError):
+    pass
+
+
+class TimeoutGatewayError(GatewayError):
+    pass
+
+
+class ServerGatewayError(GatewayError):
+    pass
+
+
+class UnknownGatewayError(GatewayError):
+    pass
+
+
+def gateway_error_from_code(code: ErrorCode, reason: str) -> GatewayError:
+    if code == ErrorCode.RATE_LIMIT:
+        return RateLimitError(code, reason)
+    if code == ErrorCode.NETWORK_ERROR:
+        return NetworkError(code, reason)
+    if code == ErrorCode.TIMEOUT:
+        return TimeoutGatewayError(code, reason)
+    if code == ErrorCode.SERVER_ERROR:
+        return ServerGatewayError(code, reason)
+    return UnknownGatewayError(code, reason)

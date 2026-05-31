@@ -9,8 +9,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
-from auto_trader.exchange.errors import ErrorCode
+from auto_trader.exchange.errors import ErrorCode, gateway_error_from_code
 from auto_trader.exchange.models import OrderEvent, OrderRequest, now_utc
+from auto_trader.stateio import FileLock, atomic_write_json, read_json_with_recovery
 
 
 class ExchangeTransport(Protocol):
@@ -26,6 +27,8 @@ class GatewayConfig:
     runtime_state_path: str | None = None
     backoff_base_sec: float = 0.2
     max_backoff_sec: float = 5.0
+    state_path: str | None = None
+    state_lock_timeout_sec: float = 1.0
 
 
 class OrderGateway:
@@ -38,8 +41,11 @@ class OrderGateway:
         self.transport = transport
         self.config = config or GatewayConfig()
         self._seen_client_ids: set[str] = set()
+        self._pending_orders: dict[str, dict[str, object]] = {}
         self._connected = True
         self._sleep = sleeper or time.sleep
+        self._state_path = Path(self.config.state_path) if self.config.state_path else None
+        self._load_state()
 
     def set_connected(self, connected: bool) -> None:
         self._connected = connected
@@ -81,6 +87,14 @@ class OrderGateway:
             )
 
         self._seen_client_ids.add(req.client_order_id)
+        self._pending_orders[req.client_order_id] = {
+            "symbol": req.symbol,
+            "side": req.side,
+            "qty": req.qty,
+            "status": "pending_submit",
+            "updated_at": requested_at.isoformat(),
+        }
+        self._persist_state()
         sent_at: datetime | None = None
         ack_at: datetime | None = None
         last_error = ErrorCode.UNKNOWN_ERROR
@@ -93,9 +107,20 @@ class OrderGateway:
             ok, remote_order_id, reason = self.transport.send_order(req)
             err = _classify_reason(reason)
             last_error = err
+            self._pending_orders[req.client_order_id] = {
+                "symbol": req.symbol,
+                "side": req.side,
+                "qty": req.qty,
+                "status": "retrying" if not ok else "ack",
+                "last_error": err.value if not ok else "",
+                "updated_at": now_utc().isoformat(),
+            }
+            self._persist_state()
             if ok:
                 order_id = remote_order_id
                 ack_at = now_utc()
+                self._pending_orders.pop(req.client_order_id, None)
+                self._persist_state()
                 return _event(
                     req=req,
                     order_id=order_id,
@@ -113,6 +138,15 @@ class OrderGateway:
                     max_wait=self.config.max_backoff_sec,
                 )
                 self._sleep(wait_sec)
+        self._pending_orders[req.client_order_id] = {
+            "symbol": req.symbol,
+            "side": req.side,
+            "qty": req.qty,
+            "status": "retry_exhausted",
+            "last_error": last_error.value,
+            "updated_at": now_utc().isoformat(),
+        }
+        self._persist_state()
         return _event(
             req=req,
             order_id=order_id,
@@ -141,6 +175,31 @@ class OrderGateway:
     def _reconnect(self) -> None:
         # Simulated reconnect in local implementation.
         self._connected = True
+
+    def _load_state(self) -> None:
+        if self._state_path is None:
+            return
+        lock_path = self._state_path.with_suffix(f"{self._state_path.suffix}.lock")
+        with FileLock(lock_path, timeout_sec=self.config.state_lock_timeout_sec):
+            payload = read_json_with_recovery(self._state_path)
+        seen = payload.get("seen_client_ids", [])
+        pending = payload.get("pending_orders", {})
+        if isinstance(seen, list):
+            self._seen_client_ids = {str(v) for v in seen}
+        if isinstance(pending, dict):
+            self._pending_orders = {str(k): v for k, v in pending.items() if isinstance(v, dict)}
+
+    def _persist_state(self) -> None:
+        if self._state_path is None:
+            return
+        lock_path = self._state_path.with_suffix(f"{self._state_path.suffix}.lock")
+        payload: dict[str, object] = {
+            "seen_client_ids": sorted(self._seen_client_ids),
+            "pending_orders": self._pending_orders,
+            "updated_at": now_utc().isoformat(),
+        }
+        with FileLock(lock_path, timeout_sec=self.config.state_lock_timeout_sec):
+            atomic_write_json(self._state_path, payload)
 
 
 def _is_stale(signal_ts: datetime, now: datetime, ttl_sec: int) -> bool:
@@ -179,6 +238,11 @@ def _classify_reason(reason: str) -> ErrorCode:
     if r.startswith("accepted"):
         return ErrorCode.UNKNOWN_ERROR
     return ErrorCode.UNKNOWN_ERROR
+
+
+def classify_error(reason: str) -> tuple[ErrorCode, Exception]:
+    code = _classify_reason(reason)
+    return code, gateway_error_from_code(code, reason)
 
 
 def _retryable(code: ErrorCode) -> bool:
