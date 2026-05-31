@@ -5,16 +5,16 @@
 - Out of Scope: Notification rollout (Phase 15/16 runtime)
 
 ## 1. Branch Protection
-- [ ] `main` に branch protection rule がある
-  - 証跡: `gh api repos/wdmstk/auto_trader/branches/main/protection` が HTTP 403（プラン制約）でAPI確認不可。Web UI での手動確認が必要。
-- [ ] `Require a pull request before merging` が有効
-  - 証跡: API確認不可のため未確認（Web UI確認待ち）。
-- [ ] `Require status checks` が有効
-  - 証跡: API確認不可のため未確認（Web UI確認待ち）。
-- [ ] Required checks に `full`, `smoke`, `validate-gates` が設定済み
-  - 証跡: `scripts/validate_required_checks.py` 出力 `{\"ok\": true, \"actual\": [\"full\", \"smoke\", \"validate-gates\"], \"missing\": []}`（workflow側定義は確認済み、GitHub保護設定適用は未確認）。
-- [ ] bypass不可（可能なら）設定済み
-  - 証跡: API確認不可のため未確認（Web UI確認待ち）。
+- [x] `main` に branch protection rule がある
+  - 証跡: `gh api repos/wdmstk/auto_trader/branches/main/protection` が 200 で設定取得。
+- [x] `Require a pull request before merging` が有効
+  - 証跡: `required_pull_request_reviews.required_approving_review_count = 1`。
+- [x] `Require status checks` が有効
+  - 証跡: `required_status_checks.strict = true`。
+- [x] Required checks に `full`, `smoke`, `validate-gates` が設定済み
+  - 証跡: `required_status_checks.contexts = [\"full\", \"smoke\", \"validate-gates\"]`。
+- [x] bypass不可（可能なら）設定済み
+  - 証跡: `enforce_admins.enabled = true`。
 
 ## 2. CI Stability
 - [ ] 直近3日で nightly が実行されている
@@ -37,7 +37,6 @@
 ## 4. Open Items
 - [ ] 未解決項目なし
   - 残件:
-    - GitHub Web UIで branch protection 実設定確認（APIはプラン制約で不可）
     - nightly 実行実績の3日分蓄積待ち
 
 ## 判定
