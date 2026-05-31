@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from auto_trader.gui.control_bridge import ControlDispatchResult, dispatch_control_events
+from auto_trader.stateio import FileLock, atomic_write_json, read_json_with_recovery
 
 
 @dataclass(frozen=True)
@@ -17,8 +17,17 @@ class RuntimeControlState:
 
 
 class FileStateControlHandler:
-    def __init__(self, state_path: str | Path = "data/runtime/control_state.json") -> None:
+    def __init__(
+        self,
+        state_path: str | Path = "data/runtime/control_state.json",
+        *,
+        lock_timeout_sec: float = 1.0,
+    ) -> None:
         self.state_path = Path(state_path)
+        self.lock_timeout_sec = lock_timeout_sec
+
+    def _lock_path(self) -> Path:
+        return self.state_path.with_suffix(f"{self.state_path.suffix}.lock")
 
     def on_start(self) -> None:
         self._write(
@@ -74,43 +83,24 @@ class FileStateControlHandler:
         )
 
     def _read(self) -> RuntimeControlState:
-        if not self.state_path.exists():
-            return RuntimeControlState(
-                trading_enabled=False,
-                emergency_stop=False,
-                close_all_requested=False,
-                updated_at=_now_iso(),
-            )
-        try:
-            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
-            return RuntimeControlState(
-                trading_enabled=bool(payload.get("trading_enabled", False)),
-                emergency_stop=bool(payload.get("emergency_stop", False)),
-                close_all_requested=bool(payload.get("close_all_requested", False)),
-                updated_at=str(payload.get("updated_at", _now_iso())),
-            )
-        except Exception:
-            return RuntimeControlState(
-                trading_enabled=False,
-                emergency_stop=False,
-                close_all_requested=False,
-                updated_at=_now_iso(),
-            )
+        with FileLock(self._lock_path(), timeout_sec=self.lock_timeout_sec):
+            payload = read_json_with_recovery(self.state_path)
+        return RuntimeControlState(
+            trading_enabled=bool(payload.get("trading_enabled", False)),
+            emergency_stop=bool(payload.get("emergency_stop", False)),
+            close_all_requested=bool(payload.get("close_all_requested", False)),
+            updated_at=str(payload.get("updated_at", _now_iso())),
+        )
 
     def _write(self, state: RuntimeControlState) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(
-            json.dumps(
-                {
-                    "trading_enabled": state.trading_enabled,
-                    "emergency_stop": state.emergency_stop,
-                    "close_all_requested": state.close_all_requested,
-                    "updated_at": state.updated_at,
-                },
-                ensure_ascii=True,
-            ),
-            encoding="utf-8",
-        )
+        payload: dict[str, object] = {
+            "trading_enabled": state.trading_enabled,
+            "emergency_stop": state.emergency_stop,
+            "close_all_requested": state.close_all_requested,
+            "updated_at": state.updated_at,
+        }
+        with FileLock(self._lock_path(), timeout_sec=self.lock_timeout_sec):
+            atomic_write_json(self.state_path, payload)
 
 
 def process_control_events_once(

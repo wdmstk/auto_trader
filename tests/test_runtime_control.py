@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from auto_trader.gui.state import Action, ControlEvent, append_control_event
-from auto_trader.runtime.control import process_control_events_once
+from auto_trader.runtime.control import FileStateControlHandler, process_control_events_once
+from auto_trader.stateio import StateLockTimeoutError
 
 pytestmark = pytest.mark.smoke
 
@@ -50,3 +51,24 @@ def test_process_control_events_once_updates_runtime_state(tmp_path: Path) -> No
     )
     assert second.processed == 0
     assert second.actions == []
+
+
+def test_runtime_control_recovers_from_backup_when_primary_is_corrupted(tmp_path: Path) -> None:
+    state_path = tmp_path / "runtime" / "control_state.json"
+    h = FileStateControlHandler(state_path=state_path)
+    h.on_start()
+    h.on_emergency_stop()
+    state_path.write_text("{broken json", encoding="utf-8")
+
+    current = h._read()
+    assert current.emergency_stop is False
+    assert current.trading_enabled is True
+
+
+def test_runtime_control_write_fails_when_lock_is_held(tmp_path: Path) -> None:
+    state_path = tmp_path / "runtime" / "control_state.json"
+    h = FileStateControlHandler(state_path=state_path, lock_timeout_sec=0.01)
+    h._lock_path().parent.mkdir(parents=True, exist_ok=True)
+    h._lock_path().write_text("locked", encoding="utf-8")
+    with pytest.raises(StateLockTimeoutError):
+        h.on_start()

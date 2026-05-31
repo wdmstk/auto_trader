@@ -25,6 +25,7 @@ class FileLock:
 
     def __enter__(self) -> FileLock:
         start = time.monotonic()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         while True:
             try:
                 fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
