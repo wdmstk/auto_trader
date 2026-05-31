@@ -59,7 +59,7 @@ def test_duplicate_client_order_id_rejected() -> None:
     ev2 = gw.submit(req)
     assert ev1.status == "ack"
     assert ev2.status == "rejected"
-    assert ev2.reason == "duplicate_client_order_id"
+    assert ev2.reason == "DUPLICATE_CLIENT_ORDER_ID"
 
 
 def test_stale_signal_rejected() -> None:
@@ -68,7 +68,7 @@ def test_stale_signal_rejected() -> None:
     req = _req(signal_ts=datetime.now(UTC) - timedelta(seconds=30))
     ev = gw.submit(req)
     assert ev.status == "rejected"
-    assert ev.reason == "stale_signal"
+    assert ev.reason == "STALE_SIGNAL"
 
 
 def test_retry_then_ack() -> None:
@@ -109,7 +109,7 @@ def test_runtime_gate_blocks_when_trading_disabled(tmp_path: Path) -> None:
     gw = OrderGateway(transport, GatewayConfig(runtime_state_path=str(runtime_state)))
     ev = gw.submit(_req())
     assert ev.status == "rejected"
-    assert ev.reason == "runtime_trading_disabled"
+    assert ev.reason == "RUNTIME_TRADING_DISABLED"
     assert transport.calls == 0
 
 
@@ -131,5 +131,30 @@ def test_runtime_gate_blocks_on_emergency_stop(tmp_path: Path) -> None:
     gw = OrderGateway(transport, GatewayConfig(runtime_state_path=str(runtime_state)))
     ev = gw.submit(_req())
     assert ev.status == "rejected"
-    assert ev.reason == "runtime_emergency_stop"
+    assert ev.reason == "RUNTIME_EMERGENCY_STOP"
     assert transport.calls == 0
+
+
+def test_rate_limit_retries_with_retry_after() -> None:
+    waits: list[float] = []
+
+    class RateLimitTransport:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def send_order(self, order: OrderRequest) -> tuple[bool, str, str]:
+            self.calls += 1
+            if self.calls == 1:
+                return False, "", "rate_limit:retry_after=0.5"
+            return True, f"ord_{order.client_order_id[-6:]}", "accepted"
+
+    t = RateLimitTransport()
+    gw = OrderGateway(
+        t,
+        GatewayConfig(max_retries=2, backoff_base_sec=0.1, max_backoff_sec=2.0),
+        sleeper=waits.append,
+    )
+    ev = gw.submit(_req())
+    assert ev.status == "ack"
+    assert t.calls == 2
+    assert waits == [0.5]
