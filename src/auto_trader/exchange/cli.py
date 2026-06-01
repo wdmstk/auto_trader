@@ -37,6 +37,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--symbol", required=True)
     p.add_argument("--side", choices=["buy", "sell"], required=True)
     p.add_argument("--qty", type=float, required=True)
+    p.add_argument("--order-type", choices=["market", "limit"], default="market")
+    p.add_argument("--limit-price", type=float, default=None)
     p.add_argument("--strategy", default="range")
     p.add_argument("--regime", default="RANGE")
     p.add_argument("--pass-filter", action="store_true")
@@ -53,6 +55,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.order_type == "limit" and args.limit_price is None:
+        print("status=rejected reason=invalid_args:limit_price_required_for_limit order_id=")
+        return 1
     ts = datetime.now(UTC)
     cid = build_client_order_id(
         symbol=args.symbol,
@@ -68,6 +73,8 @@ def main() -> int:
         regime=args.regime,
         pass_filter=bool(args.pass_filter),
         client_order_id=cid,
+        order_type=args.order_type,
+        limit_price=args.limit_price,
     )
     transport: _OrderTransport
     if args.mode == "dry-run":

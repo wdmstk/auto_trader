@@ -38,16 +38,23 @@ class BinanceRestTransport:
     def send_order(self, order: OrderRequest) -> tuple[bool, str, str]:
         if not self.config.api_key or not self.config.api_secret:
             return False, "", "credentials_missing"
+        order_type = order.order_type.upper()
+        if order_type == "LIMIT" and order.limit_price is None:
+            return False, "", "invalid_order_request:limit_price_required"
         endpoint = self.config.base_url.rstrip("/") + self.config.order_path
         params = {
             "symbol": order.symbol,
             "side": order.side.upper(),
-            "type": "MARKET",
+            "type": order_type,
             "quantity": order.qty,
             "newClientOrderId": order.client_order_id,
             "timestamp": int(time.time() * 1000),
             "recvWindow": self.config.recv_window_ms,
         }
+        if order_type == "LIMIT":
+            # Unfilled policy v1: cancel-fixed via IOC.
+            params["timeInForce"] = "IOC"
+            params["price"] = order.limit_price
         query = urlencode(params, doseq=False)
         signature = hmac.new(
             self.config.api_secret.encode("utf-8"),

@@ -38,3 +38,7 @@
 - `status=warn` の場合:
   - `docs/implementation/timeframe-evaluation-2026-06-01.md` へ差分追記
   - `TREND_ENABLED_SYMBOLS` / `RANGE_ENABLED_SYMBOLS` を見直す
+- 実注文経路の注文種別ポリシー（2026-06-02時点）:
+  - 既定: `market`
+  - `limit` 利用時: `IOC` 固定（未約定は cancel 固定）
+  - 週次点検で `limit` を使う場合は、CLI で `--order-type limit --limit-price <price>` を必ず明示する
