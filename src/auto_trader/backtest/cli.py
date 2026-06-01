@@ -37,7 +37,9 @@ def main() -> int:
     )
     print(
         f"trades={len(trades)} bars={len(portfolio)} PF={metrics['PF']:.4f} "
-        f"MaxDD={metrics['MaxDD']:.4f} MonthlyPnL={metrics['MonthlyPnL']:.2f}"
+        f"EXP={metrics['Expectancy']:.4f} EXPbps={metrics['ExpectancyBps']:.2f} "
+        f"MaxDD={metrics['MaxDD']:.4f} PeriodPnL={metrics['PeriodPnL']:.2f} "
+        f"Cost={metrics['TotalCostEst']:.2f}"
     )
     return 0
 

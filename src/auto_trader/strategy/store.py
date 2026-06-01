@@ -6,12 +6,13 @@ import pandas as pd
 
 
 class SignalParquetStore:
-    def __init__(self, root_dir: str | Path) -> None:
+    def __init__(self, root_dir: str | Path, *, strategy: str = "range") -> None:
         self.root_dir = Path(root_dir)
+        self.strategy = strategy
         self.root_dir.mkdir(parents=True, exist_ok=True)
 
     def path_for(self, symbol: str, timeframe: str) -> Path:
-        return self.root_dir / f"{symbol}_{timeframe}_range_signals.parquet"
+        return self.root_dir / f"{symbol}_{timeframe}_{self.strategy}_signals.parquet"
 
     def save(self, symbol: str, timeframe: str, signals_df: pd.DataFrame) -> Path:
         path = self.path_for(symbol, timeframe)

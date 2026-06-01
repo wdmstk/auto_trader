@@ -27,6 +27,6 @@ def build_and_save_range_signals(
         risk_df=risk,
         config=config,
     )
-    store = SignalParquetStore(output_dir)
+    store = SignalParquetStore(output_dir, strategy="range")
     saved = store.save(symbol, timeframe, signals)
     return signals, str(saved)

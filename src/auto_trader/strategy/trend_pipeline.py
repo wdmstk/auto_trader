@@ -30,6 +30,6 @@ def build_and_save_trend_signals(
         pnl_df=pnl,
         config=config,
     )
-    store = SignalParquetStore(output_dir)
+    store = SignalParquetStore(output_dir, strategy="trend")
     saved = store.save(symbol, timeframe, signals)
     return signals, str(saved)

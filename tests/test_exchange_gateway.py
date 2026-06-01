@@ -187,3 +187,20 @@ def test_gateway_persists_state_and_recovers_from_backup(tmp_path: Path) -> None
     duplicate = gw2.submit(req)
     assert duplicate.status == "rejected"
     assert duplicate.reason == "DUPLICATE_CLIENT_ORDER_ID"
+
+
+def test_non_retryable_error_returns_original_reason() -> None:
+    class AuthErrorTransport:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def send_order(self, order: OrderRequest) -> tuple[bool, str, str]:
+            self.calls += 1
+            return False, "", "http_error:400:code=-2015:msg=Invalid API-key"
+
+    t = AuthErrorTransport()
+    gw = OrderGateway(t, GatewayConfig(max_retries=3))
+    ev = gw.submit(_req())
+    assert ev.status == "rejected"
+    assert ev.reason == "http_error:400:code=-2015:msg=Invalid API-key"
+    assert t.calls == 1

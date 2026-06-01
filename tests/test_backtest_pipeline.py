@@ -64,5 +64,9 @@ def test_backtest_pipeline_outputs_artifacts(tmp_path: Path) -> None:
     assert Path(tmp_path / "backtest" / "portfolio.parquet").exists()
     assert Path(tmp_path / "backtest" / "metrics.parquet").exists()
     assert "PF" in metrics
+    assert "Expectancy" in metrics
+    assert "ExpectancyBps" in metrics
+    assert "PeriodPnL" in metrics
+    assert "TotalCostEst" in metrics
     assert len(portfolio) == 20
     assert len(trades) >= 2

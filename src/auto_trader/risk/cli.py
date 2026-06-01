@@ -15,6 +15,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-symbol-exposure-pct", type=float, default=25.0)
     p.add_argument("--max-portfolio-exposure-pct", type=float, default=70.0)
     p.add_argument("--max-concentration-score", type=float, default=0.6)
+    p.add_argument("--max-correlated-exposure-pct", type=float, default=50.0)
     p.add_argument("--emergency-stop", action="store_true")
     return p
 
@@ -26,6 +27,7 @@ def main() -> int:
         max_symbol_exposure_pct=args.max_symbol_exposure_pct,
         max_portfolio_exposure_pct=args.max_portfolio_exposure_pct,
         max_concentration_score=args.max_concentration_score,
+        max_correlated_exposure_pct=args.max_correlated_exposure_pct,
     )
     out = run_risk_pipeline(
         input_path=Path(args.input_path),

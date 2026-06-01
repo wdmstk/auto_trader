@@ -99,3 +99,20 @@ def test_evaluate_portfolio_risk_frame() -> None:
     out = evaluate_portfolio_risk(manager=RiskManager(RiskConfig(max_dd_pct=15.0)), risk_inputs=df)
     assert len(out) == 2
     assert out.loc[1, "risk_blocked"] is True or bool(out.loc[1, "risk_blocked"]) is True
+
+
+def test_correlated_exposure_blocks() -> None:
+    rm = RiskManager(RiskConfig(max_correlated_exposure_pct=30.0))
+    out = rm.evaluate(
+        timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+        symbol="BTCUSDT",
+        current_equity=10000.0,
+        equity_peak=10000.0,
+        symbol_exposure_pct=5.0,
+        portfolio_exposure_pct=20.0,
+        concentration_score=0.2,
+        correlated_exposure_pct=55.0,
+    )
+    assert bool(out["risk_blocked"]) is True
+    codes = cast(list[str], out["block_reason_codes"])
+    assert "RISK_CORRELATED_EXPOSURE" in codes

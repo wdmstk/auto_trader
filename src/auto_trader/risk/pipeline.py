@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from auto_trader.risk.manager import RiskConfig, RiskManager, evaluate_portfolio_risk
+from auto_trader.risk.manager import (
+    RiskConfig,
+    RiskManager,
+    ensure_correlated_exposure_column,
+    evaluate_portfolio_risk,
+)
 
 
 def run_risk_pipeline(
@@ -15,6 +20,7 @@ def run_risk_pipeline(
     emergency_state: bool = False,
 ) -> pd.DataFrame:
     inputs = pd.read_parquet(input_path)
+    inputs = ensure_correlated_exposure_column(inputs)
     manager = RiskManager(config)
     if emergency_state:
         manager.emergency_stop()
