@@ -64,6 +64,9 @@ ls -l data/runtime/control_state.json data/risk/risk_eval.parquet
 - 実施:
   - runtime/notify/ops を watch モードで起動
   - 30分ごとに `updated_at`, `.lock` 残留, `.bak` 更新有無を確認
+  - `scripts/longrun_8h_check.sh` を利用する場合、checkpointとあわせて
+    `runtime_metrics.jsonl` を採取し、終了時に
+    `runtime_metrics_health_report.json` を自動生成する
 - 合格:
   - `.lock` が長時間残留しない
   - `updated_at` が定期更新される

@@ -60,6 +60,17 @@ def test_e2e_smoke_pass(tmp_path: Path) -> None:
     assert out["overall_status"] == "pass"
 
 
+def test_e2e_smoke_pass_for_trend_regime_when_filter_true(tmp_path: Path) -> None:
+    signals, risk, runtime = _write_inputs(tmp_path, regime="TREND", pass_filter=True)
+    out = run_e2e_smoke(
+        signals_path=signals,
+        risk_eval_path=risk,
+        runtime_state_path=runtime,
+        output_dir=tmp_path / "e2e",
+    )
+    assert out["overall_status"] == "pass"
+
+
 def test_e2e_smoke_blocks_on_high_vol(tmp_path: Path) -> None:
     signals, risk, runtime = _write_inputs(tmp_path, regime="HIGH_VOL")
     out = run_e2e_smoke(
@@ -72,6 +83,20 @@ def test_e2e_smoke_blocks_on_high_vol(tmp_path: Path) -> None:
     stages = cast(list[dict[str, Any]], out["stages"])
     order_stage = [s for s in stages if s["stage"] == "order_gate_check"][0]
     assert order_stage["error_reason"] == "high_vol_blocked"
+
+
+def test_e2e_smoke_blocks_on_pass_filter_false_for_trend(tmp_path: Path) -> None:
+    signals, risk, runtime = _write_inputs(tmp_path, regime="TREND", pass_filter=False)
+    out = run_e2e_smoke(
+        signals_path=signals,
+        risk_eval_path=risk,
+        runtime_state_path=runtime,
+        output_dir=tmp_path / "e2e",
+    )
+    assert out["overall_status"] == "fail"
+    stages = cast(list[dict[str, Any]], out["stages"])
+    order_stage = [s for s in stages if s["stage"] == "order_gate_check"][0]
+    assert order_stage["error_reason"] == "pass_filter_blocked"
 
 
 def test_e2e_smoke_blocks_on_runtime_emergency(tmp_path: Path) -> None:
