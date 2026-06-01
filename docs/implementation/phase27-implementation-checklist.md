@@ -15,6 +15,9 @@
 - [x] partial fill 後の状態遷移実装
 - [x] cost grid レポートへ order_mode 指標追加
 - [x] ユニット/統合テストを追加
+- [x] 実注文経路（exchange）へ order_type（market/limit）導線を追加
+  - `LIMIT` は `IOC` 固定（未約定は cancel 扱い）
+  - `market` 互換は既定値として維持
 
 ## Done定義
 - [x] market と limit で比較可能なレポートを出力できる

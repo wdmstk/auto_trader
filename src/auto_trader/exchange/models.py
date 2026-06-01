@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Literal
 
 OrderSide = Literal["buy", "sell"]
+OrderType = Literal["market", "limit"]
 OrderStatus = Literal["created", "sent", "ack", "partial_filled", "filled", "rejected", "canceled"]
 
 
@@ -17,6 +18,8 @@ class OrderRequest:
     regime: str
     pass_filter: bool
     client_order_id: str
+    order_type: OrderType = "market"
+    limit_price: float | None = None
 
 
 @dataclass(frozen=True)

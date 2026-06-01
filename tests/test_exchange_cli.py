@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from pytest import MonkeyPatch
+import sys
+
+from pytest import CaptureFixture, MonkeyPatch
 
 import auto_trader.exchange.cli as exchange_cli
 
@@ -35,3 +37,47 @@ def test_resolve_api_credentials_for_futures_testnet(monkeypatch: MonkeyPatch) -
     key, secret = RESOLVE_CREDENTIALS("testnet-futures-live")
     assert key == "fut_key"
     assert secret == "fut_secret"
+
+
+def test_build_parser_accepts_order_type_and_limit_price() -> None:
+    parser = exchange_cli.build_parser()
+    args = parser.parse_args(
+        [
+            "--symbol",
+            "BTCUSDT",
+            "--side",
+            "buy",
+            "--qty",
+            "0.1",
+            "--order-type",
+            "limit",
+            "--limit-price",
+            "65000",
+        ]
+    )
+    assert args.order_type == "limit"
+    assert args.limit_price == 65000.0
+
+
+def test_main_rejects_limit_without_limit_price(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "exchange",
+            "--symbol",
+            "BTCUSDT",
+            "--side",
+            "buy",
+            "--qty",
+            "0.1",
+            "--order-type",
+            "limit",
+        ],
+    )
+    code = exchange_cli.main()
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "invalid_args:limit_price_required_for_limit" in captured.out

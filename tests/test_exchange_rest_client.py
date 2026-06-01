@@ -55,6 +55,40 @@ def test_rest_transport_accepts_valid_response() -> None:
     assert "signature" in params
     assert params["symbol"] == ["BTCUSDT"]
     assert params["newClientOrderId"] == ["cid_001"]
+    assert params["type"] == ["MARKET"]
+
+
+def test_rest_transport_sends_limit_ioc_fields() -> None:
+    seen: dict[str, object] = {}
+
+    def sender(req: Request, __: float) -> str:
+        seen["body"] = cast(bytes, req.data or b"").decode("utf-8")
+        return json.dumps({"orderId": "67890", "status": "NEW"}, ensure_ascii=True)
+
+    t = BinanceRestTransport(
+        RestClientConfig(
+            base_url="https://example.com",
+            order_path="/api/v3/order",
+            api_key="k",
+            api_secret="s",
+        ),
+        sender=sender,
+    )
+    order = OrderRequest(
+        **{
+            **_order().__dict__,
+            "order_type": "limit",
+            "limit_price": 65000.5,
+        }
+    )
+    ok, order_id, reason = t.send_order(order)
+    assert ok is True
+    assert order_id == "67890"
+    assert reason.startswith("accepted:")
+    params = parse_qs(str(seen["body"]))
+    assert params["type"] == ["LIMIT"]
+    assert params["timeInForce"] == ["IOC"]
+    assert params["price"] == ["65000.5"]
 
 
 def test_rest_transport_uses_configured_order_path() -> None:
@@ -95,6 +129,21 @@ def test_rest_transport_handles_missing_credentials() -> None:
     assert ok is False
     assert order_id == ""
     assert reason == "credentials_missing"
+
+
+def test_rest_transport_rejects_limit_without_price() -> None:
+    t = BinanceRestTransport(RestClientConfig(api_key="k", api_secret="s"))
+    order = OrderRequest(
+        **{
+            **_order().__dict__,
+            "order_type": "limit",
+            "limit_price": None,
+        }
+    )
+    ok, order_id, reason = t.send_order(order)
+    assert ok is False
+    assert order_id == ""
+    assert reason == "invalid_order_request:limit_price_required"
 
 
 def test_rest_transport_surfaces_http_error_detail() -> None:
