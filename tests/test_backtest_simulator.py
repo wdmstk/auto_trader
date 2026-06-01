@@ -62,6 +62,8 @@ def test_cost_and_filter_are_applied() -> None:
     assert "slippage" in trades.columns
     assert "spread" in trades.columns
     assert "PF" in metrics
+    assert "ExpectancyBps" in metrics
+    assert "TotalCostEst" in metrics
 
 
 def test_high_vol_blocks_new_entry() -> None:
@@ -75,7 +77,10 @@ def test_high_vol_blocks_new_entry() -> None:
     )
     entry_after_hv = trades[
         (trades["side"] == "buy")
-        & (pd.to_datetime(trades["timestamp"], utc=True) >= pd.Timestamp(ohlcv.loc[5, "timestamp"]))
+        & (
+            pd.to_datetime(trades["timestamp"], utc=True)
+            >= pd.to_datetime(str(ohlcv.loc[5, "timestamp"]), utc=True)
+        )
     ]
     assert entry_after_hv.empty
 
@@ -90,3 +95,5 @@ def test_maxdd_is_computable() -> None:
     )
     assert not portfolio.empty
     assert 0.0 <= float(metrics["MaxDD"]) <= 1.0
+    assert "PeriodPnL" in metrics
+    assert float(metrics["TotalCostEst"]) >= 0.0

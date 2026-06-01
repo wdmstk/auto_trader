@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import pandas as pd
 
-from auto_trader.strategy.range_strategy import generate_range_signals
+from auto_trader.strategy.range_strategy import RangeStrategyConfig, generate_range_signals
 
 
 def _build_inputs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -68,5 +69,46 @@ def test_reason_codes_present() -> None:
 def test_high_vol_sets_block_reason() -> None:
     f, r, k = _build_inputs()
     out = generate_range_signals(features_df=f, regime_df=r, risk_df=k)
-    codes = out.loc[4, "signal_reason_codes"]
+    codes = cast(list[str], out.loc[4, "signal_reason_codes"])
     assert "RG_BLOCK_HIGH_VOL" in codes
+
+
+def test_entry_can_ignore_reversal_flag_when_configured() -> None:
+    f, r, k = _build_inputs()
+    f["reversal_candle_flag"] = 0
+    out = generate_range_signals(
+        features_df=f,
+        regime_df=r,
+        risk_df=k,
+        config=RangeStrategyConfig(require_reversal_candle=False),
+    )
+    assert bool(out.loc[1, "entry_signal"]) is True
+
+
+def test_range_reentry_cooldown_blocks_following_bar() -> None:
+    f, r, k = _build_inputs()
+    out = generate_range_signals(
+        features_df=f,
+        regime_df=r,
+        risk_df=k,
+        config=RangeStrategyConfig(reentry_cooldown_bars=1),
+    )
+    assert bool(out.loc[1, "entry_signal"]) is True
+    codes = cast(list[str], out.loc[2, "signal_reason_codes"])
+    assert "RG_BLOCK_REENTRY_COOLDOWN" in codes
+
+
+def test_range_enabled_symbols_blocks_non_target() -> None:
+    f, r, k = _build_inputs()
+    f["symbol"] = "ETHUSDT"
+    r["symbol"] = "ETHUSDT"
+    k["symbol"] = "ETHUSDT"
+    out = generate_range_signals(
+        features_df=f,
+        regime_df=r,
+        risk_df=k,
+        config=RangeStrategyConfig(enabled_symbols=("BTCUSDT",)),
+    )
+    assert bool(out["entry_signal"].any()) is False
+    codes = cast(list[str], out.loc[1, "signal_reason_codes"])
+    assert "RG_BLOCK_SYMBOL_DISABLED" in codes

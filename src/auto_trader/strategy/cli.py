@@ -19,12 +19,29 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output-dir", default="data/signals")
     p.add_argument("--risk-path", default=None)
     p.add_argument("--pnl-path", default=None)
+    p.add_argument("--range-rsi-min", type=float, default=40.0)
+    p.add_argument("--range-rsi-max", type=float, default=50.0)
+    p.add_argument("--range-wick-ratio-min", type=float, default=0.5)
+    p.add_argument("--range-mean-reversion-distance-max", type=float, default=-0.1)
+    p.add_argument("--range-exit-mean-reversion-neutral-abs", type=float, default=0.05)
+    p.add_argument("--range-default-position-size-ratio", type=float, default=0.1)
+    p.add_argument("--range-require-reversal-candle", default="true", choices=["true", "false"])
+    p.add_argument("--range-min-entry-score", type=float, default=1.0)
+    p.add_argument("--range-reentry-cooldown-bars", type=int, default=0)
+    p.add_argument("--range-enabled-symbols", default="")
+    p.add_argument("--trend-min-entry-score", type=float, default=1.0)
+    p.add_argument("--trend-reentry-cooldown-bars", type=int, default=0)
+    p.add_argument("--trend-enabled-symbols", default="")
     return p
 
 
 def main() -> int:
     args = build_parser().parse_args()
     if args.strategy == "range":
+        require_reversal = str(args.range_require_reversal_candle).lower() == "true"
+        range_enabled_symbols = tuple(
+            x.strip() for x in str(args.range_enabled_symbols).split(",") if x.strip()
+        )
         signals, saved = build_and_save_range_signals(
             features_path=Path(args.features_path),
             regime_path=Path(args.regime_path),
@@ -32,9 +49,23 @@ def main() -> int:
             timeframe=args.timeframe,
             output_dir=Path(args.output_dir),
             risk_path=Path(args.risk_path) if args.risk_path else None,
-            config=RangeStrategyConfig(),
+            config=RangeStrategyConfig(
+                rsi_min=args.range_rsi_min,
+                rsi_max=args.range_rsi_max,
+                wick_ratio_min=args.range_wick_ratio_min,
+                mean_reversion_distance_max=args.range_mean_reversion_distance_max,
+                exit_mean_reversion_neutral_abs=args.range_exit_mean_reversion_neutral_abs,
+                default_position_size_ratio=args.range_default_position_size_ratio,
+                require_reversal_candle=require_reversal,
+                min_entry_score=args.range_min_entry_score,
+                reentry_cooldown_bars=args.range_reentry_cooldown_bars,
+                enabled_symbols=range_enabled_symbols,
+            ),
         )
     else:
+        trend_enabled_symbols = tuple(
+            x.strip() for x in str(args.trend_enabled_symbols).split(",") if x.strip()
+        )
         signals, saved = build_and_save_trend_signals(
             features_path=Path(args.features_path),
             regime_path=Path(args.regime_path),
@@ -43,7 +74,11 @@ def main() -> int:
             output_dir=Path(args.output_dir),
             risk_path=Path(args.risk_path) if args.risk_path else None,
             pnl_path=Path(args.pnl_path) if args.pnl_path else None,
-            config=TrendStrategyConfig(),
+            config=TrendStrategyConfig(
+                min_entry_score=args.trend_min_entry_score,
+                reentry_cooldown_bars=args.trend_reentry_cooldown_bars,
+                enabled_symbols=trend_enabled_symbols,
+            ),
         )
     print(f"saved={saved} rows={len(signals)}")
     return 0

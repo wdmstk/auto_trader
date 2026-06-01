@@ -15,6 +15,9 @@ class TrendStrategyConfig:
     trend_efficiency_exit_threshold: float = 0.1
     default_position_size_ratio: float = 0.1
     max_add_count: int = 2
+    min_entry_score: float = 1.0
+    reentry_cooldown_bars: int = 0
+    enabled_symbols: tuple[str, ...] = ()
 
 
 def generate_trend_signals(
@@ -33,21 +36,34 @@ def generate_trend_signals(
     exit_signal: list[bool] = []
     add_signal: list[bool] = []
     risk_blocked: list[bool] = []
+    regimes: list[str] = []
+    pass_filters: list[bool] = []
     reason_codes: list[list[str]] = []
     position_size_ratio: list[float] = []
 
-    current_add_count = 0
-    in_position = False
+    state: dict[tuple[str, str], dict[str, int | bool]] = {}
 
     for _, row in merged.iterrows():
         reasons: list[str] = []
         blocked = bool(row["risk_blocked"])
         high_vol = (str(row["regime"]) == "HIGH_VOL") or (not bool(row["is_trade_allowed"]))
+        symbol = str(row.get("symbol", ""))
+        timeframe = str(row.get("timeframe", ""))
+        key = (symbol, timeframe)
+        st = state.setdefault(key, {"in_position": False, "add_count": 0, "cooldown": 0})
+        in_position = bool(st["in_position"])
+        current_add_count = int(st["add_count"])
+        cooldown = int(st["cooldown"])
+        symbol_enabled = (not cfg.enabled_symbols) or (symbol in cfg.enabled_symbols)
 
         if high_vol:
             reasons.append("TR_BLOCK_HIGH_VOL")
         if blocked:
             reasons.append("TR_BLOCK_RISK_LIMIT")
+        if not symbol_enabled:
+            reasons.append("TR_BLOCK_SYMBOL_DISABLED")
+        if cooldown > 0:
+            reasons.append("TR_BLOCK_REENTRY_COOLDOWN")
 
         regime_ok = str(row["regime"]) == "TREND" and bool(row["is_trade_allowed"])
         gate_ok = regime_ok and (not high_vol) and (not blocked)
@@ -56,17 +72,31 @@ def generate_trend_signals(
         momentum_ok = _f(row["momentum_persistence"]) >= cfg.momentum_persistence_min
         pullback_ok = _f(row["pullback_shallowness"]) >= cfg.pullback_shallowness_min
         higher_high_ok = _f(row["higher_high_persistence"]) >= cfg.higher_high_persistence_min
+        score = (int(breakout_ok) + int(momentum_ok) + int(pullback_ok) + int(higher_high_ok)) / 4.0
+        score_ok = score >= cfg.min_entry_score
 
-        entry = gate_ok and breakout_ok and momentum_ok and pullback_ok and higher_high_ok
+        entry = (
+            gate_ok
+            and symbol_enabled
+            and (cooldown <= 0)
+            and score_ok
+            and breakout_ok
+            and momentum_ok
+            and pullback_ok
+            and higher_high_ok
+        )
         if entry:
             reasons.extend(
                 [
+                    "TR_ENTRY_SCORE_OK",
                     "TR_ENTRY_BREAKOUT_PERSIST",
                     "TR_ENTRY_MOMENTUM_PERSIST",
                     "TR_ENTRY_PULLBACK_SHALLOW",
                     "TR_ENTRY_HIGHER_HIGH",
                 ]
             )
+        elif gate_ok and symbol_enabled and (cooldown <= 0) and (not score_ok):
+            reasons.append("TR_BLOCK_SCORE_LOW")
 
         exit_by_regime = str(row["regime"]) != "TREND"
         exit_by_trend_weaken = _f(row["trend_efficiency"]) < cfg.trend_efficiency_exit_threshold
@@ -95,14 +125,27 @@ def generate_trend_signals(
         if not reasons:
             reasons.append("TR_EXIT_REGIME_CHANGED")
 
+        if entry and cfg.reentry_cooldown_bars > 0:
+            cooldown = int(cfg.reentry_cooldown_bars)
+        elif cooldown > 0:
+            cooldown -= 1
+
+        st["in_position"] = in_position
+        st["add_count"] = current_add_count
+        st["cooldown"] = cooldown
+
         entry_signal.append(bool(entry))
         exit_signal.append(bool(exit))
         add_signal.append(bool(add))
         risk_blocked.append(blocked)
+        regimes.append(str(row.get("regime", "")))
+        pass_filters.append(bool(gate_ok))
         reason_codes.append(sorted(set(reasons)))
         position_size_ratio.append(cfg.default_position_size_ratio if entry else 0.0)
 
     out = merged[["symbol", "timeframe", "timestamp"]].copy()
+    out["regime"] = regimes
+    out["pass_filter"] = pass_filters
     out["entry_signal"] = entry_signal
     out["exit_signal"] = exit_signal
     out["add_signal"] = add_signal
@@ -127,8 +170,12 @@ def _merge_inputs(
 
     if risk_df is not None:
         k = risk_df.copy()
-        k["timestamp"] = pd.to_datetime(k["timestamp"], utc=True)
-        merged = merged.merge(k, on=["symbol", "timeframe", "timestamp"], how="left")
+        if "timestamp" in k.columns:
+            k["timestamp"] = pd.to_datetime(k["timestamp"], utc=True)
+            risk_merge_keys = ["symbol", "timestamp"]
+            if "timeframe" in k.columns:
+                risk_merge_keys = ["symbol", "timeframe", "timestamp"]
+            merged = merged.merge(k, on=risk_merge_keys, how="left")
     if pnl_df is not None:
         p = pnl_df.copy()
         p["timestamp"] = pd.to_datetime(p["timestamp"], utc=True)

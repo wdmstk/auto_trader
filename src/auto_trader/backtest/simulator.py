@@ -134,12 +134,26 @@ def summarize_metrics(
     initial_cash: float,
 ) -> dict[str, float]:
     if portfolio_df.empty:
-        return {"PF": 0.0, "Expectancy": 0.0, "WinRate": 0.0, "MaxDD": 0.0, "MonthlyPnL": 0.0}
+        return {
+            "PF": 0.0,
+            "Expectancy": 0.0,
+            "ExpectancyBps": 0.0,
+            "WinRate": 0.0,
+            "MaxDD": 0.0,
+            "MonthlyPnL": 0.0,
+            "PeriodPnL": 0.0,
+            "GrossPnLEst": 0.0,
+            "TotalCostEst": 0.0,
+            "FeeCost": 0.0,
+            "ImpactCostEst": 0.0,
+            "ClosedTrades": 0.0,
+        }
 
     closed = _pair_roundtrips(trades_df)
     if closed.empty:
         win_rate = 0.0
         expectancy = 0.0
+        expectancy_bps = 0.0
         pf = 0.0
     else:
         wins = closed[closed["pnl"] > 0.0]
@@ -149,16 +163,55 @@ def summarize_metrics(
         pf = gross_profit / gross_loss if gross_loss > 0 else 0.0
         win_rate = float((closed["pnl"] > 0.0).mean())
         expectancy = float(closed["pnl"].mean())
+        valid_notional = closed[closed["entry_notional"] > 0.0]
+        if valid_notional.empty:
+            expectancy_bps = 0.0
+        else:
+            expectancy_bps = float(
+                (valid_notional["pnl"] / valid_notional["entry_notional"]).mean() * 10_000.0
+            )
 
     max_dd = float(portfolio_df["drawdown"].max())
     final_equity = float(portfolio_df.iloc[-1]["equity"])
-    monthly_pnl = final_equity - initial_cash
+    period_pnl = final_equity - initial_cash
+    fee_cost = (
+        float(trades_df.get("fee", pd.Series(dtype=float)).fillna(0.0).sum())
+        if not trades_df.empty
+        else 0.0
+    )
+    if trades_df.empty:
+        impact_cost = 0.0
+    else:
+        px = trades_df["price"].fillna(0.0).astype(float).abs()
+        sz = trades_df["size"].fillna(0.0).astype(float).abs()
+        slip = (
+            trades_df.get("slippage", pd.Series(0.0, index=trades_df.index))
+            .fillna(0.0)
+            .astype(float)
+            .abs()
+        )
+        sprd = (
+            trades_df.get("spread", pd.Series(0.0, index=trades_df.index))
+            .fillna(0.0)
+            .astype(float)
+            .abs()
+        )
+        impact_cost = float((px * sz * (slip + sprd)).sum())
+    total_cost = fee_cost + impact_cost
+    gross_pnl_est = period_pnl + total_cost
     return {
         "PF": pf,
         "Expectancy": expectancy,
+        "ExpectancyBps": expectancy_bps,
         "WinRate": win_rate,
         "MaxDD": max_dd,
-        "MonthlyPnL": monthly_pnl,
+        "MonthlyPnL": period_pnl,
+        "PeriodPnL": period_pnl,
+        "GrossPnLEst": gross_pnl_est,
+        "TotalCostEst": total_cost,
+        "FeeCost": fee_cost,
+        "ImpactCostEst": impact_cost,
+        "ClosedTrades": float(len(closed)),
     }
 
 
@@ -206,7 +259,7 @@ def _trade_row(
 
 def _pair_roundtrips(trades_df: pd.DataFrame) -> pd.DataFrame:
     if trades_df.empty:
-        return pd.DataFrame(columns=["entry_ts", "exit_ts", "pnl"])
+        return pd.DataFrame(columns=["entry_ts", "exit_ts", "pnl", "entry_notional"])
     rows: list[dict[str, object]] = []
     open_trade: dict[str, object] | None = None
     for _, t in trades_df.iterrows():
@@ -225,6 +278,8 @@ def _pair_roundtrips(trades_df: pd.DataFrame) -> pd.DataFrame:
                     "entry_ts": open_trade["timestamp"],
                     "exit_ts": t["timestamp"],
                     "pnl": pnl,
+                    "entry_notional": _to_float(open_trade["price"])
+                    * _to_float(open_trade["size"]),
                 }
             )
             open_trade = None

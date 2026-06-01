@@ -63,3 +63,5 @@ def test_build_and_save_trend_signals(tmp_path: Path) -> None:
     assert len(out) == 16
     assert Path(saved).exists()
     assert "add_signal" in out.columns
+    assert "pass_filter" in out.columns
+    assert "regime" in out.columns
