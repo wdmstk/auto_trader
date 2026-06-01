@@ -158,7 +158,7 @@ def _apply_silent_ws_stale(
         if is_fail and first_fail_idx is None:
             first_fail_idx = i
         if consec >= int(emergency_cycles):
-            sig.iloc[i, sig.columns.get_loc("emergency_stop")] = True
+            sig.at[sig.index[i], "emergency_stop"] = True
             if first_emergency_idx is None:
                 first_emergency_idx = i
     detect_to_stop = 0.0

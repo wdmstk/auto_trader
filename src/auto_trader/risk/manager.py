@@ -221,10 +221,11 @@ def ensure_volatility_risk_columns(risk_inputs: pd.DataFrame) -> pd.DataFrame:
         (c for c in ["volatility", "rolling_volatility", "vol"] if c in out.columns), None
     )
     if vol_col is None:
-        out["vol_weighted_exposure_pct"] = pd.to_numeric(
-            out["portfolio_exposure_pct"] if "portfolio_exposure_pct" in out.columns else 0.0,
-            errors="coerce",
-        ).fillna(0.0)
+        if "portfolio_exposure_pct" in out.columns:
+            vwe = pd.to_numeric(out["portfolio_exposure_pct"], errors="coerce").fillna(0.0)
+        else:
+            vwe = pd.Series(0.0, index=out.index, dtype="float64")
+        out["vol_weighted_exposure_pct"] = vwe.astype(float)
         out["risk_contribution_pct"] = 0.0
         out["missing_vol_ratio"] = 1.0
         return out
