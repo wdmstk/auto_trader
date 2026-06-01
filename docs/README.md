@@ -1,4 +1,4 @@
-# ドキュメント運用ガイド（Phase 0-20）
+# ドキュメント運用ガイド（Phase 0-29）
 
 ## 目的
 この `docs/` は、`base_policy.md` を実装可能な仕様に落とすための設計基盤です。
@@ -12,8 +12,18 @@
 
 ## ディレクトリ構成
 - `docs/adr/`: Architecture Decision Records
-- `docs/specs/`: Phase別の実装仕様（Phase 0-20）
+- `docs/specs/`: Phase別の実装仕様（Phase 0-29）
 - `docs/implementation/`: 実装チェックリスト、テスト戦略、リスク登録簿
+
+## 標準運用フロー（Phase 25+）
+1. `docs/specs/` の対象Phase Specを更新または追加する。
+2. `docs/implementation/` に `spec-review-phaseXX-YYYY-MM-DD.md` を作成する。
+3. `docs/implementation/phaseXX-implementation-checklist.md` を更新する。
+4. 証跡スクリプトを実行する。
+   - 週次再評価: `./scripts/weekly_strategy_revalidation.sh`
+   - longrun / health: `./scripts/longrun_8h_check.sh` または既存証跡確認
+5. `./scripts/update_go_live_checklist.sh` を実行し、Auto判定欄を同期する。
+6. `docs/implementation/trading-go-live-checklist.md` で最終判定（Go/Conditional/No-Go）を確定する。
 
 ## Doc First ルール（必須）
 - 実装開始前に、対象PhaseのSpecを `docs/specs/` に追加または更新する。
