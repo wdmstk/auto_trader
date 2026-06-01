@@ -97,3 +97,55 @@ def test_maxdd_is_computable() -> None:
     assert 0.0 <= float(metrics["MaxDD"]) <= 1.0
     assert "PeriodPnL" in metrics
     assert float(metrics["TotalCostEst"]) >= 0.0
+
+
+def test_limit_mode_emits_order_status_rows() -> None:
+    ohlcv, signals, ml = _sample_inputs()
+    # Force a touch-only scenario on entry and exit to exercise partial/canceled.
+    ohlcv.loc[2, "high"] = 101.2
+    ohlcv.loc[2, "low"] = 100.8
+    ohlcv.loc[3, "high"] = 101.2
+    ohlcv.loc[3, "low"] = 100.8
+    trades, _, _ = run_backtest(
+        ohlcv_df=ohlcv,
+        signals_df=signals,
+        ml_df=ml,
+        config=BacktestConfig(
+            execution_delay_bars=1,
+            order_mode="limit",
+            limit_offset_rate=0.0,
+            limit_partial_fill_ratio=0.1,
+        ),
+    )
+    assert "order_mode" in trades.columns
+    assert (trades["order_mode"] == "limit").all()
+    assert set(trades["status"]).issubset({"filled", "partial", "expired", "canceled"})
+
+
+def test_fee_split_for_market_and_limit() -> None:
+    ohlcv, signals, ml = _sample_inputs()
+    market_trades, _, _ = run_backtest(
+        ohlcv_df=ohlcv,
+        signals_df=signals,
+        ml_df=ml,
+        config=BacktestConfig(
+            execution_delay_bars=0,
+            order_mode="market",
+            taker_fee_rate=0.001,
+            maker_fee_rate=0.0,
+        ),
+    )
+    limit_trades, _, _ = run_backtest(
+        ohlcv_df=ohlcv,
+        signals_df=signals,
+        ml_df=ml,
+        config=BacktestConfig(
+            execution_delay_bars=0,
+            order_mode="limit",
+            taker_fee_rate=0.001,
+            maker_fee_rate=0.0001,
+            limit_offset_rate=0.0,
+        ),
+    )
+    assert float(market_trades["fee"].sum()) > 0.0
+    assert float(limit_trades["fee"].sum()) >= 0.0

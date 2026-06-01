@@ -29,6 +29,7 @@ export SPREAD_RATE="${SPREAD_RATE:-0.0001}"
 export DELAY_BARS="${DELAY_BARS:-1}"
 DRIFT_BASELINE_PATH="${DRIFT_BASELINE_PATH:-data/validation/drift/baseline_stats.json}"
 DRIFT_REPORT_PATH="$OUT_DIR/feature_drift_report.json"
+DRIFT_ONLINE_STATS_PATH="$OUT_DIR/feature_online_stats.json"
 
 SUMMARY_PATH="$OUT_DIR/timeframe_comparison_summary.json"
 SUMMARY_PATH="$SUMMARY_PATH" ./scripts/timeframe_comparison.sh
@@ -48,6 +49,7 @@ python -m auto_trader.drift \
   --features-glob "data/features/*_15m_features.parquet" \
   --baseline-path "$DRIFT_BASELINE_PATH" \
   --report-path "$DRIFT_REPORT_PATH" \
+  --online-stats-path "$DRIFT_ONLINE_STATS_PATH" \
   --write-baseline-if-missing true
 
 python - "$OUT_DIR/timeframe_comparison_summary.json" "$OUT_DIR/weekly_revalidation_report.json" "$DRIFT_REPORT_PATH" <<'EOF_PY'

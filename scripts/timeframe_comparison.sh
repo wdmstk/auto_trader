@@ -26,10 +26,16 @@ RANGE_ENABLED_SYMBOLS="${RANGE_ENABLED_SYMBOLS:-}"
 TREND_MIN_ENTRY_SCORE="${TREND_MIN_ENTRY_SCORE:-1.0}"
 TREND_REENTRY_COOLDOWN_BARS="${TREND_REENTRY_COOLDOWN_BARS:-0}"
 TREND_ENABLED_SYMBOLS="${TREND_ENABLED_SYMBOLS:-}"
+DRIFT_REPORT_PATH="${DRIFT_REPORT_PATH:-}"
 FEE_RATE="${FEE_RATE:-0.0004}"
 SLIPPAGE_RATE="${SLIPPAGE_RATE:-0.0005}"
 SPREAD_RATE="${SPREAD_RATE:-0.0003}"
 DELAY_BARS="${DELAY_BARS:-1}"
+ORDER_MODE="${ORDER_MODE:-market}"
+MAKER_FEE_RATE="${MAKER_FEE_RATE:-0.0}"
+TAKER_FEE_RATE="${TAKER_FEE_RATE:-0.0}"
+LIMIT_OFFSET_RATE="${LIMIT_OFFSET_RATE:-0.0}"
+LIMIT_PARTIAL_FILL_RATIO="${LIMIT_PARTIAL_FILL_RATIO:-0.1}"
 
 mkdir -p "$OUTPUT_DIR" \
   "$DATA_ROOT/parquet" \
@@ -43,7 +49,7 @@ echo "symbols=$SYMBOLS timeframes=$TIMEFRAMES strategies=$STRATEGIES folds=$FOLD
 echo "range_cfg: rsi=[$RANGE_RSI_MIN,$RANGE_RSI_MAX] wick>=$RANGE_WICK_RATIO_MIN mr<=$RANGE_MEAN_REVERSION_DISTANCE_MAX require_reversal=$RANGE_REQUIRE_REVERSAL_CANDLE"
 echo "range_gate: min_score=$RANGE_MIN_ENTRY_SCORE cooldown=$RANGE_REENTRY_COOLDOWN_BARS enabled=[$RANGE_ENABLED_SYMBOLS]"
 echo "trend_gate: min_score=$TREND_MIN_ENTRY_SCORE cooldown=$TREND_REENTRY_COOLDOWN_BARS enabled=[$TREND_ENABLED_SYMBOLS]"
-echo "backtest_cfg: fee=$FEE_RATE slippage=$SLIPPAGE_RATE spread=$SPREAD_RATE delay=$DELAY_BARS"
+echo "backtest_cfg: mode=$ORDER_MODE fee=$FEE_RATE maker=$MAKER_FEE_RATE taker=$TAKER_FEE_RATE slippage=$SLIPPAGE_RATE spread=$SPREAD_RATE delay=$DELAY_BARS"
 
 for symbol in ${SYMBOLS//,/ }; do
   base_1m="$DATA_ROOT/parquet/${symbol}_1m.parquet"
@@ -122,7 +128,8 @@ PY
           --range-require-reversal-candle "$RANGE_REQUIRE_REVERSAL_CANDLE" \
           --range-min-entry-score "$RANGE_MIN_ENTRY_SCORE" \
           --range-reentry-cooldown-bars "$RANGE_REENTRY_COOLDOWN_BARS" \
-          --range-enabled-symbols "$RANGE_ENABLED_SYMBOLS"
+          --range-enabled-symbols "$RANGE_ENABLED_SYMBOLS" \
+          ${DRIFT_REPORT_PATH:+--drift-report-path "$DRIFT_REPORT_PATH"}
       else
         "$PYTHON_BIN" -m auto_trader.strategy \
           --strategy "$strategy" \
@@ -133,7 +140,8 @@ PY
           --output-dir "$DATA_ROOT/signals" \
           --trend-min-entry-score "$TREND_MIN_ENTRY_SCORE" \
           --trend-reentry-cooldown-bars "$TREND_REENTRY_COOLDOWN_BARS" \
-          --trend-enabled-symbols "$TREND_ENABLED_SYMBOLS"
+          --trend-enabled-symbols "$TREND_ENABLED_SYMBOLS" \
+          ${DRIFT_REPORT_PATH:+--drift-report-path "$DRIFT_REPORT_PATH"}
       fi
 
       "$PYTHON_BIN" - "$DATA_ROOT/signals/${symbol}_${timeframe}_${strategy}_signals.parquet" <<'PY'
@@ -165,12 +173,17 @@ PY
         --slippage-rate "$SLIPPAGE_RATE" \
         --spread-rate "$SPREAD_RATE" \
         --delay-bars "$DELAY_BARS" \
+        --order-mode "$ORDER_MODE" \
+        --maker-fee-rate "$MAKER_FEE_RATE" \
+        --taker-fee-rate "$TAKER_FEE_RATE" \
+        --limit-offset-rate "$LIMIT_OFFSET_RATE" \
+        --limit-partial-fill-ratio "$LIMIT_PARTIAL_FILL_RATIO" \
         --output-dir "$DATA_ROOT/analysis" >/dev/null
     done
   done
 done
 
-"$PYTHON_BIN" - "$SYMBOLS" "$TIMEFRAMES" "$STRATEGIES" "$SUMMARY_PATH" "$FEE_RATE" "$SLIPPAGE_RATE" "$SPREAD_RATE" "$DELAY_BARS" "$DATA_ROOT" <<'PY'
+"$PYTHON_BIN" - "$SYMBOLS" "$TIMEFRAMES" "$STRATEGIES" "$SUMMARY_PATH" "$FEE_RATE" "$SLIPPAGE_RATE" "$SPREAD_RATE" "$DELAY_BARS" "$DATA_ROOT" "$ORDER_MODE" "$MAKER_FEE_RATE" "$TAKER_FEE_RATE" "$LIMIT_OFFSET_RATE" "$LIMIT_PARTIAL_FILL_RATIO" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -231,6 +244,11 @@ out = {
         "slippage_rate": float(sys.argv[6]),
         "spread_rate": float(sys.argv[7]),
         "delay_bars": int(sys.argv[8]),
+        "order_mode": str(sys.argv[10]),
+        "maker_fee_rate": float(sys.argv[11]),
+        "taker_fee_rate": float(sys.argv[12]),
+        "limit_offset_rate": float(sys.argv[13]),
+        "limit_partial_fill_ratio": float(sys.argv[14]),
     },
 }
 summary_path.write_text(json.dumps(out, ensure_ascii=True, indent=2), encoding="utf-8")

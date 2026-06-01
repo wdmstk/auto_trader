@@ -21,6 +21,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--features-glob", default=None)
     p.add_argument("--baseline-path", default="data/validation/drift/baseline_stats.json")
     p.add_argument("--report-path", default="data/validation/drift/feature_drift_report.json")
+    p.add_argument("--online-stats-path", default="data/validation/drift/online_stats_latest.json")
     p.add_argument("--bins", type=int, default=10)
     p.add_argument("--write-baseline-if-missing", default="true")
     return p
@@ -49,6 +50,7 @@ def main() -> int:
     args = _build_parser().parse_args()
     baseline_path = Path(args.baseline_path)
     report_path = Path(args.report_path)
+    online_stats_path = Path(args.online_stats_path)
     write_baseline = str(args.write_baseline_if_missing).lower() in {"1", "true", "yes", "on"}
 
     features = _load_features(args.features_path, args.features_glob)
@@ -82,6 +84,12 @@ def main() -> int:
 
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(result, ensure_ascii=True, indent=2), encoding="utf-8")
+    online_stats = build_baseline_stats(features, bins=max(int(args.bins), 2))
+    online_stats["checked_at"] = datetime.now(UTC).isoformat()
+    online_stats_path.parent.mkdir(parents=True, exist_ok=True)
+    online_stats_path.write_text(
+        json.dumps(online_stats, ensure_ascii=True, indent=2), encoding="utf-8"
+    )
     print(report_path)
     return 0
 

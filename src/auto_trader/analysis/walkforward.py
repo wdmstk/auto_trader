@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from auto_trader.backtest.simulator import BacktestConfig, run_backtest
+from auto_trader.backtest.simulator import BacktestConfig, OrderMode, run_backtest
 
 
 @dataclass(frozen=True)
@@ -19,6 +19,11 @@ class WalkforwardConfig:
     slippage_rate: float = 0.0005
     spread_rate: float = 0.0003
     delay_bars: int = 1
+    order_mode: OrderMode = "market"
+    maker_fee_rate: float = 0.0
+    taker_fee_rate: float = 0.0
+    limit_offset_rate: float = 0.0
+    limit_partial_fill_ratio: float = 0.1
 
 
 def run_walkforward_report(
@@ -79,6 +84,11 @@ def run_walkforward_report(
                 slippage_rate=cfg.slippage_rate,
                 spread_rate=cfg.spread_rate,
                 execution_delay_bars=cfg.delay_bars,
+                order_mode=cfg.order_mode,
+                maker_fee_rate=cfg.maker_fee_rate,
+                taker_fee_rate=cfg.taker_fee_rate,
+                limit_offset_rate=cfg.limit_offset_rate,
+                limit_partial_fill_ratio=cfg.limit_partial_fill_ratio,
             ),
         )
         if not trades.empty:
@@ -148,6 +158,7 @@ def run_walkforward_report(
         "n_folds": cfg.n_folds,
         "expected_regime": expected_regime,
         "rows_merged": int(len(merged)),
+        "order_mode": cfg.order_mode,
         "output_dir": str(out_dir),
     }
     pd.Series(meta).to_json(meta_path, force_ascii=True)

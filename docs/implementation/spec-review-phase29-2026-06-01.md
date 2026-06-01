@@ -5,23 +5,28 @@
 - Reviewer: Codex
 
 ## 結論
-Phase 29 は運用障害に直結するケース（partial fill / silent stale）を補強できるため妥当。
-既存stress/e2eを壊さず追加する方針も現行運用と整合する。
+Phase 29 は実装まで完了し、運用障害に直結する異常系（partial fill / silent stale）の検証導線を追加できている。
+既存 stress/e2e を壊さず追加できており、現行運用と整合する。
 
 ## 固定事項
 1. partial fill の数量整合を最優先で検証する。
 2. silent stale は「検知から停止までの遅延」を必須計測する。
 3. fail時は原因追跡できる証跡（イベント時系列）を残す。
 
-## レビュー指摘（実装前に明確化すべき点）
-- stale検知遅延の閾値（warn/fail）を秒単位で固定する必要。
-- partial fill ケースの標準シナリオ（10% fill + cancel）を基準ケースとして固定する必要。
-- emergency stop 発火条件（連続stale回数 or 秒数）を明文化する必要。
+## 実装結果（2026-06-01）
+- `partial_fill_10pct_cancel` シナリオを追加。
+- `silent_ws_stale` シナリオを追加。
+- `stale_detect_to_stop_latency_sec`（検知→停止遅延）を実装。
+- 緊急停止発火フラグ（`emergency_stop_triggered`）を stress 結果へ出力。
+- `scripts/chaos_test.sh` を追加し、`data/validation/chaos/` へ証跡を保存。
+- 検証:
+  - `pytest -q tests/test_stress_scenarios.py` で 4 passed
+  - `./scripts/chaos_test.sh` 実行で `status=pass` を確認（遅延 120.0s）
 
 ## 残留リスク
-- シミュレーション再現と実運用イベント順序が一致しない場合、検証漏れが残る。
-- 無言切断系は環境依存差が大きく、テストの不安定化余地がある。
+- 実取引所のイベント順序ゆらぎ（遅延・欠落）との乖離は残る。
+- stale検知条件は固定閾値のため、銘柄/時間足ごとの最適値調整余地がある。
 
-## 実装着手条件
-- chaosシナリオ定義ファイル（入力・期待状態・判定閾値）を先に作成する。
-- 失敗時証跡の保存場所を runbook に固定する。
+## 次アクション
+- chaos summary を weekly/go-live 判定に段階連携する（warn補助判定）。
+- silent stale の閾値チューニング基準を runbook 化する。

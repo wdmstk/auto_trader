@@ -249,6 +249,9 @@ def _symbol_snapshot(
         )
     exposure: float | str = "-"
     dd: float | str = "-"
+    vwe: float | str = "-"
+    rc: float | str = "-"
+    scale: float | str = "-"
     if not risk_df.empty:
         s = risk_df[risk_df.get("symbol", pd.Series(dtype=str)).astype(str) == symbol]
         if not s.empty:
@@ -258,6 +261,18 @@ def _symbol_snapshot(
                 )
             if "current_dd_pct" in s.columns:
                 dd = float(pd.to_numeric(s["current_dd_pct"], errors="coerce").fillna(0.0).iloc[-1])
+            if "vol_weighted_exposure_pct" in s.columns:
+                vwe = float(
+                    pd.to_numeric(s["vol_weighted_exposure_pct"], errors="coerce")
+                    .fillna(0.0)
+                    .iloc[-1]
+                )
+            if "risk_contribution_pct" in s.columns:
+                rc = float(
+                    pd.to_numeric(s["risk_contribution_pct"], errors="coerce").fillna(0.0).iloc[-1]
+                )
+            if "size_scale" in s.columns:
+                scale = float(pd.to_numeric(s["size_scale"], errors="coerce").fillna(1.0).iloc[-1])
     pnl = float(wf_range.get(symbol, {}).get("monthly_pnl", 0.0)) + float(
         wf_trend.get(symbol, {}).get("monthly_pnl", 0.0)
     )
@@ -270,6 +285,9 @@ def _symbol_snapshot(
         "pnl_estimate": pnl,
         "dd_pct": dd,
         "exposure_pct": exposure,
+        "vol_weighted_exposure_pct": vwe,
+        "risk_contribution_pct": rc,
+        "size_scale": scale,
     }
 
 
@@ -435,9 +453,37 @@ def _render_multi_symbol_panel() -> None:
 
         st.caption("PnL/DD/Exposure")
         metrics_cols = [
-            c for c in ["symbol", "pnl_estimate", "dd_pct", "exposure_pct"] if c in snap.columns
+            c
+            for c in [
+                "symbol",
+                "pnl_estimate",
+                "dd_pct",
+                "exposure_pct",
+                "vol_weighted_exposure_pct",
+                "risk_contribution_pct",
+                "size_scale",
+            ]
+            if c in snap.columns
         ]
         st.dataframe(snap[metrics_cols], use_container_width=True)
+
+        st.caption("Volatility-weighted risk ranking")
+        risk_rank = snap.copy()
+        risk_rank = risk_rank.sort_values(
+            ["risk_contribution_pct", "vol_weighted_exposure_pct"], ascending=False
+        )
+        st.dataframe(
+            risk_rank[
+                [
+                    "symbol",
+                    "risk_contribution_pct",
+                    "vol_weighted_exposure_pct",
+                    "size_scale",
+                    "dd_pct",
+                ]
+            ],
+            use_container_width=True,
+        )
 
         if enable_heavy:
             st.caption("Correlation matrix (1m returns)")
@@ -519,6 +565,47 @@ def _render_runtime_metrics_panel() -> None:
     st.json(latest)
 
 
+def _render_drift_panel() -> None:
+    st.subheader("Feature Drift")
+    drift_path = DATA_DIR / "validation" / "weekly_revalidation" / "feature_drift_report.json"
+    if not drift_path.exists():
+        st.info("Drift report not found")
+        return
+    try:
+        import json
+
+        drift = json.loads(drift_path.read_text(encoding="utf-8"))
+    except Exception:
+        st.warning("Failed to read drift report")
+        return
+    if not isinstance(drift, dict):
+        st.warning("Drift report schema invalid")
+        return
+
+    status = str(drift.get("status", "unknown"))
+    block = bool(drift.get("drift_trade_block", False))
+    fail_ratio = _safe_float(drift.get("fail_feature_ratio", 0.0))
+    missing_ratio = _safe_float(drift.get("missing_feature_ratio", 0.0))
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("status", status)
+    c2.metric("trade_block", str(block).lower())
+    c3.metric("fail_feature_ratio", f"{fail_ratio:.3f}")
+    c4.metric("missing_feature_ratio", f"{missing_ratio:.3f}")
+    if status == "fail":
+        st.error("Drift status is FAIL. New entries should be blocked.")
+    elif status == "warn":
+        st.warning("Drift status is WARN. Monitor closely.")
+    else:
+        st.success("Drift status is PASS.")
+
+    if st.checkbox("Show drift feature details", value=False):
+        rows = drift.get("features", [])
+        if isinstance(rows, list) and rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True)
+        else:
+            st.info("No feature-level details")
+
+
 def main() -> None:
     st.set_page_config(page_title="Auto Trader Ops Console", layout="wide")
     st.title("Auto Trader Operations Dashboard")
@@ -545,6 +632,7 @@ def main() -> None:
     _render_controls()
     _render_multi_symbol_panel()
     _render_runtime_metrics_panel()
+    _render_drift_panel()
 
     st.subheader("Dashboard")
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -560,6 +648,10 @@ def main() -> None:
     c3.metric("Exposure", _latest_value(risk_df, "portfolio_exposure_pct", "-"))
     c4.metric("MaxDD", dd)
     c5.metric("API", "CONNECTED")
+    st.caption(
+        f"vol_weighted_exposure_pct={_latest_value(risk_df, 'vol_weighted_exposure_pct', '-')}, "
+        f"size_scale={_latest_value(risk_df, 'size_scale', '-')}"
+    )
 
     st.subheader("Stale Monitor")
     if not risk_df.empty and "timestamp" in risk_df.columns:

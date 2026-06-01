@@ -19,6 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output-dir", default="data/signals")
     p.add_argument("--risk-path", default=None)
     p.add_argument("--pnl-path", default=None)
+    p.add_argument("--drift-report-path", default=None)
     p.add_argument("--range-rsi-min", type=float, default=40.0)
     p.add_argument("--range-rsi-max", type=float, default=50.0)
     p.add_argument("--range-wick-ratio-min", type=float, default=0.5)
@@ -49,6 +50,7 @@ def main() -> int:
             timeframe=args.timeframe,
             output_dir=Path(args.output_dir),
             risk_path=Path(args.risk_path) if args.risk_path else None,
+            drift_report_path=Path(args.drift_report_path) if args.drift_report_path else None,
             config=RangeStrategyConfig(
                 rsi_min=args.range_rsi_min,
                 rsi_max=args.range_rsi_max,
@@ -74,6 +76,7 @@ def main() -> int:
             output_dir=Path(args.output_dir),
             risk_path=Path(args.risk_path) if args.risk_path else None,
             pnl_path=Path(args.pnl_path) if args.pnl_path else None,
+            drift_report_path=Path(args.drift_report_path) if args.drift_report_path else None,
             config=TrendStrategyConfig(
                 min_entry_score=args.trend_min_entry_score,
                 reentry_cooldown_bars=args.trend_reentry_cooldown_bars,

@@ -27,6 +27,7 @@ def test_drift_cli_creates_baseline_then_warn(tmp_path: Path, monkeypatch: Monke
     _feature_df().to_parquet(features_path, index=False)
     baseline_path = tmp_path / "baseline.json"
     report_path = tmp_path / "report.json"
+    online_stats_path = tmp_path / "online_stats.json"
 
     monkeypatch.setattr(
         "sys.argv",
@@ -38,11 +39,14 @@ def test_drift_cli_creates_baseline_then_warn(tmp_path: Path, monkeypatch: Monke
             str(baseline_path),
             "--report-path",
             str(report_path),
+            "--online-stats-path",
+            str(online_stats_path),
         ],
     )
     rc = main()
     assert rc == 0
     assert baseline_path.exists()
+    assert online_stats_path.exists()
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["baseline_created"] is True
     assert report["status"] == "warn"

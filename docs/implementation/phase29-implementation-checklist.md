@@ -11,16 +11,16 @@
   - 初期値: `data/validation/chaos/` 配下へ jsonl + summary を保存
 
 ## 実装項目
-- [ ] partial fill 異常シナリオを追加
-- [ ] silent websocket stale シナリオを追加
-- [ ] stale検知レイテンシ計測を追加
-- [ ] 緊急停止までのイベント証跡を追加
-- [ ] chaosテスト実行スクリプトを追加
-- [ ] テストを追加
+- [x] partial fill 異常シナリオを追加
+- [x] silent websocket stale シナリオを追加
+- [x] stale検知レイテンシ計測を追加
+- [x] 緊急停止までのイベント証跡を追加
+- [x] chaosテスト実行スクリプトを追加
+- [x] テストを追加
 
 ## Done定義
-- [ ] partial fill の状態整合テストが通る
-- [ ] silent stale で検知->停止が再現する
-- [ ] stale検知->停止のレイテンシが閾値内で評価できる
-- [ ] 失敗時に原因特定可能な証跡を残せる
-- [ ] spec-review を作成済み
+- [x] partial fill の状態整合テストが通る
+- [x] silent stale で検知->停止が再現する
+- [x] stale検知->停止のレイテンシが閾値内で評価できる
+- [x] 失敗時に原因特定可能な証跡を残せる
+- [x] spec-review を作成済み

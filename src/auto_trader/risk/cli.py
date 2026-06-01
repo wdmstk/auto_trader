@@ -16,6 +16,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-portfolio-exposure-pct", type=float, default=70.0)
     p.add_argument("--max-concentration-score", type=float, default=0.6)
     p.add_argument("--max-correlated-exposure-pct", type=float, default=50.0)
+    p.add_argument("--soft-vol-weighted-exposure-pct", type=float, default=45.0)
+    p.add_argument("--max-vol-weighted-exposure-pct", type=float, default=60.0)
+    p.add_argument("--max-risk-contribution-pct", type=float, default=55.0)
+    p.add_argument("--min-size-scale", type=float, default=0.25)
+    p.add_argument("--fallback-size-scale-missing-vol", type=float, default=0.5)
+    p.add_argument("--max-missing-vol-ratio", type=float, default=0.2)
     p.add_argument("--emergency-stop", action="store_true")
     return p
 
@@ -28,6 +34,12 @@ def main() -> int:
         max_portfolio_exposure_pct=args.max_portfolio_exposure_pct,
         max_concentration_score=args.max_concentration_score,
         max_correlated_exposure_pct=args.max_correlated_exposure_pct,
+        soft_vol_weighted_exposure_pct=args.soft_vol_weighted_exposure_pct,
+        max_vol_weighted_exposure_pct=args.max_vol_weighted_exposure_pct,
+        max_risk_contribution_pct=args.max_risk_contribution_pct,
+        min_size_scale=args.min_size_scale,
+        fallback_size_scale_missing_vol=args.fallback_size_scale_missing_vol,
+        max_missing_vol_ratio=args.max_missing_vol_ratio,
     )
     out = run_risk_pipeline(
         input_path=Path(args.input_path),

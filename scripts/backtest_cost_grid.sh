@@ -14,6 +14,7 @@ FEE_RATES="${FEE_RATES:-0.0002,0.0004}"
 SLIPPAGE_RATES="${SLIPPAGE_RATES:-0.0002,0.0005}"
 SPREAD_RATES="${SPREAD_RATES:-0.0001,0.0003}"
 DELAY_BARS_LIST="${DELAY_BARS_LIST:-0,1}"
+ORDER_MODES="${ORDER_MODES:-market}"
 OUT_DIR="${OUT_DIR:-data/validation/cost_grid}"
 OUT_SUMMARY="${OUT_SUMMARY:-$OUT_DIR/cost_grid_summary.jsonl}"
 PARALLEL_JOBS="${PARALLEL_JOBS:-auto}"
@@ -43,17 +44,18 @@ mkdir -p "$TMP_DIR"
 
 echo "== backtest cost grid =="
 echo "symbols=$SYMBOLS timeframes=$TIMEFRAMES strategies=$STRATEGIES"
-echo "fee=$FEE_RATES slip=$SLIPPAGE_RATES spread=$SPREAD_RATES delay=$DELAY_BARS_LIST"
+echo "order_modes=$ORDER_MODES fee=$FEE_RATES slip=$SLIPPAGE_RATES spread=$SPREAD_RATES delay=$DELAY_BARS_LIST"
 echo "parallel_jobs=$PARALLEL_JOBS"
 
 run_case() {
-  local fee="$1"
-  local slip="$2"
-  local spread="$3"
-  local delay="$4"
-  local summary_path="$OUT_DIR/timeframe_comparison_fee${fee}_slip${slip}_spr${spread}_d${delay}.json"
-  local row_path="$TMP_DIR/row_fee${fee}_slip${slip}_spr${spread}_d${delay}.json"
-  local case_root="$TMP_DIR/data_case_fee${fee}_slip${slip}_spr${spread}_d${delay}"
+  local mode="$1"
+  local fee="$2"
+  local slip="$3"
+  local spread="$4"
+  local delay="$5"
+  local summary_path="$OUT_DIR/timeframe_comparison_${mode}_fee${fee}_slip${slip}_spr${spread}_d${delay}.json"
+  local row_path="$TMP_DIR/row_${mode}_fee${fee}_slip${slip}_spr${spread}_d${delay}.json"
+  local case_root="$TMP_DIR/data_case_${mode}_fee${fee}_slip${slip}_spr${spread}_d${delay}"
 
   mkdir -p "$case_root/parquet"
   for symbol in ${SYMBOLS//,/ }; do
@@ -64,6 +66,7 @@ run_case() {
   SLIPPAGE_RATE="$slip" \
   SPREAD_RATE="$spread" \
   DELAY_BARS="$delay" \
+  ORDER_MODE="$mode" \
   DATA_ROOT="$case_root" \
   SYMBOLS="$SYMBOLS" \
   TIMEFRAMES="$TIMEFRAMES" \
@@ -74,18 +77,19 @@ run_case() {
   SUMMARY_PATH="$summary_path" \
   ./scripts/timeframe_comparison.sh >/dev/null
 
-  "$PYTHON_BIN" - "$summary_path" "$fee" "$slip" "$spread" "$delay" "$row_path" <<'PY'
+  "$PYTHON_BIN" - "$summary_path" "$mode" "$fee" "$slip" "$spread" "$delay" "$row_path" <<'PY'
 import json
 import statistics as s
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
-fee = float(sys.argv[2])
-slip = float(sys.argv[3])
-spr = float(sys.argv[4])
-delay = int(sys.argv[5])
-row_path = Path(sys.argv[6])
+mode = str(sys.argv[2])
+fee = float(sys.argv[3])
+slip = float(sys.argv[4])
+spr = float(sys.argv[5])
+delay = int(sys.argv[6])
+row_path = Path(sys.argv[7])
 obj = json.loads(path.read_text())
 rows = obj["rows"]
 
@@ -94,6 +98,7 @@ def mean_of(strategy: str, timeframe: str, key: str) -> float:
     return float(s.mean(vals)) if vals else 0.0
 
 result = {
+    "order_mode": mode,
     "fee_rate": fee,
     "slippage_rate": slip,
     "spread_rate": spr,
@@ -112,16 +117,18 @@ PY
 }
 
 running=0
-for fee in ${FEE_RATES//,/ }; do
-  for slip in ${SLIPPAGE_RATES//,/ }; do
-    for spread in ${SPREAD_RATES//,/ }; do
-      for delay in ${DELAY_BARS_LIST//,/ }; do
-        run_case "$fee" "$slip" "$spread" "$delay" &
-        running=$((running + 1))
-        if [[ "$running" -ge "$PARALLEL_JOBS" ]]; then
-          wait -n
-          running=$((running - 1))
-        fi
+for mode in ${ORDER_MODES//,/ }; do
+  for fee in ${FEE_RATES//,/ }; do
+    for slip in ${SLIPPAGE_RATES//,/ }; do
+      for spread in ${SPREAD_RATES//,/ }; do
+        for delay in ${DELAY_BARS_LIST//,/ }; do
+          run_case "$mode" "$fee" "$slip" "$spread" "$delay" &
+          running=$((running + 1))
+          if [[ "$running" -ge "$PARALLEL_JOBS" ]]; then
+            wait -n
+            running=$((running - 1))
+          fi
+        done
       done
     done
   done

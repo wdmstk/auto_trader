@@ -11,17 +11,17 @@
   - 初期値: 欠損比率 `<0.20` は `size_scale=0.5`、`>=0.20` は新規建て禁止
 
 ## 実装項目
-- [ ] risk入力へ volatility 指標導線を追加
-- [ ] risk contribution 算出ロジックを追加
-- [ ] vol weighted exposure 判定を追加
-- [ ] block reason `RISK_VOL_WEIGHTED_EXPOSURE` を追加
-- [ ] size_scale 導線を追加
-- [ ] GUI/レポート表示を追加
-- [ ] テストを追加
+- [x] risk入力へ volatility 指標導線を追加
+- [x] risk contribution 算出ロジックを追加
+- [x] vol weighted exposure 判定を追加
+- [x] block reason `RISK_VOL_WEIGHTED_EXPOSURE` を追加
+- [x] size_scale 導線を追加
+- [x] GUI/レポート表示を追加
+- [x] テストを追加
 
 ## Done定義
-- [ ] 急騰銘柄でリスク寄与が増加することを再現できる
-- [ ] 閾値超過時に block または縮小が機能する
-- [ ] 既存相関ゲートと矛盾しない
-- [ ] 指標計算の再現性（window/頻度）が担保される
-- [ ] spec-review を作成済み
+- [x] 急騰銘柄でリスク寄与が増加することを再現できる
+- [x] 閾値超過時に block または縮小が機能する
+- [x] 既存相関ゲートと矛盾しない
+- [x] 指標計算の再現性（window/頻度）が担保される
+- [x] spec-review を作成済み

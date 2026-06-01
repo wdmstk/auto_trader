@@ -20,6 +20,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--slippage-rate", type=float, default=0.0005)
     p.add_argument("--spread-rate", type=float, default=0.0003)
     p.add_argument("--delay-bars", type=int, default=1)
+    p.add_argument("--order-mode", choices=["market", "limit"], default="market")
+    p.add_argument("--maker-fee-rate", type=float, default=0.0)
+    p.add_argument("--taker-fee-rate", type=float, default=0.0)
+    p.add_argument("--limit-offset-rate", type=float, default=0.0)
+    p.add_argument("--limit-partial-fill-ratio", type=float, default=0.1)
     return p
 
 
@@ -38,6 +43,11 @@ def main() -> int:
             slippage_rate=args.slippage_rate,
             spread_rate=args.spread_rate,
             delay_bars=args.delay_bars,
+            order_mode=args.order_mode,
+            maker_fee_rate=args.maker_fee_rate,
+            taker_fee_rate=args.taker_fee_rate,
+            limit_offset_rate=args.limit_offset_rate,
+            limit_partial_fill_ratio=args.limit_partial_fill_ratio,
         ),
     )
     print(json.dumps(out, ensure_ascii=True))

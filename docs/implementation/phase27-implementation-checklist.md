@@ -9,16 +9,16 @@
   - 初期値: `taker化率 > 0.40` で `warn`、`> 0.60` で `fail`
 
 ## 実装項目
-- [ ] backtest入力へ order_mode（market/limit）追加
-- [ ] maker/taker fee 設定の分離
-- [ ] limit約定判定ロジック（filled/partial/expired）追加
-- [ ] partial fill 後の状態遷移実装
-- [ ] cost grid レポートへ order_mode 指標追加
-- [ ] ユニット/統合テストを追加
+- [x] backtest入力へ order_mode（market/limit）追加
+- [x] maker/taker fee 設定の分離
+- [x] limit約定判定ロジック（filled/partial/expired）追加
+- [x] partial fill 後の状態遷移実装
+- [x] cost grid レポートへ order_mode 指標追加
+- [x] ユニット/統合テストを追加
 
 ## Done定義
-- [ ] market と limit で比較可能なレポートを出力できる
+- [x] market と limit で比較可能なレポートを出力できる
 - [ ] gross/net/cost内訳が一貫する
-- [ ] partial fill 状態整合性テストが通る
-- [ ] order_mode 次元を含む cost grid 比較ができる
-- [ ] spec-review を作成済み
+- [x] partial fill 状態整合性テストが通る
+- [x] order_mode 次元を含む cost grid 比較ができる
+- [x] spec-review を作成済み

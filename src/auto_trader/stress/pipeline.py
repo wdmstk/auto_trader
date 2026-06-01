@@ -13,6 +13,8 @@ SCENARIOS = [
     "low_liquidity",
     "spread_widening",
     "api_timeout",
+    "partial_fill_10pct_cancel",
+    "silent_ws_stale",
 ]
 
 
@@ -62,6 +64,34 @@ def run_stress_tests(
                 **metrics,
                 "failure_count": failures,
                 "trade_count": len(trades),
+                "stale_latency_max_sec": float(
+                    pd.to_numeric(
+                        s_signals.get("stale_latency_sec", pd.Series([0.0], dtype=float)),
+                        errors="coerce",
+                    )
+                    .fillna(0.0)
+                    .max()
+                ),
+                "stale_detect_to_stop_latency_sec": float(
+                    pd.to_numeric(
+                        s_signals.get(
+                            "stale_detect_to_stop_latency_sec",
+                            pd.Series([0.0], dtype=float),
+                        ),
+                        errors="coerce",
+                    )
+                    .fillna(0.0)
+                    .max()
+                ),
+                "emergency_stop_triggered": bool(
+                    pd.to_numeric(
+                        s_signals.get("emergency_stop", pd.Series([False])),
+                        errors="coerce",
+                    )
+                    .fillna(0.0)
+                    .astype(bool)
+                    .any()
+                ),
             }
         )
         compare_rows.extend(
