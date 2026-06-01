@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import pandas as pd
 
-from auto_trader.strategy.trend_strategy import generate_trend_signals
+from auto_trader.strategy.trend_strategy import TrendStrategyConfig, generate_trend_signals
 
 
 def _build_inputs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -70,7 +71,8 @@ def test_high_vol_blocks_add_and_entry() -> None:
     for idx in [6, 7]:
         assert bool(out.loc[idx, "entry_signal"]) is False
         assert bool(out.loc[idx, "add_signal"]) is False
-        assert "TR_BLOCK_HIGH_VOL" in out.loc[idx, "signal_reason_codes"]
+        codes = cast(list[str], out.loc[idx, "signal_reason_codes"])
+        assert "TR_BLOCK_HIGH_VOL" in codes
 
 
 def test_reason_codes_exist() -> None:
@@ -79,3 +81,35 @@ def test_reason_codes_exist() -> None:
     for codes in out["signal_reason_codes"]:
         assert isinstance(codes, list)
         assert len(codes) > 0
+
+
+def test_trend_reentry_cooldown_blocks_following_bar() -> None:
+    f, r, k, p = _build_inputs()
+    out = generate_trend_signals(
+        features_df=f,
+        regime_df=r,
+        risk_df=k,
+        pnl_df=p,
+        config=TrendStrategyConfig(reentry_cooldown_bars=1),
+    )
+    assert bool(out.loc[0, "entry_signal"]) is True
+    codes = cast(list[str], out.loc[1, "signal_reason_codes"])
+    assert "TR_BLOCK_REENTRY_COOLDOWN" in codes
+
+
+def test_trend_enabled_symbols_blocks_non_target() -> None:
+    f, r, k, p = _build_inputs()
+    f["symbol"] = "ETHUSDT"
+    r["symbol"] = "ETHUSDT"
+    k["symbol"] = "ETHUSDT"
+    p["symbol"] = "ETHUSDT"
+    out = generate_trend_signals(
+        features_df=f,
+        regime_df=r,
+        risk_df=k,
+        pnl_df=p,
+        config=TrendStrategyConfig(enabled_symbols=("BTCUSDT",)),
+    )
+    assert bool(out["entry_signal"].any()) is False
+    codes = cast(list[str], out.loc[0, "signal_reason_codes"])
+    assert "TR_BLOCK_SYMBOL_DISABLED" in codes

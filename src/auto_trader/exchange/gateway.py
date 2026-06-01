@@ -98,6 +98,7 @@ class OrderGateway:
         sent_at: datetime | None = None
         ack_at: datetime | None = None
         last_error = ErrorCode.UNKNOWN_ERROR
+        last_reason = ""
         order_id = ""
 
         for attempt in range(self.config.max_retries + 1):
@@ -107,6 +108,7 @@ class OrderGateway:
             ok, remote_order_id, reason = self.transport.send_order(req)
             err = _classify_reason(reason)
             last_error = err
+            last_reason = reason
             self._pending_orders[req.client_order_id] = {
                 "symbol": req.symbol,
                 "side": req.side,
@@ -138,6 +140,8 @@ class OrderGateway:
                     max_wait=self.config.max_backoff_sec,
                 )
                 self._sleep(wait_sec)
+                continue
+            break
         self._pending_orders[req.client_order_id] = {
             "symbol": req.symbol,
             "side": req.side,
@@ -151,7 +155,9 @@ class OrderGateway:
             req=req,
             order_id=order_id,
             status="rejected",
-            reason=f"retry_exhausted:{last_error.value}",
+            reason=f"retry_exhausted:{last_error.value}"
+            if _retryable(last_error)
+            else (last_reason or last_error.value),
             requested_at=requested_at,
             sent_at=sent_at,
         )
@@ -233,7 +239,7 @@ def _classify_reason(reason: str) -> ErrorCode:
         return ErrorCode.TIMEOUT
     if "network" in r:
         return ErrorCode.NETWORK_ERROR
-    if "5xx" in r or "server_error" in r:
+    if "5xx" in r or "server_error" in r or "http_error:5" in r:
         return ErrorCode.SERVER_ERROR
     if r.startswith("accepted"):
         return ErrorCode.UNKNOWN_ERROR

@@ -7,6 +7,7 @@ from typing import Any, Literal, cast
 import pandas as pd
 
 Side = Literal["buy", "sell"]
+OrderMode = Literal["market", "limit"]
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,11 @@ class BacktestConfig:
     spread_rate: float = 0.0003
     execution_delay_bars: int = 1
     unit_size: float = 1.0
+    order_mode: OrderMode = "market"
+    maker_fee_rate: float = 0.0
+    taker_fee_rate: float = 0.0
+    limit_offset_rate: float = 0.0
+    limit_partial_fill_ratio: float = 0.1
 
 
 def run_backtest(
@@ -68,42 +74,210 @@ def run_backtest(
         blocked = (str(row.regime) == "HIGH_VOL") or (not bool(row.pass_filter))
 
         if bool(row.entry_signal) and not blocked and position_qty == 0.0:
-            px = _apply_costed_price(exec_price_base, "buy", cfg)
-            fee = px * cfg.unit_size * cfg.fee_rate
-            cash -= (px * cfg.unit_size) + fee
-            position_qty = cfg.unit_size
-            entry_price = px
-            trades.append(
-                _trade_row(
-                    ts=ts,
-                    side="buy",
-                    price=px,
-                    size=cfg.unit_size,
-                    fee=fee,
-                    slippage=cfg.slippage_rate,
-                    spread=cfg.spread_rate,
-                    status="filled",
+            if cfg.order_mode == "market":
+                px = _apply_market_price(exec_price_base, "buy", cfg)
+                fee = px * cfg.unit_size * _taker_fee_rate(cfg)
+                cash -= (px * cfg.unit_size) + fee
+                position_qty = cfg.unit_size
+                entry_price = px
+                trades.append(
+                    _trade_row(
+                        ts=ts,
+                        side="buy",
+                        price=px,
+                        size=cfg.unit_size,
+                        fee=fee,
+                        slippage=cfg.slippage_rate,
+                        spread=cfg.spread_rate,
+                        status="filled",
+                        order_mode=cfg.order_mode,
+                    )
                 )
-            )
+            else:
+                touched, dwell = _limit_fill_state(
+                    side="buy",
+                    limit_price=exec_price_base * (1.0 - cfg.limit_offset_rate),
+                    cur_high=float(delayed_row["high"]),
+                    cur_low=float(delayed_row["low"]),
+                    next_high=float(merged.iloc[delayed_idx + 1]["high"])
+                    if delayed_idx + 1 < len(merged)
+                    else None,
+                    next_low=float(merged.iloc[delayed_idx + 1]["low"])
+                    if delayed_idx + 1 < len(merged)
+                    else None,
+                )
+                limit_px = exec_price_base * (1.0 - cfg.limit_offset_rate)
+                if dwell:
+                    fee = limit_px * cfg.unit_size * _maker_fee_rate(cfg)
+                    cash -= (limit_px * cfg.unit_size) + fee
+                    position_qty = cfg.unit_size
+                    entry_price = limit_px
+                    trades.append(
+                        _trade_row(
+                            ts=ts,
+                            side="buy",
+                            price=limit_px,
+                            size=cfg.unit_size,
+                            fee=fee,
+                            slippage=0.0,
+                            spread=0.0,
+                            status="filled",
+                            order_mode=cfg.order_mode,
+                        )
+                    )
+                elif touched:
+                    partial_qty = max(
+                        0.0, min(cfg.unit_size, cfg.unit_size * cfg.limit_partial_fill_ratio)
+                    )
+                    if partial_qty > 0:
+                        fee = limit_px * partial_qty * _maker_fee_rate(cfg)
+                        cash -= (limit_px * partial_qty) + fee
+                        position_qty = partial_qty
+                        entry_price = limit_px
+                        trades.append(
+                            _trade_row(
+                                ts=ts,
+                                side="buy",
+                                price=limit_px,
+                                size=partial_qty,
+                                fee=fee,
+                                slippage=0.0,
+                                spread=0.0,
+                                status="partial",
+                                order_mode=cfg.order_mode,
+                            )
+                        )
+                    rem = max(0.0, cfg.unit_size - partial_qty)
+                    if rem > 0:
+                        trades.append(
+                            _trade_row(
+                                ts=ts,
+                                side="buy",
+                                price=limit_px,
+                                size=rem,
+                                fee=0.0,
+                                slippage=0.0,
+                                spread=0.0,
+                                status="canceled",
+                                order_mode=cfg.order_mode,
+                            )
+                        )
+                else:
+                    trades.append(
+                        _trade_row(
+                            ts=ts,
+                            side="buy",
+                            price=limit_px,
+                            size=cfg.unit_size,
+                            fee=0.0,
+                            slippage=0.0,
+                            spread=0.0,
+                            status="expired",
+                            order_mode=cfg.order_mode,
+                        )
+                    )
 
         if bool(row.exit_signal) and position_qty > 0.0:
-            px = _apply_costed_price(exec_price_base, "sell", cfg)
-            fee = px * position_qty * cfg.fee_rate
-            cash += (px * position_qty) - fee
-            trades.append(
-                _trade_row(
-                    ts=ts,
-                    side="sell",
-                    price=px,
-                    size=position_qty,
-                    fee=fee,
-                    slippage=cfg.slippage_rate,
-                    spread=cfg.spread_rate,
-                    status="filled",
+            if cfg.order_mode == "market":
+                px = _apply_market_price(exec_price_base, "sell", cfg)
+                fee = px * position_qty * _taker_fee_rate(cfg)
+                cash += (px * position_qty) - fee
+                trades.append(
+                    _trade_row(
+                        ts=ts,
+                        side="sell",
+                        price=px,
+                        size=position_qty,
+                        fee=fee,
+                        slippage=cfg.slippage_rate,
+                        spread=cfg.spread_rate,
+                        status="filled",
+                        order_mode=cfg.order_mode,
+                    )
                 )
-            )
-            position_qty = 0.0
-            entry_price = 0.0
+                position_qty = 0.0
+                entry_price = 0.0
+            else:
+                limit_px = exec_price_base * (1.0 + cfg.limit_offset_rate)
+                touched, dwell = _limit_fill_state(
+                    side="sell",
+                    limit_price=limit_px,
+                    cur_high=float(delayed_row["high"]),
+                    cur_low=float(delayed_row["low"]),
+                    next_high=float(merged.iloc[delayed_idx + 1]["high"])
+                    if delayed_idx + 1 < len(merged)
+                    else None,
+                    next_low=float(merged.iloc[delayed_idx + 1]["low"])
+                    if delayed_idx + 1 < len(merged)
+                    else None,
+                )
+                if dwell:
+                    fee = limit_px * position_qty * _maker_fee_rate(cfg)
+                    cash += (limit_px * position_qty) - fee
+                    trades.append(
+                        _trade_row(
+                            ts=ts,
+                            side="sell",
+                            price=limit_px,
+                            size=position_qty,
+                            fee=fee,
+                            slippage=0.0,
+                            spread=0.0,
+                            status="filled",
+                            order_mode=cfg.order_mode,
+                        )
+                    )
+                    position_qty = 0.0
+                    entry_price = 0.0
+                elif touched:
+                    partial_qty = max(
+                        0.0, min(position_qty, position_qty * cfg.limit_partial_fill_ratio)
+                    )
+                    if partial_qty > 0:
+                        fee = limit_px * partial_qty * _maker_fee_rate(cfg)
+                        cash += (limit_px * partial_qty) - fee
+                        trades.append(
+                            _trade_row(
+                                ts=ts,
+                                side="sell",
+                                price=limit_px,
+                                size=partial_qty,
+                                fee=fee,
+                                slippage=0.0,
+                                spread=0.0,
+                                status="partial",
+                                order_mode=cfg.order_mode,
+                            )
+                        )
+                        position_qty -= partial_qty
+                    if position_qty > 0:
+                        trades.append(
+                            _trade_row(
+                                ts=ts,
+                                side="sell",
+                                price=limit_px,
+                                size=position_qty,
+                                fee=0.0,
+                                slippage=0.0,
+                                spread=0.0,
+                                status="canceled",
+                                order_mode=cfg.order_mode,
+                            )
+                        )
+                else:
+                    trades.append(
+                        _trade_row(
+                            ts=ts,
+                            side="sell",
+                            price=limit_px,
+                            size=position_qty,
+                            fee=0.0,
+                            slippage=0.0,
+                            spread=0.0,
+                            status="expired",
+                            order_mode=cfg.order_mode,
+                        )
+                    )
 
         position_value = position_qty * close
         equity = cash + position_value
@@ -134,12 +308,26 @@ def summarize_metrics(
     initial_cash: float,
 ) -> dict[str, float]:
     if portfolio_df.empty:
-        return {"PF": 0.0, "Expectancy": 0.0, "WinRate": 0.0, "MaxDD": 0.0, "MonthlyPnL": 0.0}
+        return {
+            "PF": 0.0,
+            "Expectancy": 0.0,
+            "ExpectancyBps": 0.0,
+            "WinRate": 0.0,
+            "MaxDD": 0.0,
+            "MonthlyPnL": 0.0,
+            "PeriodPnL": 0.0,
+            "GrossPnLEst": 0.0,
+            "TotalCostEst": 0.0,
+            "FeeCost": 0.0,
+            "ImpactCostEst": 0.0,
+            "ClosedTrades": 0.0,
+        }
 
     closed = _pair_roundtrips(trades_df)
     if closed.empty:
         win_rate = 0.0
         expectancy = 0.0
+        expectancy_bps = 0.0
         pf = 0.0
     else:
         wins = closed[closed["pnl"] > 0.0]
@@ -149,16 +337,55 @@ def summarize_metrics(
         pf = gross_profit / gross_loss if gross_loss > 0 else 0.0
         win_rate = float((closed["pnl"] > 0.0).mean())
         expectancy = float(closed["pnl"].mean())
+        valid_notional = closed[closed["entry_notional"] > 0.0]
+        if valid_notional.empty:
+            expectancy_bps = 0.0
+        else:
+            expectancy_bps = float(
+                (valid_notional["pnl"] / valid_notional["entry_notional"]).mean() * 10_000.0
+            )
 
     max_dd = float(portfolio_df["drawdown"].max())
     final_equity = float(portfolio_df.iloc[-1]["equity"])
-    monthly_pnl = final_equity - initial_cash
+    period_pnl = final_equity - initial_cash
+    fee_cost = (
+        float(trades_df.get("fee", pd.Series(dtype=float)).fillna(0.0).sum())
+        if not trades_df.empty
+        else 0.0
+    )
+    if trades_df.empty:
+        impact_cost = 0.0
+    else:
+        px = trades_df["price"].fillna(0.0).astype(float).abs()
+        sz = trades_df["size"].fillna(0.0).astype(float).abs()
+        slip = (
+            trades_df.get("slippage", pd.Series(0.0, index=trades_df.index))
+            .fillna(0.0)
+            .astype(float)
+            .abs()
+        )
+        sprd = (
+            trades_df.get("spread", pd.Series(0.0, index=trades_df.index))
+            .fillna(0.0)
+            .astype(float)
+            .abs()
+        )
+        impact_cost = float((px * sz * (slip + sprd)).sum())
+    total_cost = fee_cost + impact_cost
+    gross_pnl_est = period_pnl + total_cost
     return {
         "PF": pf,
         "Expectancy": expectancy,
+        "ExpectancyBps": expectancy_bps,
         "WinRate": win_rate,
         "MaxDD": max_dd,
-        "MonthlyPnL": monthly_pnl,
+        "MonthlyPnL": period_pnl,
+        "PeriodPnL": period_pnl,
+        "GrossPnLEst": gross_pnl_est,
+        "TotalCostEst": total_cost,
+        "FeeCost": fee_cost,
+        "ImpactCostEst": impact_cost,
+        "ClosedTrades": float(len(closed)),
     }
 
 
@@ -174,7 +401,7 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _apply_costed_price(price: float, side: Side, cfg: BacktestConfig) -> float:
+def _apply_market_price(price: float, side: Side, cfg: BacktestConfig) -> float:
     direction = 1.0 if side == "buy" else -1.0
     slip = price * cfg.slippage_rate * direction
     spread = price * cfg.spread_rate * direction
@@ -191,6 +418,7 @@ def _trade_row(
     slippage: float,
     spread: float,
     status: str,
+    order_mode: str,
 ) -> dict[str, object]:
     return {
         "timestamp": ts.replace(tzinfo=UTC),
@@ -201,12 +429,39 @@ def _trade_row(
         "slippage": slippage,
         "spread": spread,
         "status": status,
+        "order_mode": order_mode,
     }
+
+
+def _limit_fill_state(
+    *,
+    side: Side,
+    limit_price: float,
+    cur_high: float,
+    cur_low: float,
+    next_high: float | None,
+    next_low: float | None,
+) -> tuple[bool, bool]:
+    touched = cur_low <= limit_price <= cur_high
+    if not touched:
+        return False, False
+    if next_high is None or next_low is None:
+        return True, False
+    dwell = next_low <= limit_price <= next_high
+    return True, dwell
+
+
+def _maker_fee_rate(cfg: BacktestConfig) -> float:
+    return cfg.maker_fee_rate if cfg.maker_fee_rate > 0.0 else cfg.fee_rate
+
+
+def _taker_fee_rate(cfg: BacktestConfig) -> float:
+    return cfg.taker_fee_rate if cfg.taker_fee_rate > 0.0 else cfg.fee_rate
 
 
 def _pair_roundtrips(trades_df: pd.DataFrame) -> pd.DataFrame:
     if trades_df.empty:
-        return pd.DataFrame(columns=["entry_ts", "exit_ts", "pnl"])
+        return pd.DataFrame(columns=["entry_ts", "exit_ts", "pnl", "entry_notional"])
     rows: list[dict[str, object]] = []
     open_trade: dict[str, object] | None = None
     for _, t in trades_df.iterrows():
@@ -225,6 +480,8 @@ def _pair_roundtrips(trades_df: pd.DataFrame) -> pd.DataFrame:
                     "entry_ts": open_trade["timestamp"],
                     "exit_ts": t["timestamp"],
                     "pnl": pnl,
+                    "entry_notional": _to_float(open_trade["price"])
+                    * _to_float(open_trade["size"]),
                 }
             )
             open_trade = None

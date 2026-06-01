@@ -59,6 +59,6 @@ def test_run_stress_tests_outputs_comparison(tmp_path: Path) -> None:
         ml_path=m_path,
     )
     assert "baseline" in set(results["scenario_name"])
-    assert len(results) == 6  # baseline + 5 scenarios
+    assert len(results) == 8  # baseline + 7 scenarios
     assert {"baseline_metric", "stressed_value", "degradation_pct"}.issubset(compare.columns)
     assert (results["failure_count"] >= 0).all()

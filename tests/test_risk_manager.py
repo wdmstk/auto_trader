@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -99,3 +99,64 @@ def test_evaluate_portfolio_risk_frame() -> None:
     out = evaluate_portfolio_risk(manager=RiskManager(RiskConfig(max_dd_pct=15.0)), risk_inputs=df)
     assert len(out) == 2
     assert out.loc[1, "risk_blocked"] is True or bool(out.loc[1, "risk_blocked"]) is True
+
+
+def test_correlated_exposure_blocks() -> None:
+    rm = RiskManager(RiskConfig(max_correlated_exposure_pct=30.0))
+    out = rm.evaluate(
+        timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+        symbol="BTCUSDT",
+        current_equity=10000.0,
+        equity_peak=10000.0,
+        symbol_exposure_pct=5.0,
+        portfolio_exposure_pct=20.0,
+        concentration_score=0.2,
+        correlated_exposure_pct=55.0,
+    )
+    assert bool(out["risk_blocked"]) is True
+    codes = cast(list[str], out["block_reason_codes"])
+    assert "RISK_CORRELATED_EXPOSURE" in codes
+
+
+def test_vol_weighted_exposure_blocks() -> None:
+    rm = RiskManager(RiskConfig(max_vol_weighted_exposure_pct=40.0))
+    out = rm.evaluate(
+        timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+        symbol="BTCUSDT",
+        current_equity=10000.0,
+        equity_peak=10000.0,
+        symbol_exposure_pct=10.0,
+        portfolio_exposure_pct=20.0,
+        concentration_score=0.2,
+        vol_weighted_exposure_pct=55.0,
+        risk_contribution_pct=30.0,
+        missing_vol_ratio=0.0,
+    )
+    assert bool(out["risk_blocked"]) is True
+    codes = cast(list[str], out["block_reason_codes"])
+    assert "RISK_VOL_WEIGHTED_EXPOSURE" in codes
+
+
+def test_vol_weighted_soft_limit_scales_size() -> None:
+    rm = RiskManager(
+        RiskConfig(
+            soft_vol_weighted_exposure_pct=40.0,
+            max_vol_weighted_exposure_pct=80.0,
+            min_size_scale=0.25,
+        )
+    )
+    out = rm.evaluate(
+        timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+        symbol="BTCUSDT",
+        current_equity=10000.0,
+        equity_peak=10000.0,
+        symbol_exposure_pct=10.0,
+        portfolio_exposure_pct=20.0,
+        concentration_score=0.2,
+        vol_weighted_exposure_pct=50.0,
+        risk_contribution_pct=30.0,
+        missing_vol_ratio=0.0,
+    )
+    assert bool(out["risk_blocked"]) is False
+    size_scale = float(cast(Any, out["size_scale"]))
+    assert 0.25 <= size_scale < 1.0

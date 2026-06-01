@@ -12,3 +12,7 @@ data/
 .agents/
 .codex/
 tree.txt
+
+# Local env files
+.env
+.env.*

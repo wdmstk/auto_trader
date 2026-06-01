@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -50,3 +51,48 @@ def test_build_and_save_range_signals(tmp_path: Path) -> None:
     assert len(out) == 20
     assert Path(saved).exists()
     assert "entry_signal" in out.columns
+
+
+def test_range_pipeline_blocks_entries_when_drift_trade_block(tmp_path: Path) -> None:
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    feats: list[dict[str, object]] = []
+    regimes: list[dict[str, object]] = []
+    for i in range(10):
+        ts = base + timedelta(minutes=i)
+        feats.append(
+            {
+                "symbol": "ETHUSDT",
+                "timeframe": "1m",
+                "timestamp": ts,
+                "rsi": 45.0,
+                "wick_ratio": 0.7,
+                "mean_reversion_distance": -0.2,
+                "reversal_candle_flag": 1,
+            }
+        )
+        regimes.append(
+            {
+                "symbol": "ETHUSDT",
+                "timeframe": "1m",
+                "timestamp": ts,
+                "regime": "RANGE",
+                "is_trade_allowed": True,
+                "confidence": 0.8,
+            }
+        )
+    fpath = tmp_path / "features.parquet"
+    rpath = tmp_path / "regime.parquet"
+    dpath = tmp_path / "drift_report.json"
+    pd.DataFrame(feats).to_parquet(fpath, index=False)
+    pd.DataFrame(regimes).to_parquet(rpath, index=False)
+    dpath.write_text(json.dumps({"drift_trade_block": True}), encoding="utf-8")
+
+    out, _ = build_and_save_range_signals(
+        features_path=fpath,
+        regime_path=rpath,
+        symbol="ETHUSDT",
+        timeframe="1m",
+        output_dir=tmp_path / "signals",
+        drift_report_path=dpath,
+    )
+    assert bool(out["entry_signal"].any()) is False

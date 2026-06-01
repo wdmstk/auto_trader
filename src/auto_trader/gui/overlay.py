@@ -17,10 +17,11 @@ def build_overlay_frame(
     risk_df: pd.DataFrame,
     max_rows: int = 500,
 ) -> pd.DataFrame:
-    if ohlcv_df.empty or "timestamp" not in ohlcv_df.columns or "close" not in ohlcv_df.columns:
+    required = {"timestamp", "open", "high", "low", "close"}
+    if ohlcv_df.empty or not required.issubset(ohlcv_df.columns):
         return pd.DataFrame()
 
-    base = ohlcv_df[["timestamp", "close"]].copy()
+    base = ohlcv_df[["timestamp", "open", "high", "low", "close"]].copy()
     base["timestamp"] = pd.to_datetime(base["timestamp"], utc=True)
 
     if not signal_df.empty and "timestamp" in signal_df.columns:

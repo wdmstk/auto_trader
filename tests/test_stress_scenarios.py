@@ -53,3 +53,27 @@ def test_api_timeout_increases_failures() -> None:
     _, out_s, failures = apply_scenario(ohlcv, sig, "api_timeout")
     assert failures > 0
     assert out_s["entry_signal"].sum() < sig["entry_signal"].sum()
+
+
+def test_partial_fill_scenario_keeps_position_consistency_columns() -> None:
+    ohlcv, sig = _sample()
+    _, out_s, failures = apply_scenario(ohlcv, sig, "partial_fill_10pct_cancel")
+    assert failures == 0
+    assert "order_event" in out_s.columns
+    row = out_s[out_s["order_event"] == "partial_then_cancel"].head(1)
+    assert not row.empty
+    filled = float(row["filled_qty_ratio"].iloc[0])
+    canceled = float(row["canceled_qty_ratio"].iloc[0])
+    reflect = float(row["position_reflect_ratio"].iloc[0])
+    assert abs((filled + canceled) - 1.0) < 1e-9
+    assert abs(reflect - filled) < 1e-9
+
+
+def test_silent_ws_stale_triggers_emergency_after_consecutive_fails() -> None:
+    ohlcv, sig = _sample()
+    _, out_s, failures = apply_scenario(ohlcv, sig, "silent_ws_stale")
+    assert failures > 0
+    assert "stale_latency_sec" in out_s.columns
+    assert "stale_level" in out_s.columns
+    assert "emergency_stop" in out_s.columns
+    assert bool(out_s["emergency_stop"].any()) is True
