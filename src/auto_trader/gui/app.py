@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import importlib
 import math
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import streamlit as st
 
 try:
-    import altair as alt
+    alt: Any = importlib.import_module("altair")
 except Exception:  # pragma: no cover - UI fallback
     alt = None
 
