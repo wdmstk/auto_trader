@@ -10,7 +10,16 @@ from auto_trader.gui.overlay import build_overlay_frame
 def test_build_overlay_frame_contains_expected_columns() -> None:
     base = datetime(2026, 1, 1, tzinfo=UTC)
     ohlcv = pd.DataFrame(
-        [{"timestamp": base + timedelta(minutes=i), "close": 100.0 + i} for i in range(3)]
+        [
+            {
+                "timestamp": base + timedelta(minutes=i),
+                "open": 100.0 + i,
+                "high": 101.0 + i,
+                "low": 99.0 + i,
+                "close": 100.0 + i,
+            }
+            for i in range(3)
+        ]
     )
     signals = pd.DataFrame(
         [
