@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from urllib.error import URLError
+from email.message import Message
+from io import BytesIO
+from typing import cast
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs
 from urllib.request import Request
 
 from auto_trader.exchange.models import OrderRequest
@@ -23,22 +27,89 @@ def _order() -> OrderRequest:
 
 
 def test_rest_transport_accepts_valid_response() -> None:
+    seen: dict[str, object] = {}
+
     def sender(_: Request, __: float) -> str:
+        seen["headers"] = dict(_.header_items())
+        body = cast(bytes, _.data or b"").decode("utf-8")
+        seen["body"] = body
         return json.dumps({"orderId": "12345", "status": "NEW"}, ensure_ascii=True)
 
-    t = BinanceRestTransport(RestClientConfig(base_url="https://example.com"), sender=sender)
+    t = BinanceRestTransport(
+        RestClientConfig(
+            base_url="https://example.com",
+            order_path="/api/v3/order",
+            api_key="k",
+            api_secret="s",
+        ),
+        sender=sender,
+    )
     ok, order_id, reason = t.send_order(_order())
     assert ok is True
     assert order_id == "12345"
     assert reason.startswith("accepted:")
+    headers = seen["headers"]
+    assert isinstance(headers, dict)
+    assert headers.get("X-mbx-apikey") == "k"
+    params = parse_qs(str(seen["body"]))
+    assert "signature" in params
+    assert params["symbol"] == ["BTCUSDT"]
+    assert params["newClientOrderId"] == ["cid_001"]
+
+
+def test_rest_transport_uses_configured_order_path() -> None:
+    seen: dict[str, object] = {}
+
+    def sender(req: Request, __: float) -> str:
+        seen["url"] = req.full_url
+        return json.dumps({"orderId": "12345", "status": "NEW"}, ensure_ascii=True)
+
+    t = BinanceRestTransport(
+        RestClientConfig(
+            base_url="https://example.com",
+            order_path="/fapi/v1/order",
+            api_key="k",
+            api_secret="s",
+        ),
+        sender=sender,
+    )
+    ok, _, _ = t.send_order(_order())
+    assert ok is True
+    assert seen["url"] == "https://example.com/fapi/v1/order"
 
 
 def test_rest_transport_handles_network_error() -> None:
     def sender(_: Request, __: float) -> str:
         raise URLError("down")
 
-    t = BinanceRestTransport(sender=sender)
+    t = BinanceRestTransport(RestClientConfig(api_key="k", api_secret="s"), sender=sender)
     ok, order_id, reason = t.send_order(_order())
     assert ok is False
     assert order_id == ""
     assert reason == "network_error"
+
+
+def test_rest_transport_handles_missing_credentials() -> None:
+    t = BinanceRestTransport(RestClientConfig(api_key="", api_secret=""))
+    ok, order_id, reason = t.send_order(_order())
+    assert ok is False
+    assert order_id == ""
+    assert reason == "credentials_missing"
+
+
+def test_rest_transport_surfaces_http_error_detail() -> None:
+    def sender(req: Request, _: float) -> str:
+        raise HTTPError(
+            url=req.full_url,
+            code=400,
+            msg="Bad Request",
+            hdrs=Message(),
+            fp=BytesIO(b'{"code":-2015,"msg":"Invalid API-key, IP, or permissions for action."}'),
+        )
+
+    t = BinanceRestTransport(RestClientConfig(api_key="k", api_secret="s"), sender=sender)
+    ok, order_id, reason = t.send_order(_order())
+    assert ok is False
+    assert order_id == ""
+    assert reason.startswith("http_error:400")
+    assert "code=-2015" in reason
