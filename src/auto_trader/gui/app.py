@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# mypy: disable-error-code=misc
 import importlib
 import math
 from datetime import UTC, datetime
@@ -22,7 +23,7 @@ CONTROL_LOG = DATA_DIR / "gui" / "control_events.jsonl"
 DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT"]
 
 
-@st.cache_data(ttl=10, show_spinner=False)  # type: ignore[misc]
+@st.cache_data(ttl=10, show_spinner=False)
 def _read_optional_cached(path_str: str) -> pd.DataFrame:
     path = Path(path_str)
     if not path.exists():
