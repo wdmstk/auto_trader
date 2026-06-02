@@ -42,7 +42,25 @@ record_result() {
   local order_out="$3"
   local ts
   ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  printf '%s\n' "{\"checked_at\":\"$ts\",\"scenario\":\"$scenario\",\"runtime\":\"$runtime_out\",\"order\":\"$order_out\"}" >> "$RESULT_PATH"
+  python - "$RESULT_PATH" "$ts" "$scenario" "$runtime_out" "$order_out" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+checked_at = sys.argv[2]
+scenario = sys.argv[3]
+runtime_out = sys.argv[4]
+order_out = sys.argv[5]
+row = {
+    "checked_at": checked_at,
+    "scenario": scenario,
+    "runtime": runtime_out,
+    "order": order_out,
+}
+with path.open("a", encoding="utf-8") as f:
+    f.write(json.dumps(row, ensure_ascii=True) + "\n")
+PY
 }
 
 echo "Running futures runtime gate check..."
