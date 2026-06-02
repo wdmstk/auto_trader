@@ -20,10 +20,13 @@ HttpSender = Callable[[Request, float], str]
 class RestClientConfig:
     base_url: str = "https://api.binance.com"
     order_path: str = "/api/v3/order"
+    time_path: str = "/api/v3/time"
     api_key: str = ""
     api_secret: str = ""
     timeout_sec: float = 5.0
     recv_window_ms: int = 5000
+    timestamp_offset_ms: int = 0
+    sync_server_time: bool = False
 
 
 class BinanceRestTransport:
@@ -34,6 +37,9 @@ class BinanceRestTransport:
     ) -> None:
         self.config = config or RestClientConfig()
         self._sender = sender or _default_sender
+        self._timestamp_offset_ms = self.config.timestamp_offset_ms
+        if self.config.sync_server_time:
+            self._timestamp_offset_ms = _sync_timestamp_offset_ms(self.config, self._sender)
 
     def send_order(self, order: OrderRequest) -> tuple[bool, str, str]:
         if not self.config.api_key or not self.config.api_secret:
@@ -48,7 +54,7 @@ class BinanceRestTransport:
             "type": order_type,
             "quantity": order.qty,
             "newClientOrderId": order.client_order_id,
-            "timestamp": int(time.time() * 1000),
+            "timestamp": int(time.time() * 1000) + self._timestamp_offset_ms,
             "recvWindow": self.config.recv_window_ms,
         }
         if order_type == "LIMIT":
@@ -99,6 +105,21 @@ def _default_sender(req: Request, timeout_sec: float) -> str:
     with urlopen(req, timeout=timeout_sec) as resp:  # noqa: S310
         body = cast(Any, resp.read()).decode("utf-8")
         return str(body)
+
+
+def _sync_timestamp_offset_ms(config: RestClientConfig, sender: HttpSender) -> int:
+    endpoint = config.base_url.rstrip("/") + config.time_path
+    req = Request(endpoint, method="GET")
+    try:
+        raw = sender(req, config.timeout_sec)
+        parsed = json.loads(raw)
+        server_time = int(parsed.get("serverTime", 0))
+        if server_time <= 0:
+            return 0
+        local_time = int(time.time() * 1000)
+        return server_time - local_time
+    except Exception:
+        return 0
 
 
 def _http_error_detail(exc: HTTPError) -> str:

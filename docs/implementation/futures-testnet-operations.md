@@ -38,6 +38,10 @@ python -m auto_trader.exchange \
 期待:
 - `status=ack reason=accepted:NEW order_id=...`
 
+補足:
+- `testnet-futures-live` は送信時にサーバ時刻へ同期するため、`-1021` の時刻ズレは通常は発生しない。
+- `LIMIT` は `--order-type limit --limit-price <price>` を明示する。
+
 ## 4. runtime gate 自動検証
 ```bash
 ./scripts/futures_runtime_gate_check.sh
@@ -65,3 +69,9 @@ python -m auto_trader.exchange \
 - 実行ログと `order_id` を
   - `docs/implementation/longrun-validation-record-2026-06-01.md`
   に追記する。
+
+## 追記（2026-06-02）
+- `market` 疎通確認:
+  - `status=ack reason=accepted:NEW order_id=13820487896`
+- `limit` 疎通確認:
+  - `status=ack reason=accepted:NEW order_id=13820490452`

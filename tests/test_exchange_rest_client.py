@@ -9,6 +9,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs
 from urllib.request import Request
 
+from pytest import MonkeyPatch
+
 from auto_trader.exchange.models import OrderRequest
 from auto_trader.exchange.rest_client import BinanceRestTransport, RestClientConfig
 
@@ -144,6 +146,31 @@ def test_rest_transport_rejects_limit_without_price() -> None:
     assert ok is False
     assert order_id == ""
     assert reason == "invalid_order_request:limit_price_required"
+
+
+def test_rest_transport_applies_timestamp_offset(monkeypatch: MonkeyPatch) -> None:
+    seen: dict[str, object] = {}
+    monkeypatch.setattr("auto_trader.exchange.rest_client.time.time", lambda: 100.0)
+
+    def sender(req: Request, __: float) -> str:
+        body = cast(bytes, req.data or b"").decode("utf-8")
+        seen["body"] = body
+        return json.dumps({"orderId": "12345", "status": "NEW"}, ensure_ascii=True)
+
+    t = BinanceRestTransport(
+        RestClientConfig(
+            base_url="https://example.com",
+            order_path="/api/v3/order",
+            api_key="k",
+            api_secret="s",
+            timestamp_offset_ms=1234,
+        ),
+        sender=sender,
+    )
+    ok, _, _ = t.send_order(_order())
+    assert ok is True
+    params = parse_qs(str(seen["body"]))
+    assert params["timestamp"] == ["101234"]
 
 
 def test_rest_transport_surfaces_http_error_detail() -> None:
