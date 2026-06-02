@@ -75,3 +75,7 @@ python -m auto_trader.exchange \
   - `status=ack reason=accepted:NEW order_id=13820487896`
 - `limit` 疎通確認:
   - `status=ack reason=accepted:NEW order_id=13820490452`
+- 実送信時の補足:
+  - `testnet-futures-live` はサーバ時刻同期を有効化したため、初回の `-1021` は解消済み。
+  - `LIMIT` は `--order-type limit --limit-price <price>` を明示して送信する。
+  - runtime gate は `START` 状態で `accepted:NEW`、`STOP` / `EMERGENCY_STOP` では拒否されることを再確認済み。
