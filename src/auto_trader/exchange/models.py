@@ -36,6 +36,8 @@ class OrderEvent:
     ack_at: datetime | None
     filled_at: datetime | None
     latency_ms: int | None
+    order_type: OrderType = "market"
+    limit_price: float | None = None
 
 
 def now_utc() -> datetime:

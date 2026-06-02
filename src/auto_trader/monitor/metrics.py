@@ -36,6 +36,28 @@ def _latency_p95_ms(order_events_path: Path) -> float:
     return float(pd.Series(rows).quantile(0.95))
 
 
+def _order_type_stats(order_events_path: Path) -> tuple[int, int, int]:
+    if not order_events_path.exists():
+        return 0, 0, 0
+    total = 0
+    limit_count = 0
+    limit_rejected = 0
+    for line in order_events_path.read_text(encoding="utf-8").splitlines():
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        total += 1
+        order_type = str(rec.get("order_type", "market")).lower()
+        if order_type == "limit":
+            limit_count += 1
+            if str(rec.get("status", "")).lower() == "rejected":
+                limit_rejected += 1
+    return total, limit_count, limit_rejected
+
+
 def collect_runtime_metrics(
     *,
     runtime_state_path: str | Path = "data/runtime/control_state.json",
@@ -58,6 +80,16 @@ def collect_runtime_metrics(
             status = str(v.get("status", ""))
             if status in active_statuses:
                 backlog += 1
+    pending_limit_orders = 0
+    if isinstance(pending_orders, dict):
+        active_statuses = {"pending_submit", "retrying", "ack", "partial_filled"}
+        for v in pending_orders.values():
+            if not isinstance(v, dict):
+                continue
+            status = str(v.get("status", ""))
+            order_type = str(v.get("order_type", "market")).lower()
+            if status in active_statuses and order_type == "limit":
+                pending_limit_orders += 1
 
     risk_rows = 0
     risk_block_count = 0
@@ -86,13 +118,19 @@ def collect_runtime_metrics(
             pass
 
     load1, _, _ = os.getloadavg()
-    p95 = _latency_p95_ms(Path(order_events_path))
+    events_path = Path(order_events_path)
+    p95 = _latency_p95_ms(events_path)
+    events_total, limit_total, limit_rejected = _order_type_stats(events_path)
     return {
         "timestamp": datetime.now(UTC).isoformat(),
         "runtime_trading_enabled": trading_enabled,
         "runtime_emergency_stop": emergency_stop,
         "gateway_pending_orders": backlog,
+        "gateway_pending_limit_orders": pending_limit_orders,
         "order_latency_p95_ms": p95,
+        "order_events_total": events_total,
+        "order_events_limit_count": limit_total,
+        "order_events_limit_rejected_count": limit_rejected,
         "risk_rows": risk_rows,
         "risk_block_count": risk_block_count,
         "risk_latest_dd_pct": risk_latest_dd,
