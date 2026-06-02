@@ -23,6 +23,9 @@ class BacktestConfig:
     taker_fee_rate: float = 0.0
     limit_offset_rate: float = 0.0
     limit_partial_fill_ratio: float = 0.1
+    limit_book_depth_units: float = 0.0
+    limit_queue_ahead_units: float = 0.0
+    limit_volume_participation_rate: float = 0.0
 
 
 def run_backtest(
@@ -126,8 +129,10 @@ def run_backtest(
                         )
                     )
                 elif touched:
-                    partial_qty = max(
-                        0.0, min(cfg.unit_size, cfg.unit_size * cfg.limit_partial_fill_ratio)
+                    partial_qty = _limit_partial_qty(
+                        order_qty=cfg.unit_size,
+                        cfg=cfg,
+                        bar_volume=_to_float(delayed_row.get("volume", 0.0)),
                     )
                     if partial_qty > 0:
                         fee = limit_px * partial_qty * _maker_fee_rate(cfg)
@@ -230,8 +235,10 @@ def run_backtest(
                     position_qty = 0.0
                     entry_price = 0.0
                 elif touched:
-                    partial_qty = max(
-                        0.0, min(position_qty, position_qty * cfg.limit_partial_fill_ratio)
+                    partial_qty = _limit_partial_qty(
+                        order_qty=position_qty,
+                        cfg=cfg,
+                        bar_volume=_to_float(delayed_row.get("volume", 0.0)),
                     )
                     if partial_qty > 0:
                         fee = limit_px * partial_qty * _maker_fee_rate(cfg)
@@ -449,6 +456,25 @@ def _limit_fill_state(
         return True, False
     dwell = next_low <= limit_price <= next_high
     return True, dwell
+
+
+def _limit_partial_qty(*, order_qty: float, cfg: BacktestConfig, bar_volume: float) -> float:
+    baseline = max(0.0, min(order_qty, order_qty * cfg.limit_partial_fill_ratio))
+    if (
+        cfg.limit_book_depth_units <= 0.0
+        and cfg.limit_queue_ahead_units <= 0.0
+        and cfg.limit_volume_participation_rate <= 0.0
+    ):
+        return baseline
+
+    depth_cap = cfg.limit_book_depth_units
+    if cfg.limit_volume_participation_rate > 0.0 and bar_volume > 0.0:
+        volume_cap = bar_volume * cfg.limit_volume_participation_rate
+        depth_cap = min(depth_cap, volume_cap) if depth_cap > 0.0 else volume_cap
+    if depth_cap <= 0.0:
+        return 0.0
+    executable = max(0.0, depth_cap - max(0.0, cfg.limit_queue_ahead_units))
+    return max(0.0, min(order_qty, executable))
 
 
 def _maker_fee_rate(cfg: BacktestConfig) -> float:

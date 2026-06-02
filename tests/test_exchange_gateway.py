@@ -81,6 +81,17 @@ def test_retry_then_ack() -> None:
     assert transport.calls == 3
 
 
+def test_limit_request_fields_are_preserved_in_event() -> None:
+    transport = FlakyTransport(0)
+    gw = OrderGateway(transport, GatewayConfig())
+    req = _req()
+    req = OrderRequest(**{**req.__dict__, "order_type": "limit", "limit_price": 64000.0})
+    ev = gw.submit(req)
+    assert ev.status == "ack"
+    assert ev.order_type == "limit"
+    assert ev.limit_price == 64000.0
+
+
 def test_partial_fill_state_update() -> None:
     transport = FlakyTransport(0)
     gw = OrderGateway(transport, GatewayConfig())

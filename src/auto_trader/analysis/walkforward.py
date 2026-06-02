@@ -24,6 +24,9 @@ class WalkforwardConfig:
     taker_fee_rate: float = 0.0
     limit_offset_rate: float = 0.0
     limit_partial_fill_ratio: float = 0.1
+    limit_book_depth_units: float = 0.0
+    limit_queue_ahead_units: float = 0.0
+    limit_volume_participation_rate: float = 0.0
 
 
 def run_walkforward_report(
@@ -89,6 +92,9 @@ def run_walkforward_report(
                 taker_fee_rate=cfg.taker_fee_rate,
                 limit_offset_rate=cfg.limit_offset_rate,
                 limit_partial_fill_ratio=cfg.limit_partial_fill_ratio,
+                limit_book_depth_units=cfg.limit_book_depth_units,
+                limit_queue_ahead_units=cfg.limit_queue_ahead_units,
+                limit_volume_participation_rate=cfg.limit_volume_participation_rate,
             ),
         )
         if not trades.empty:

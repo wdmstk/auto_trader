@@ -82,6 +82,9 @@
     - range/trendの継続最適化（週次再評価）
       - runbook: `docs/implementation/weekly-revalidation-operations.md`
       - command: `./scripts/weekly_strategy_revalidation.sh`
+      - 暫定運用symbol:
+        - `trend(limit)`: `ETHUSDT,XRPUSDT`
+        - `range(market)`: `XRPUSDT`
     - 通知運用投入（運用開始後）
 
 ## 判定

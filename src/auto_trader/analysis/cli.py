@@ -25,6 +25,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--taker-fee-rate", type=float, default=0.0)
     p.add_argument("--limit-offset-rate", type=float, default=0.0)
     p.add_argument("--limit-partial-fill-ratio", type=float, default=0.1)
+    p.add_argument("--limit-book-depth-units", type=float, default=0.0)
+    p.add_argument("--limit-queue-ahead-units", type=float, default=0.0)
+    p.add_argument("--limit-volume-participation-rate", type=float, default=0.0)
     return p
 
 
@@ -48,6 +51,9 @@ def main() -> int:
             taker_fee_rate=args.taker_fee_rate,
             limit_offset_rate=args.limit_offset_rate,
             limit_partial_fill_ratio=args.limit_partial_fill_ratio,
+            limit_book_depth_units=args.limit_book_depth_units,
+            limit_queue_ahead_units=args.limit_queue_ahead_units,
+            limit_volume_participation_rate=args.limit_volume_participation_rate,
         ),
     )
     print(json.dumps(out, ensure_ascii=True))

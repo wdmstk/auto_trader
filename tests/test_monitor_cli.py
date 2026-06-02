@@ -46,9 +46,9 @@ def test_monitor_cli_once(
     order_events.write_text(
         "\n".join(
             [
-                json.dumps({"latency_ms": 10}),
-                json.dumps({"latency_ms": 20}),
-                json.dumps({"latency_ms": 30}),
+                json.dumps({"latency_ms": 10, "order_type": "market", "status": "ack"}),
+                json.dumps({"latency_ms": 20, "order_type": "limit", "status": "ack"}),
+                json.dumps({"latency_ms": 30, "order_type": "limit", "status": "rejected"}),
             ]
         )
         + "\n",
@@ -78,6 +78,10 @@ def test_monitor_cli_once(
     row = json.loads(captured.out.strip())
     assert row["runtime_trading_enabled"] is True
     assert row["gateway_pending_orders"] == 1
+    assert row["gateway_pending_limit_orders"] == 0
+    assert row["order_events_total"] == 3
+    assert row["order_events_limit_count"] == 2
+    assert row["order_events_limit_rejected_count"] == 1
     assert row["risk_block_count"] == 1
     assert out_jsonl.exists()
 
@@ -99,7 +103,7 @@ def test_monitor_cli_backlog_excludes_retry_exhausted(
                 "pending_orders": {
                     "cid-a": {"status": "retry_exhausted"},
                     "cid-b": {"status": "UNKNOWN"},
-                    "cid-c": {"status": "pending_submit"},
+                    "cid-c": {"status": "pending_submit", "order_type": "limit"},
                 }
             }
         ),
@@ -130,3 +134,4 @@ def test_monitor_cli_backlog_excludes_retry_exhausted(
     captured = capsys.readouterr()
     row = json.loads(captured.out.strip())
     assert row["gateway_pending_orders"] == 1
+    assert row["gateway_pending_limit_orders"] == 1

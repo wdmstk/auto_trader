@@ -102,10 +102,10 @@ def test_maxdd_is_computable() -> None:
 def test_limit_mode_emits_order_status_rows() -> None:
     ohlcv, signals, ml = _sample_inputs()
     # Force a touch-only scenario on entry and exit to exercise partial/canceled.
-    ohlcv.loc[2, "high"] = 101.2
-    ohlcv.loc[2, "low"] = 100.8
-    ohlcv.loc[3, "high"] = 101.2
-    ohlcv.loc[3, "low"] = 100.8
+    ohlcv.loc[2, "high"] = 102.2
+    ohlcv.loc[2, "low"] = 101.8
+    ohlcv.loc[3, "high"] = 103.5
+    ohlcv.loc[3, "low"] = 103.2
     trades, _, _ = run_backtest(
         ohlcv_df=ohlcv,
         signals_df=signals,
@@ -149,3 +149,53 @@ def test_fee_split_for_market_and_limit() -> None:
     )
     assert float(market_trades["fee"].sum()) > 0.0
     assert float(limit_trades["fee"].sum()) >= 0.0
+
+
+def test_limit_depth_queue_model_reduces_partial_fill() -> None:
+    ohlcv, signals, ml = _sample_inputs()
+    ohlcv.loc[2, "high"] = 102.2
+    ohlcv.loc[2, "low"] = 101.8
+    ohlcv.loc[3, "high"] = 103.5
+    ohlcv.loc[3, "low"] = 103.2
+    ohlcv.loc[2, "volume"] = 1.0
+
+    trades, _, _ = run_backtest(
+        ohlcv_df=ohlcv,
+        signals_df=signals,
+        ml_df=ml,
+        config=BacktestConfig(
+            execution_delay_bars=1,
+            order_mode="limit",
+            limit_offset_rate=0.0,
+            limit_partial_fill_ratio=0.5,
+            limit_book_depth_units=0.2,
+            limit_queue_ahead_units=0.1,
+            limit_volume_participation_rate=1.0,
+        ),
+    )
+    partials = trades[trades["status"] == "partial"]
+    assert not partials.empty
+    assert float(partials.iloc[0]["size"]) == 0.1
+
+
+def test_limit_depth_queue_model_keeps_legacy_behavior_by_default() -> None:
+    ohlcv, signals, ml = _sample_inputs()
+    ohlcv.loc[2, "high"] = 102.2
+    ohlcv.loc[2, "low"] = 101.8
+    ohlcv.loc[3, "high"] = 103.5
+    ohlcv.loc[3, "low"] = 103.2
+
+    trades, _, _ = run_backtest(
+        ohlcv_df=ohlcv,
+        signals_df=signals,
+        ml_df=ml,
+        config=BacktestConfig(
+            execution_delay_bars=1,
+            order_mode="limit",
+            limit_offset_rate=0.0,
+            limit_partial_fill_ratio=0.2,
+        ),
+    )
+    partials = trades[trades["status"] == "partial"]
+    assert not partials.empty
+    assert float(partials.iloc[0]["size"]) == 0.2

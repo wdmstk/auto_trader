@@ -91,6 +91,8 @@ class OrderGateway:
             "symbol": req.symbol,
             "side": req.side,
             "qty": req.qty,
+            "order_type": req.order_type,
+            "limit_price": req.limit_price,
             "status": "pending_submit",
             "updated_at": requested_at.isoformat(),
         }
@@ -113,6 +115,8 @@ class OrderGateway:
                 "symbol": req.symbol,
                 "side": req.side,
                 "qty": req.qty,
+                "order_type": req.order_type,
+                "limit_price": req.limit_price,
                 "status": "retrying" if not ok else "ack",
                 "last_error": err.value if not ok else "",
                 "updated_at": now_utc().isoformat(),
@@ -146,6 +150,8 @@ class OrderGateway:
             "symbol": req.symbol,
             "side": req.side,
             "qty": req.qty,
+            "order_type": req.order_type,
+            "limit_price": req.limit_price,
             "status": "retry_exhausted",
             "last_error": last_error.value,
             "updated_at": now_utc().isoformat(),
@@ -308,4 +314,6 @@ def _event(
         ack_at=ack_at,
         filled_at=None,
         latency_ms=latency_ms,
+        order_type=req.order_type,
+        limit_price=req.limit_price,
     )
