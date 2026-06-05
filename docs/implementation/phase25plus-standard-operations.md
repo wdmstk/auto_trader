@@ -23,6 +23,7 @@
 
 4. 証跡スクリプト実行
 - 週次再評価: `./scripts/weekly_strategy_revalidation.sh`
+- 週次の `range` / `trend` 推奨モード詳細: `docs/implementation/weekly-revalidation-operations.md`
 - longrun / health: `./scripts/longrun_8h_check.sh` または既存証跡の確認
 
 5. Go-Live checklist同期
@@ -35,6 +36,7 @@
 
 ## 運用ルール
 - longrun / runtime metrics 判定は従来どおり自動判定を主軸とする。
+- runtime control の常駐/定期実行の全体像: `docs/implementation/runtime-control-operations.md`
 - weekly revalidation は補助判定とし、`warn` は即No-Goにしない。
 - `warn` の場合は symbol gating / cost 仮定の再調整タスクを必ず起票する。
 

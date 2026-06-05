@@ -78,6 +78,7 @@
 - 3か月・5銘柄の再評価でも、`15m` は `1m`/`5m` より DD を抑制しつつ PF が最良。
 - `15m` が 5銘柄中4銘柄の最良時間足となり、symbol差を考慮しても優位性が高い。
 - Rangeは閾値調整で成立不足を解消でき、時間足評価の妥当性が向上した。
+- 週次運用の具体的な `range` / `trend` 推奨モードは `docs/implementation/weekly-revalidation-operations.md` を参照する。
 
 ## Decision (Current)
 
@@ -88,6 +89,22 @@
 - Status: `Conditional Go`
   - 時間足方針は `15m(regime) + 5m(signal) + 1m(execution)` を採用候補として確定。
   - Range閾値は運用で再学習/最適化を継続（本評価では `require_reversal=false`, `wick>=0.3` を採用）。
+
+## 銘柄別の推奨モード（2026-06-03）
+
+| 銘柄 | range | trend | 補足 |
+|---|---|---|---|
+| `BTCUSDT` | watchlist | watchlist | 15m では本線採用の根拠が弱い |
+| `ETHUSDT` | 不採用 | `market` 基準 / `limit` 比較可 | market でも十分に良く、limit も検証価値あり |
+| `SOLUSDT` | watchlist | watchlist | 15m では復帰しきれない |
+| `XRPUSDT` | `market` 固定 | `market` 基準 / `limit` 比較可 | range は market が安定、trend は limit も強い |
+| `BNBUSDT` | watchlist | watchlist | 現時点では本線採用の根拠が弱い |
+| `ADAUSDT` | 不採用 | `market` 基準 / `limit` 比較可 | trend の新候補として有望 |
+
+- 運用ルール:
+  - `range` は `XRPUSDT` を `market` 固定で扱う
+  - `trend` は `ETHUSDT / XRPUSDT / ADAUSDT` を中心に `market` を基準とし、`limit` は比較用途で使う
+  - `BTCUSDT / SOLUSDT / BNBUSDT` は即除外ではなく watchlist のまま残す
 
 ## PnL / Expectancy Follow-up (2026-06-01)
 
@@ -136,6 +153,7 @@
 - Robustness note:
   - `delay=1` は `delay=0/2` より総合スコアが安定。
   - `fee` と `spread` が悪化すると `PeriodPnL` は急速に悪化（cost sensitivity 高）。
+  - `queue_ahead / book_depth / participation` の広い探索は週次標準では行わず、`queue_ahead=0.02`, `book_depth=0.0`, `participation=0.0` を固定値として扱う。
 
 ## Signal Gating Trial (2026-06-01)
 

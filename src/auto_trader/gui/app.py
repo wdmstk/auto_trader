@@ -3,6 +3,8 @@ from __future__ import annotations
 # mypy: disable-error-code=misc
 import importlib
 import math
+import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -17,10 +19,30 @@ except Exception:  # pragma: no cover - UI fallback
 
 from auto_trader.gui.overlay import build_overlay_frame
 from auto_trader.gui.state import ControlEvent, append_control_event, emergency_badge, is_stale
+from auto_trader.stateio import atomic_write_json, read_json_with_recovery
+from auto_trader.worker.state import WorkerState
 
 DATA_DIR = Path("data")
 CONTROL_LOG = DATA_DIR / "gui" / "control_events.jsonl"
 DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT"]
+AUTO_REFRESH_SEC = 10.0
+DATA_STALE_WARN_SEC = 30
+DATA_STALE_CRIT_SEC = 120
+DEFAULT_RUNTIME_METRICS_PATH = DATA_DIR / "validation" / "runtime_metrics.jsonl"
+REPO_ROOT = Path(__file__).resolve().parents[3]
+JOB_STATE_PATH = DATA_DIR / "runtime" / "gui_refresh_job.json"
+
+_STREAMLIT_DATAFRAME = st.dataframe
+
+
+def _dataframe(*args: object, **kwargs: object):
+    use_container_width = kwargs.pop("use_container_width", None)
+    if "width" not in kwargs and use_container_width is not None:
+        kwargs["width"] = "stretch" if use_container_width else "content"
+    return _STREAMLIT_DATAFRAME(*args, **kwargs)
+
+
+st.dataframe = _dataframe  # type: ignore[assignment]
 
 
 @st.cache_data(ttl=10, show_spinner=False)
@@ -223,23 +245,53 @@ def _downsample_for_chart(df: pd.DataFrame, max_points: int) -> pd.DataFrame:
     return sampled
 
 
+def _load_symbol_regime(
+    symbol: str,
+    preferred_timeframe: str | None = None,
+    regime_dir: Path = DATA_DIR / "regime",
+) -> tuple[pd.DataFrame, str]:
+    candidates: list[Path] = []
+    if preferred_timeframe:
+        preferred_path = regime_dir / f"{symbol}_{preferred_timeframe}_regime.parquet"
+        if preferred_path.exists():
+            candidates.append(preferred_path)
+    if regime_dir.exists():
+        candidates.extend(
+            path
+            for path in sorted(regime_dir.glob(f"{symbol}_*_regime.parquet"))
+            if path not in candidates
+        )
+    for path in candidates:
+        frame = _read_optional(path)
+        if frame.empty or "regime" not in frame.columns:
+            continue
+        stem = path.stem.removesuffix("_regime")
+        timeframe = preferred_timeframe or "unknown"
+        if "_" in stem:
+            _, timeframe = stem.rsplit("_", 1)
+        return frame, timeframe
+    return pd.DataFrame(), preferred_timeframe or "unknown"
+
+
 def _symbol_snapshot(
     symbol: str,
     risk_df: pd.DataFrame,
     wf_range: dict[str, dict[str, float]],
     wf_trend: dict[str, dict[str, float]],
+    *,
+    preferred_regime_timeframe: str | None = None,
 ) -> dict[str, object]:
-    regime_df = _read_optional(DATA_DIR / "regime" / f"{symbol}_1m_regime.parquet")
+    regime_df, regime_timeframe = _load_symbol_regime(symbol, preferred_regime_timeframe)
     range_df = _read_optional(DATA_DIR / "signals" / f"{symbol}_1m_range_signals.parquet")
     trend_df = _read_optional(DATA_DIR / "signals" / f"{symbol}_1m_trend_signals.parquet")
     ohlcv_df = _read_optional(DATA_DIR / "parquet" / f"{symbol}_1m.parquet")
     latest_regime = _latest_value(regime_df, "regime", default="UNKNOWN")
-    last_close: float | str = "-"
+    last_close: float = float("nan")
     if not ohlcv_df.empty and "close" in ohlcv_df.columns:
         try:
             last_close = float(ohlcv_df.iloc[-1]["close"])
         except Exception:
-            last_close = "-"
+            last_close = float("nan")
     range_entries = 0
     trend_entries = 0
     if not range_df.empty and "entry_signal" in range_df.columns:
@@ -250,11 +302,11 @@ def _symbol_snapshot(
         trend_entries = int(
             pd.to_numeric(trend_df["entry_signal"], errors="coerce").fillna(0).astype(bool).sum()
         )
-    exposure: float | str = "-"
-    dd: float | str = "-"
-    vwe: float | str = "-"
-    rc: float | str = "-"
-    scale: float | str = "-"
+    exposure: float = float("nan")
+    dd: float = float("nan")
+    vwe: float = float("nan")
+    rc: float = float("nan")
+    scale: float = float("nan")
     if not risk_df.empty:
         s = risk_df[risk_df.get("symbol", pd.Series(dtype=str)).astype(str) == symbol]
         if not s.empty:
@@ -282,6 +334,7 @@ def _symbol_snapshot(
     return {
         "symbol": symbol,
         "regime": latest_regime,
+        "regime_timeframe": regime_timeframe,
         "last_close": last_close,
         "range_entries": range_entries,
         "trend_entries": trend_entries,
@@ -291,6 +344,99 @@ def _symbol_snapshot(
         "vol_weighted_exposure_pct": vwe,
         "risk_contribution_pct": rc,
         "size_scale": scale,
+    }
+
+
+def _latest_symbol_price(symbol: str, *, timeframe: str = "1m") -> float | None:
+    price_df = _read_optional(DATA_DIR / "parquet" / f"{symbol}_{timeframe}.parquet")
+    if price_df.empty or "close" not in price_df.columns:
+        return None
+    try:
+        return float(pd.to_numeric(price_df["close"], errors="coerce").dropna().iloc[-1])
+    except Exception:
+        return None
+
+
+def _live_pnl_frame(position_df: pd.DataFrame) -> pd.DataFrame:
+    if position_df.empty:
+        return pd.DataFrame(
+            columns=[
+                "symbol",
+                "side",
+                "qty",
+                "avg_entry",
+                "mark_price",
+                "source_price",
+                "unrealized_pnl",
+                "unrealized_pnl_pct",
+                "position_value",
+            ]
+        )
+    rows: list[dict[str, object]] = []
+    for _, row in position_df.iterrows():
+        symbol = str(row.get("symbol", ""))
+        if not symbol:
+            continue
+        side = str(row.get("side", "buy"))
+        qty = _safe_float(row.get("qty", 0.0))
+        avg_entry = _safe_float(row.get("avg_entry", 0.0))
+        mark_price = _latest_symbol_price(symbol) or avg_entry
+        source_price = "market" if mark_price != avg_entry else "avg_entry"
+        if qty <= 0.0 or avg_entry <= 0.0:
+            unrealized_pnl = 0.0
+            unrealized_pnl_pct = 0.0
+        elif side == "sell":
+            unrealized_pnl = (avg_entry - mark_price) * qty
+            unrealized_pnl_pct = (avg_entry - mark_price) / avg_entry
+        else:
+            unrealized_pnl = (mark_price - avg_entry) * qty
+            unrealized_pnl_pct = (mark_price - avg_entry) / avg_entry
+        rows.append(
+            {
+                "symbol": symbol,
+                "side": side,
+                "qty": qty,
+                "avg_entry": avg_entry,
+                "mark_price": mark_price,
+                "source_price": source_price,
+                "unrealized_pnl": unrealized_pnl,
+                "unrealized_pnl_pct": unrealized_pnl_pct,
+                "position_value": qty * mark_price,
+            }
+        )
+    if not rows:
+        return pd.DataFrame()
+    frame = pd.DataFrame(rows)
+    return frame.sort_values(["symbol", "side"], ascending=[True, True]).reset_index(drop=True)
+
+
+def _live_pnl_summary(position_df: pd.DataFrame) -> dict[str, float]:
+    frame = _live_pnl_frame(position_df)
+    if frame.empty:
+        return {
+            "live_unrealized_pnl": 0.0,
+            "live_unrealized_pnl_pct": 0.0,
+            "position_value": 0.0,
+            "cost_basis": 0.0,
+        }
+    live_unrealized_pnl = float(
+        pd.to_numeric(frame["unrealized_pnl"], errors="coerce").fillna(0.0).sum()
+    )
+    position_value = float(
+        pd.to_numeric(frame["position_value"], errors="coerce").fillna(0.0).sum()
+    )
+    cost_basis = float(
+        (
+            pd.to_numeric(frame["qty"], errors="coerce").fillna(0.0)
+            * pd.to_numeric(frame["avg_entry"], errors="coerce").fillna(0.0)
+        ).sum()
+    )
+    live_unrealized_pnl_pct = (live_unrealized_pnl / cost_basis * 100.0) if cost_basis > 0 else 0.0
+    return {
+        "live_unrealized_pnl": live_unrealized_pnl,
+        "live_unrealized_pnl_pct": live_unrealized_pnl_pct,
+        "position_value": position_value,
+        "cost_basis": cost_basis,
     }
 
 
@@ -609,7 +755,1703 @@ def _render_drift_panel() -> None:
             st.info("No feature-level details")
 
 
-def main() -> None:
+def _fragment(run_every_sec: float):
+    fragment = getattr(st, "fragment", None)
+    if fragment is None:
+
+        def _identity(func):
+            return func
+
+        return _identity
+    return fragment(run_every=run_every_sec)
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    if value is None:
+        return None
+    try:
+        parsed = pd.to_datetime(value, utc=True, errors="coerce")
+    except Exception:
+        return None
+    if pd.isna(parsed):
+        return None
+    return parsed.to_pydatetime()
+
+
+def _age_seconds(value: object, now: datetime | None = None) -> float | None:
+    parsed = _parse_datetime(value)
+    if parsed is None:
+        return None
+    ref = now or datetime.now(UTC)
+    return max((ref - parsed).total_seconds(), 0.0)
+
+
+def _format_age(value: object, now: datetime | None = None) -> str:
+    age = _age_seconds(value, now=now)
+    if age is None:
+        return "unknown"
+    if age < 60:
+        return f"{age:.0f}s"
+    if age < 3600:
+        return f"{age / 60.0:.1f}m"
+    return f"{age / 3600.0:.1f}h"
+
+
+def _freshness_level(
+    value: object,
+    *,
+    now: datetime | None = None,
+    warn_sec: int = DATA_STALE_WARN_SEC,
+    crit_sec: int = DATA_STALE_CRIT_SEC,
+) -> str:
+    age = _age_seconds(value, now=now)
+    if age is None:
+        return "missing"
+    if age >= crit_sec:
+        return "critical"
+    if age >= warn_sec:
+        return "warning"
+    return "ok"
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def _read_jsonl_table(path_str: str, tail_rows: int = 200) -> pd.DataFrame:
+    path = Path(path_str)
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_json(path, lines=True)
+    except Exception:
+        return pd.DataFrame()
+    if tail_rows > 0 and len(df) > tail_rows:
+        return df.tail(tail_rows).copy()
+    return df
+
+
+def _load_runtime_state(
+    path: Path = DATA_DIR / "runtime" / "control_state.json",
+) -> dict[str, object]:
+    payload = read_json_with_recovery(path)
+    return {
+        "trading_enabled": bool(payload.get("trading_enabled", False)),
+        "emergency_stop": bool(payload.get("emergency_stop", False)),
+        "close_all_requested": bool(payload.get("close_all_requested", False)),
+        "updated_at": str(payload.get("updated_at", "")),
+    }
+
+
+def _load_worker_state(path: Path = DATA_DIR / "runtime" / "worker_state.json") -> WorkerState:
+    if not path.exists():
+        return WorkerState()
+    try:
+        return WorkerState.load(path)
+    except Exception:
+        return WorkerState()
+
+
+def _load_runtime_metrics(path: Path) -> dict[str, object]:
+    return _read_latest_jsonl_row(path)
+
+
+def _load_candidate_report(
+    path: Path = DATA_DIR / "validation" / "timeframe_candidates" / "candidate_report.json",
+) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        import json
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _load_regime_snapshot(
+    regime_dir: Path = DATA_DIR / "regime",
+) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    if not regime_dir.exists():
+        return pd.DataFrame()
+    for path in sorted(regime_dir.glob("*_regime.parquet")):
+        stem = path.stem.removesuffix("_regime")
+        if "_" not in stem:
+            continue
+        symbol, timeframe = stem.rsplit("_", 1)
+        frame = _read_optional(path)
+        if frame.empty or "regime" not in frame.columns:
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "regime": "UNKNOWN",
+                    "updated_at": "",
+                    "age": "unknown",
+                    "path": str(path),
+                }
+            )
+            continue
+        latest_row = frame.iloc[-1]
+        updated_at = str(latest_row.get("timestamp", ""))
+        rows.append(
+            {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "regime": str(latest_row.get("regime", "UNKNOWN")),
+                "updated_at": updated_at,
+                "age": _format_age(updated_at),
+                "path": str(path),
+            }
+        )
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    severity = {"HIGH_VOL": 3, "TREND": 2, "RANGE": 1, "UNKNOWN": 0}
+    out["severity"] = out["regime"].map(severity).fillna(0).astype(int)
+    return out.sort_values(
+        ["symbol", "timeframe", "severity"], ascending=[True, True, False]
+    ).reset_index(drop=True)
+
+
+def _active_worker_symbols(worker_state: WorkerState) -> list[str]:
+    symbols: set[str] = set()
+    for symbol in worker_state.last_results:
+        if symbol:
+            symbols.add(str(symbol))
+    for key in worker_state.last_processed_bars:
+        _, _, symbol = str(key).partition(":")
+        if symbol:
+            symbols.add(symbol)
+    return sorted(symbols)
+
+
+def _candidate_frame(report: dict[str, object], status: str | None = None) -> pd.DataFrame:
+    rows = report.get("rows", [])
+    if not isinstance(rows, list) or not rows:
+        return pd.DataFrame()
+    frame = pd.DataFrame([row for row in rows if isinstance(row, dict)])
+    if frame.empty:
+        return frame
+    if status is not None and "candidate_status" in frame.columns:
+        frame = frame[frame["candidate_status"].astype(str) == status].copy()
+    return frame.reset_index(drop=True)
+
+
+def _candidate_best_by_symbol(report: dict[str, object]) -> dict[str, dict[str, object]]:
+    best_rows = report.get("best_by_symbol_strategy", [])
+    if not isinstance(best_rows, list):
+        return {}
+    out: dict[str, dict[str, object]] = {}
+    for row in best_rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol", "")).strip()
+        if not symbol or symbol in out:
+            continue
+        out[symbol] = row
+    return out
+
+
+def _overview_symbol_table(
+    *,
+    symbols: list[str],
+    worker_state: WorkerState,
+    risk_df: pd.DataFrame,
+    candidate_best: dict[str, dict[str, object]],
+    candidate_status_map: dict[str, str],
+    active_symbols: set[str] | None = None,
+    watchlist_symbols: set[str] | None = None,
+) -> pd.DataFrame:
+    worker_frame = _worker_last_results_frame(worker_state)
+    worker_lookup = {
+        str(row["symbol"]): row.to_dict() for _, row in worker_frame.iterrows() if "symbol" in row
+    }
+    last_processed_lookup: dict[str, str] = {}
+    for key, value in worker_state.last_processed_bars.items():
+        _, _, symbol = str(key).partition(":")
+        if symbol:
+            last_processed_lookup[str(symbol)] = str(value)
+
+    rows: list[dict[str, object]] = []
+    active_symbols = active_symbols or set()
+    watchlist_symbols = watchlist_symbols or set()
+    for symbol in symbols:
+        worker_row = worker_lookup.get(symbol, {})
+        best_row = candidate_best.get(symbol, {})
+        preferred_regime_timeframe = str(best_row.get("timeframe", "")).strip() or None
+        snapshot = _symbol_snapshot(
+            symbol,
+            risk_df,
+            {},
+            {},
+            preferred_regime_timeframe=preferred_regime_timeframe,
+        )
+        candidate_status = str(
+            best_row.get("candidate_status") or candidate_status_map.get(symbol, "active")
+        )
+        rows.append(
+            {
+                "symbol": symbol,
+                "candidate_status": candidate_status,
+                "strategy": str(best_row.get("strategy", "")),
+                "timeframe": str(best_row.get("timeframe", "")),
+                "pf_mean": _safe_float(best_row.get("pf_mean", float("nan"))),
+                "expectancy_bps_mean": _safe_float(
+                    best_row.get("expectancy_bps_mean", float("nan"))
+                ),
+                "max_dd_mean": _safe_float(best_row.get("max_dd_mean", float("nan"))),
+                "closed_trades_mean": _safe_float(best_row.get("closed_trades_mean", float("nan"))),
+                "regime": snapshot["regime"],
+                "regime_timeframe": snapshot["regime_timeframe"],
+                "why_not_trading": _worker_status_reason(worker_row)
+                if worker_row
+                else "worker result unavailable",
+                "status": str(worker_row.get("status", "")),
+                "trade_status": str(worker_row.get("trade_status", "")),
+                "risk_blocked": bool(worker_row.get("risk_blocked", False)),
+                "entry_signal": bool(worker_row.get("entry_signal", False)),
+                "exit_signal": bool(worker_row.get("exit_signal", False)),
+                "add_signal": bool(worker_row.get("add_signal", False)),
+                "pass_filter": bool(worker_row.get("pass_filter", False)),
+                "reason_codes": str(worker_row.get("reason_codes", "")),
+                "last_processed_bar": last_processed_lookup.get(symbol, "-"),
+                "last_close": snapshot["last_close"],
+                "exposure_pct": snapshot["exposure_pct"],
+                "dd_pct": snapshot["dd_pct"],
+                "size_scale": snapshot["size_scale"],
+                "pnl_estimate": snapshot["pnl_estimate"],
+                "vol_weighted_exposure_pct": snapshot["vol_weighted_exposure_pct"],
+                "risk_contribution_pct": snapshot["risk_contribution_pct"],
+                "route": (
+                    "active+watchlist"
+                    if symbol in active_symbols and symbol in watchlist_symbols
+                    else "active"
+                    if symbol in active_symbols
+                    else "watchlist"
+                ),
+            }
+        )
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    return out.sort_values(["candidate_status", "symbol"], ascending=[True, True]).reset_index(
+        drop=True
+    )
+
+
+def _strategy_symbol_table(
+    *,
+    candidate_rows: pd.DataFrame,
+    strategy: str,
+    worker_state: WorkerState,
+    risk_df: pd.DataFrame,
+    candidate_status_map: dict[str, str],
+    active_symbols: set[str] | None = None,
+    watchlist_symbols: set[str] | None = None,
+) -> pd.DataFrame:
+    if candidate_rows.empty or "strategy" not in candidate_rows.columns:
+        return pd.DataFrame()
+    frame = candidate_rows[candidate_rows["strategy"].astype(str) == strategy].copy()
+    if frame.empty:
+        return pd.DataFrame()
+
+    worker_frame = _worker_last_results_frame(worker_state)
+    worker_lookup = {
+        str(row["symbol"]): row.to_dict() for _, row in worker_frame.iterrows() if "symbol" in row
+    }
+    last_processed_lookup: dict[str, str] = {}
+    for key, value in worker_state.last_processed_bars.items():
+        _, _, symbol = str(key).partition(":")
+        if symbol:
+            last_processed_lookup[str(symbol)] = str(value)
+
+    active_symbols = active_symbols or set()
+    watchlist_symbols = watchlist_symbols or set()
+    rows: list[dict[str, object]] = []
+    for _, row in frame.iterrows():
+        symbol = str(row.get("symbol", "")).strip()
+        if not symbol:
+            continue
+        worker_row = worker_lookup.get(symbol, {})
+        status = str(row.get("candidate_status") or candidate_status_map.get(symbol, "watchlist"))
+        preferred_regime_timeframe = str(row.get("timeframe", "")).strip() or None
+        snapshot = _symbol_snapshot(
+            symbol,
+            risk_df,
+            {},
+            {},
+            preferred_regime_timeframe=preferred_regime_timeframe,
+        )
+        if status == "core":
+            reason = _signal_gate_summary(worker_row) if worker_row else "worker result unavailable"
+        elif status == "watchlist":
+            reason = "watchlist候補"
+        elif status == "probe":
+            reason = "probe候補"
+        else:
+            reason = f"{status}候補"
+        if symbol in active_symbols and symbol in watchlist_symbols:
+            active_label = "active+watchlist"
+        elif symbol in active_symbols:
+            active_label = "active"
+        else:
+            active_label = "watchlist"
+        rows.append(
+            {
+                "symbol": symbol,
+                "strategy": str(row.get("strategy", strategy)),
+                "timeframe": str(row.get("timeframe", "")),
+                "candidate_status": status,
+                "pf_mean": _safe_float(row.get("pf_mean", float("nan"))),
+                "expectancy_bps_mean": _safe_float(row.get("expectancy_bps_mean", float("nan"))),
+                "max_dd_mean": _safe_float(row.get("max_dd_mean", float("nan"))),
+                "closed_trades_mean": _safe_float(row.get("closed_trades_mean", float("nan"))),
+                "regime": snapshot["regime"],
+                "regime_timeframe": snapshot["regime_timeframe"],
+                "why_not_trading": reason,
+                "risk_blocked": bool(worker_row.get("risk_blocked", False)),
+                "entry_signal": bool(worker_row.get("entry_signal", False)),
+                "pass_filter": bool(worker_row.get("pass_filter", False)),
+                "last_processed_bar": last_processed_lookup.get(symbol, "-"),
+                "exposure_pct": snapshot["exposure_pct"],
+                "dd_pct": snapshot["dd_pct"],
+                "size_scale": snapshot["size_scale"],
+                "trade_status": str(worker_row.get("trade_status", "")),
+                "cycle_state": str(worker_row.get("status", "")),
+                "route": active_label,
+            }
+        )
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    return out.sort_values(["candidate_status", "symbol"], ascending=[True, True]).reset_index(
+        drop=True
+    )
+
+
+def _regime_mix_label(regime_snapshot: pd.DataFrame) -> str:
+    if regime_snapshot.empty or "regime" not in regime_snapshot.columns:
+        return "UNKNOWN"
+    regimes = [str(value) for value in regime_snapshot["regime"].tolist() if str(value)]
+    if not regimes:
+        return "UNKNOWN"
+    unique = sorted(set(regimes))
+    if len(unique) == 1:
+        return unique[0]
+    if "HIGH_VOL" in unique:
+        return "HIGH_VOL MIX"
+    if "TREND" in unique and "RANGE" in unique:
+        return "MIXED"
+    return "MIXED"
+
+
+def _load_job_state() -> dict[str, object]:
+    payload = read_json_with_recovery(JOB_STATE_PATH)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _save_job_state(payload: dict[str, object]) -> None:
+    atomic_write_json(JOB_STATE_PATH, payload)
+
+
+def _tail_text(text: str, limit: int = 20) -> str:
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) <= limit:
+        return "\n".join(lines)
+    return "\n".join(lines[-limit:])
+
+
+def _run_refresh_job() -> dict[str, object]:
+    started_at = datetime.now(UTC).isoformat()
+    job_state: dict[str, object] = {
+        "status": "running",
+        "started_at": started_at,
+        "finished_at": "",
+        "steps": [],
+        "message": "Refreshing risk and runtime metrics.",
+    }
+    _save_job_state(job_state)
+
+    steps: list[dict[str, object]] = []
+    commands: list[tuple[str, list[str]]] = [
+        (
+            "positions_refresh",
+            [
+                str(REPO_ROOT / "scripts" / "refresh_positions_from_order_events.sh"),
+            ],
+        ),
+        (
+            "risk_input",
+            [
+                str(REPO_ROOT / "scripts" / "refresh_risk_input_from_positions.sh"),
+            ],
+        ),
+        (
+            "risk_eval",
+            [
+                sys.executable,
+                "-m",
+                "auto_trader.risk",
+                "--input-path",
+                str(DATA_DIR / "risk" / "risk_input.parquet"),
+                "--output-path",
+                str(DATA_DIR / "risk" / "risk_eval.parquet"),
+            ],
+        ),
+    ]
+
+    commands.append(
+        (
+            "runtime_metrics",
+            [
+                sys.executable,
+                "-m",
+                "auto_trader.monitor",
+                "--runtime-state-path",
+                str(DATA_DIR / "runtime" / "control_state.json"),
+                "--gateway-state-path",
+                str(DATA_DIR / "exchange" / "gateway_state.json"),
+                "--risk-eval-path",
+                str(DATA_DIR / "risk" / "risk_eval.parquet"),
+                "--order-events-path",
+                str(DATA_DIR / "exchange" / "order_events.jsonl"),
+                "--output-jsonl",
+                str(DEFAULT_RUNTIME_METRICS_PATH),
+            ],
+        )
+    )
+
+    overall_ok = True
+    for step_name, command in commands:
+        completed = subprocess.run(
+            command,
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        step_record = {
+            "step": step_name,
+            "status": "success" if completed.returncode == 0 else "failed",
+            "returncode": completed.returncode,
+            "stdout": _tail_text(completed.stdout),
+            "stderr": _tail_text(completed.stderr),
+        }
+        steps.append(step_record)
+        _save_job_state(
+            {
+                **job_state,
+                "steps": steps,
+                "current_step": step_name,
+                "last_returncode": completed.returncode,
+                "stdout_tail": step_record["stdout"],
+                "stderr_tail": step_record["stderr"],
+            }
+        )
+        if completed.returncode != 0:
+            overall_ok = False
+            break
+
+    finished_at = datetime.now(UTC).isoformat()
+    final_state = {
+        **job_state,
+        "status": "success" if overall_ok else "failed",
+        "finished_at": finished_at,
+        "steps": steps,
+        "message": (
+            "Refresh job completed successfully."
+            if overall_ok
+            else "Refresh job failed. See stderr_tail."
+        ),
+    }
+    _save_job_state(final_state)
+    return final_state
+
+
+def _format_job_state(job_state: dict[str, object]) -> pd.DataFrame:
+    steps = job_state.get("steps", [])
+    rows: list[dict[str, object]] = []
+    if isinstance(steps, list):
+        for item in steps:
+            if isinstance(item, dict):
+                rows.append(
+                    {
+                        "step": str(item.get("step", "")),
+                        "status": str(item.get("status", "")),
+                        "returncode": item.get("returncode", ""),
+                        "reason": str(item.get("reason", "")),
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+def _safe_number(value: object) -> float | None:
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, int | float):
+        return float(value)
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except Exception:
+        return None
+
+
+def _source_snapshot(
+    *,
+    name: str,
+    path: Path,
+    frame: pd.DataFrame | None = None,
+    timestamp_column: str | None = None,
+) -> dict[str, object]:
+    file_age = "-"
+    if path.exists():
+        file_age = _format_age(datetime.fromtimestamp(path.stat().st_mtime, tz=UTC))
+    rows = len(frame) if frame is not None else (1 if path.exists() else 0)
+    latest_timestamp = "-"
+    if (
+        frame is not None
+        and timestamp_column
+        and timestamp_column in frame.columns
+        and not frame.empty
+    ):
+        latest_timestamp = str(frame.iloc[-1][timestamp_column])
+    return {
+        "source": name,
+        "path": str(path),
+        "exists": path.exists(),
+        "rows": rows,
+        "file_age": file_age,
+        "latest_timestamp": latest_timestamp,
+    }
+
+
+def _worker_last_results_frame(worker_state: WorkerState) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    for symbol, result in sorted(worker_state.last_results.items()):
+        if not isinstance(result, dict):
+            continue
+        signal = result.get("signal", {})
+        if not isinstance(signal, dict):
+            signal = {}
+        trade = result.get("trade", {})
+        if not isinstance(trade, dict):
+            trade = {}
+        rows.append(
+            {
+                "symbol": symbol,
+                "status": str(result.get("status", "")),
+                "risk_blocked": bool(result.get("risk_blocked", False)),
+                "entry_signal": bool(signal.get("entry_signal", False)),
+                "exit_signal": bool(signal.get("exit_signal", False)),
+                "add_signal": bool(signal.get("add_signal", False)),
+                "pass_filter": bool(signal.get("pass_filter", False)),
+                "trade_status": str(trade.get("status", "")),
+                "gateway_status": str(trade.get("gateway_status", "")),
+                "gateway_reason": str(trade.get("gateway_reason", "")),
+                "reason_codes": ", ".join(
+                    str(code) for code in signal.get("reason_codes", []) if str(code)
+                ),
+            }
+        )
+    if not rows:
+        return pd.DataFrame()
+    frame = pd.DataFrame(rows)
+    return frame.sort_values(["symbol"]).reset_index(drop=True)
+
+
+def _worker_status_reason(row: dict[str, object]) -> str:
+    status = str(row.get("status", ""))
+    trade_status = str(row.get("trade_status", ""))
+    if trade_status in {"entry", "exit", "add"}:
+        return "発注済み"
+    mapping = {
+        "already_processed": "同一確定足を処理済み",
+        "no_signal": "シグナル未成立",
+        "missing_data": "マーケットデータ不足",
+        "not_enabled": "対象外シンボル",
+        "disabled": "シンボル無効",
+        "risk_blocked": "リスク制限で停止",
+        "qty_zero": "ロットが0",
+        "no_action": "発注条件未成立",
+    }
+    return mapping.get(status, status or "unknown")
+
+
+def _signal_gate_summary(row: dict[str, object]) -> str:
+    trade_status = str(row.get("trade_status", ""))
+    if trade_status in {"entry", "exit", "add"}:
+        return "発注済み"
+    parts: list[str] = []
+    if "entry_signal" in row:
+        parts.append("entry成立" if bool(row.get("entry_signal", False)) else "entry未成立")
+    if "exit_signal" in row and bool(row.get("exit_signal", False)):
+        parts.append("exit成立")
+    if "add_signal" in row and bool(row.get("add_signal", False)):
+        parts.append("add成立")
+    if "pass_filter" in row and not bool(row.get("pass_filter", False)):
+        parts.append("filter未通過")
+    if "risk_blocked" in row and bool(row.get("risk_blocked", False)):
+        parts.append("risk制限")
+    reason_codes = str(row.get("reason_codes", "")).strip()
+    if reason_codes:
+        parts.append(reason_codes)
+    if "gateway_status" in row and str(row.get("gateway_status", "")).strip():
+        parts.append(str(row.get("gateway_status", "")))
+    if not parts:
+        return "signal snapshot unavailable"
+    return "; ".join(parts)
+
+
+def _status_banner(
+    runtime_state: dict[str, object],
+    worker_state: WorkerState,
+    latest_metrics: dict[str, object],
+    risk_df: pd.DataFrame,
+    risk_input_df: pd.DataFrame,
+) -> tuple[str, list[str]]:
+    warnings: list[str] = []
+    criticals: list[str] = []
+    if bool(runtime_state.get("emergency_stop", False)):
+        criticals.append("EMERGENCY_STOP is active.")
+    if not bool(runtime_state.get("trading_enabled", False)):
+        warnings.append("Trading is disabled.")
+    if _freshness_level(worker_state.updated_at) in {"warning", "critical"}:
+        warnings.append(f"Worker state is {_freshness_level(worker_state.updated_at)}.")
+    if latest_metrics and _freshness_level(latest_metrics.get("timestamp", "")) in {
+        "warning",
+        "critical",
+    }:
+        metrics_level = _freshness_level(latest_metrics.get("timestamp", ""))
+        warnings.append(
+            f"Runtime metrics are {metrics_level}. Start `auto-trader-monitor.service` "
+            "or rerun `python -m auto_trader.monitor --watch`."
+        )
+    if not risk_df.empty and "timestamp" in risk_df.columns:
+        ts = pd.to_datetime(risk_df.iloc[-1]["timestamp"], utc=True).to_pydatetime()
+        if is_stale(ts, datetime.now(UTC), max_delay_sec=DATA_STALE_WARN_SEC):
+            risk_input_age = "unknown"
+            if not risk_input_df.empty and "timestamp" in risk_input_df.columns:
+                risk_input_age = _format_age(
+                    risk_input_df.iloc[-1]["timestamp"], now=datetime.now(UTC)
+                )
+            warnings.append(
+                "Risk data is stale. Start `auto-trader-risk-refresh.timer` "
+                f"Latest risk input age: {risk_input_age}. "
+                "If this stays stale, refresh upstream risk_input first."
+            )
+    if criticals:
+        return "critical", criticals + warnings
+    if warnings:
+        return "warning", warnings
+    return "ok", ["Live data is fresh and trading is eligible."]
+
+
+def _render_status_cards(
+    *,
+    runtime_state: dict[str, object],
+    worker_state: WorkerState,
+    runtime_metrics: dict[str, object],
+    risk_df: pd.DataFrame,
+    risk_input_df: pd.DataFrame,
+    gateway_state: dict[str, object],
+) -> None:
+    level, messages = _status_banner(
+        runtime_state, worker_state, runtime_metrics, risk_df, risk_input_df
+    )
+    if level == "critical":
+        st.error("Trading health: CRITICAL")
+    elif level == "warning":
+        st.warning("Trading health: WARNING")
+    else:
+        st.success("Trading health: OK")
+    for msg in messages:
+        st.caption(msg)
+
+    now = datetime.now(UTC)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Trading", "ON" if runtime_state.get("trading_enabled", False) else "OFF")
+    c2.metric("Emergency", "ON" if runtime_state.get("emergency_stop", False) else "OFF")
+    c3.metric("Control Age", _format_age(runtime_state.get("updated_at", ""), now=now))
+    c4.metric("Worker Age", _format_age(worker_state.updated_at, now=now))
+    risk_age = "-"
+    if not risk_df.empty and "timestamp" in risk_df.columns:
+        risk_age = _format_age(risk_df.iloc[-1]["timestamp"], now=now)
+    c5.metric("Risk Age", risk_age)
+    api_status = "DISCONNECTED"
+    if isinstance(gateway_state, dict) and gateway_state.get("updated_at"):
+        api_status = "CONNECTED"
+    c6.metric("API", api_status)
+
+    st.caption(
+        "control_state updates only on manual START/STOP/EMERGENCY actions; "
+        "last_cycle_at="
+        f"{worker_state.last_cycle_at or '-'}, "
+        f"last_error={worker_state.last_error or '-'}, "
+        f"last_refresh={now.isoformat()}"
+    )
+
+
+def _render_overview_tab(
+    *,
+    runtime_state: dict[str, object],
+    worker_state: WorkerState,
+    runtime_metrics: dict[str, object],
+    risk_df: pd.DataFrame,
+    risk_input_df: pd.DataFrame,
+    regime_snapshot: pd.DataFrame,
+    position_df: pd.DataFrame,
+    gateway_state: dict[str, object],
+    candidate_report: dict[str, object],
+) -> None:
+    _render_status_cards(
+        runtime_state=runtime_state,
+        worker_state=worker_state,
+        runtime_metrics=runtime_metrics,
+        risk_df=risk_df,
+        risk_input_df=risk_input_df,
+        gateway_state=gateway_state,
+    )
+
+    st.subheader("Overview")
+    if runtime_metrics:
+        st.info(
+            "Overview shows the always-on operator view: watchlist, active trading targets, "
+            "live PnL, and symbol regimes. Exposure/Risk DD come from "
+            "`data/risk/risk_eval.parquet`, and API reflects the gateway state file."
+        )
+
+    live_summary = _live_pnl_summary(position_df)
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Live PnL", f"{live_summary['live_unrealized_pnl']:.2f}")
+    c2.metric("Live PnL %", f"{live_summary['live_unrealized_pnl_pct']:.2f}%")
+    c3.metric("Exposure", _latest_value(risk_df, "portfolio_exposure_pct", "N/A"))
+    c4.metric("Risk DD", _latest_value(risk_df, "current_dd_pct", "N/A"))
+    c5.metric("API", "CONNECTED" if gateway_state.get("updated_at") else "DISCONNECTED")
+
+    runtime_trading = bool(runtime_metrics.get("runtime_trading_enabled", False))
+    emergency_stop = bool(runtime_metrics.get("runtime_emergency_stop", False))
+    st.caption(
+        f"runtime_trading_enabled={runtime_trading}, runtime_emergency_stop={emergency_stop}, "
+        f"pending_orders={runtime_metrics.get('gateway_pending_orders', '-')}, "
+        f"load1m={runtime_metrics.get('system_loadavg_1m', '-')}, "
+        f"position_value={live_summary['position_value']:.2f}"
+    )
+
+    if not risk_df.empty and "timestamp" in risk_df.columns:
+        ts = pd.to_datetime(risk_df.iloc[-1]["timestamp"], utc=True).to_pydatetime()
+        if is_stale(ts, datetime.now(UTC), max_delay_sec=DATA_STALE_WARN_SEC):
+            st.warning("Risk data is stale")
+        else:
+            st.info("Risk data is fresh")
+    else:
+        st.warning("Risk data unavailable")
+
+    health_level, health_messages = _status_banner(
+        runtime_state=runtime_state,
+        worker_state=worker_state,
+        latest_metrics=runtime_metrics,
+        risk_df=risk_df,
+        risk_input_df=risk_input_df,
+    )
+    with st.expander("Health details", expanded=health_level != "ok"):
+        for message in health_messages:
+            st.write(f"- {message}")
+
+    st.subheader("Runtime snapshot")
+    snapshot = pd.DataFrame(
+        [
+            {
+                "runtime_trading_enabled": runtime_state.get("trading_enabled", False),
+                "runtime_emergency_stop": runtime_state.get("emergency_stop", False),
+                "close_all_requested": runtime_state.get("close_all_requested", False),
+                "runtime_updated_at": runtime_state.get("updated_at", ""),
+                "worker_updated_at": worker_state.updated_at,
+                "worker_last_cycle_at": worker_state.last_cycle_at,
+                "worker_last_error": worker_state.last_error,
+            }
+        ]
+    )
+    st.dataframe(snapshot, width="stretch")
+
+    st.subheader("Live PnL")
+    live_pnl_frame = _live_pnl_frame(position_df)
+    if live_pnl_frame.empty:
+        st.info("No open positions yet.")
+    else:
+        live_pnl_cols = [
+            col
+            for col in [
+                "symbol",
+                "side",
+                "qty",
+                "avg_entry",
+                "mark_price",
+                "source_price",
+                "unrealized_pnl",
+                "unrealized_pnl_pct",
+                "position_value",
+            ]
+            if col in live_pnl_frame.columns
+        ]
+        st.dataframe(live_pnl_frame[live_pnl_cols], width="stretch", hide_index=True)
+
+    candidate_rows = _candidate_frame(candidate_report)
+    candidate_watchlist = _candidate_frame(candidate_report, "watchlist")
+    candidate_status_map = {
+        str(row.get("symbol", "")): str(row.get("candidate_status", ""))
+        for row in candidate_report.get("best_by_symbol_strategy", [])
+        if isinstance(row, dict)
+    }
+    active_symbols = _active_worker_symbols(worker_state)
+    candidate_symbols = sorted(
+        {
+            str(row.get("symbol", ""))
+            for row in candidate_report.get("rows", [])
+            if isinstance(row, dict) and str(row.get("symbol", ""))
+        }
+    )
+    watchlist_symbols = (
+        sorted(candidate_watchlist["symbol"].astype(str).unique().tolist())
+        if not candidate_watchlist.empty and "symbol" in candidate_watchlist.columns
+        else []
+    )
+    regime_symbols = sorted(set(active_symbols) | set(candidate_symbols))
+    show_core = st.checkbox("Show core", value=True, key="overview_symbols_show_core")
+    show_watchlist = st.checkbox(
+        "Show watchlist", value=False, key="overview_symbols_show_watchlist"
+    )
+    show_probe = st.checkbox("Show probe", value=False, key="overview_symbols_show_probe")
+    status_filter: set[str] = set()
+    if show_core:
+        status_filter.add("core")
+    if show_watchlist:
+        status_filter.add("watchlist")
+    if show_probe:
+        status_filter.add("probe")
+
+    def _filter_status(frame: pd.DataFrame) -> pd.DataFrame:
+        if frame.empty:
+            return frame
+        if not status_filter:
+            return frame.iloc[0:0].copy()
+        return frame[frame["candidate_status"].isin(status_filter)].copy()
+
+    def _render_strategy_table(strategy: str, title: str) -> None:
+        table = _strategy_symbol_table(
+            candidate_rows=candidate_rows,
+            strategy=strategy,
+            worker_state=worker_state,
+            risk_df=risk_df,
+            candidate_status_map=candidate_status_map,
+            active_symbols=set(active_symbols),
+            watchlist_symbols=set(watchlist_symbols),
+        )
+        table = _filter_status(table)
+        st.subheader(title)
+        if table.empty:
+            st.info("No symbol rows match the current candidate-status filters.")
+            return
+        display_cols = [
+            col
+            for col in [
+                "symbol",
+                "route",
+                "candidate_status",
+                "strategy",
+                "timeframe",
+                "pf_mean",
+                "expectancy_bps_mean",
+                "max_dd_mean",
+                "closed_trades_mean",
+                "regime",
+                "regime_timeframe",
+                "why_not_trading",
+                "risk_blocked",
+                "entry_signal",
+                "pass_filter",
+                "last_processed_bar",
+                "exposure_pct",
+                "dd_pct",
+                "size_scale",
+                "cycle_state",
+                "trade_status",
+            ]
+            if col in table.columns
+        ]
+        st.dataframe(table[display_cols], width="stretch", hide_index=True)
+
+    _render_strategy_table("trend", "Trend performance")
+    _render_strategy_table("range", "Range performance")
+
+    st.subheader("Regime by symbol")
+    if not regime_symbols:
+        st.info("No symbols available for regime view.")
+    else:
+        regime_view = regime_snapshot[regime_snapshot["symbol"].isin(regime_symbols)].copy()
+        if regime_view.empty:
+            st.info("No regime parquet files found for watchlist or active symbols.")
+        else:
+            show_active = st.checkbox("Show active", value=True, key="regime_show_active")
+            show_watchlist = st.checkbox("Show watchlist", value=False, key="regime_show_watchlist")
+            purpose_rows = []
+            active_set = set(active_symbols)
+            watchlist_set = set(watchlist_symbols)
+            for _, row in regime_view.iterrows():
+                symbol = str(row.get("symbol", ""))
+                if symbol in active_set and symbol in watchlist_set:
+                    purpose = "active+watchlist"
+                elif symbol in active_set:
+                    purpose = "active"
+                elif symbol in watchlist_set:
+                    purpose = "watchlist"
+                else:
+                    purpose = "candidate"
+                purpose_rows.append({**row.to_dict(), "purpose": purpose})
+            regime_display = pd.DataFrame(purpose_rows)
+            enabled_purposes = {
+                purpose
+                for purpose, enabled in (
+                    ("active", show_active),
+                    ("active+watchlist", show_active or show_watchlist),
+                    ("watchlist", show_watchlist),
+                    ("candidate", False),
+                )
+                if enabled
+            }
+            if enabled_purposes:
+                regime_display = regime_display[
+                    regime_display["purpose"].isin(enabled_purposes)
+                ].copy()
+            else:
+                regime_display = regime_display.iloc[0:0].copy()
+            loaded_symbols = set(regime_view["symbol"].astype(str))
+            regime_display = regime_display[
+                ["symbol", "timeframe", "purpose", "regime", "age", "updated_at"]
+            ].copy()
+            if regime_display.empty:
+                st.info("No regime rows match the current filters.")
+            else:
+                st.dataframe(regime_display, width="stretch", hide_index=True)
+            missing = sorted(set(regime_symbols) - loaded_symbols)
+            if missing:
+                st.warning(f"Missing regime files for: {', '.join(missing)}")
+
+    st.subheader("Data sources")
+    source_rows = [
+        _source_snapshot(
+            name="runtime_state",
+            path=DATA_DIR / "runtime" / "control_state.json",
+            timestamp_column=None,
+        ),
+        _source_snapshot(
+            name="worker_state",
+            path=DATA_DIR / "runtime" / "worker_state.json",
+            timestamp_column=None,
+        ),
+        _source_snapshot(
+            name="positions",
+            path=DATA_DIR / "positions" / "positions.parquet",
+            frame=position_df,
+            timestamp_column="updated_at" if "updated_at" in position_df.columns else None,
+        ),
+        _source_snapshot(
+            name="runtime_metrics",
+            path=DEFAULT_RUNTIME_METRICS_PATH,
+            timestamp_column=None,
+        ),
+        _source_snapshot(
+            name="risk_eval",
+            path=DATA_DIR / "risk" / "risk_eval.parquet",
+            frame=risk_df,
+            timestamp_column="timestamp" if "timestamp" in risk_df.columns else None,
+        ),
+        _source_snapshot(
+            name="risk_input",
+            path=DATA_DIR / "risk" / "risk_input.parquet",
+            frame=risk_input_df,
+            timestamp_column="timestamp" if "timestamp" in risk_input_df.columns else None,
+        ),
+        _source_snapshot(
+            name="candidate_report",
+            path=DATA_DIR / "validation" / "timeframe_candidates" / "candidate_report.json",
+            timestamp_column=None,
+        ),
+    ]
+    st.dataframe(pd.DataFrame(source_rows), width="stretch")
+
+
+def _render_trading_tab(
+    *,
+    worker_state: WorkerState,
+    position_df: pd.DataFrame,
+    risk_df: pd.DataFrame,
+    candidate_report: dict[str, object],
+) -> None:
+    st.subheader("Trading")
+    st.caption(
+        "Trading shows the live worker state plus the same active/watchlist symbol snapshot "
+        "used in Overview."
+    )
+    worker_frame = _worker_last_results_frame(worker_state)
+    if worker_frame.empty:
+        st.info("No worker results yet")
+    else:
+        worker_frame["why_not_trading"] = worker_frame.apply(
+            lambda row: _worker_status_reason(row.to_dict()), axis=1
+        )
+        cols = [
+            "symbol",
+            "status",
+            "why_not_trading",
+            "trade_status",
+            "gateway_status",
+            "gateway_reason",
+            "risk_blocked",
+            "entry_signal",
+            "exit_signal",
+            "add_signal",
+            "pass_filter",
+            "reason_codes",
+        ]
+        available = [col for col in cols if col in worker_frame.columns]
+        st.dataframe(worker_frame[available], use_container_width=True)
+
+    st.subheader("Positions")
+    st.dataframe(position_df, use_container_width=True)
+
+    st.subheader("Risk")
+    st.dataframe(risk_df.tail(20), use_container_width=True)
+
+    candidate_rows = _candidate_frame(candidate_report)
+    candidate_watchlist = _candidate_frame(candidate_report, "watchlist")
+    candidate_status_map = {
+        str(row.get("symbol", "")): str(row.get("candidate_status", ""))
+        for row in candidate_report.get("best_by_symbol_strategy", [])
+        if isinstance(row, dict)
+    }
+    active_symbols = _active_worker_symbols(worker_state)
+    watchlist_symbols = (
+        sorted(candidate_watchlist["symbol"].astype(str).unique().tolist())
+        if not candidate_watchlist.empty and "symbol" in candidate_watchlist.columns
+        else []
+    )
+    show_core = st.checkbox("Show core", value=True, key="trading_symbols_show_core")
+    show_watchlist = st.checkbox(
+        "Show watchlist", value=False, key="trading_symbols_show_watchlist"
+    )
+    show_probe = st.checkbox("Show probe", value=False, key="trading_symbols_show_probe")
+    status_filter: set[str] = set()
+    if show_core:
+        status_filter.add("core")
+    if show_watchlist:
+        status_filter.add("watchlist")
+    if show_probe:
+        status_filter.add("probe")
+
+    def _filter_status(frame: pd.DataFrame) -> pd.DataFrame:
+        if frame.empty:
+            return frame
+        if not status_filter:
+            return frame.iloc[0:0].copy()
+        return frame[frame["candidate_status"].isin(status_filter)].copy()
+
+    def _render_strategy_table(strategy: str, title: str) -> None:
+        table = _strategy_symbol_table(
+            candidate_rows=candidate_rows,
+            strategy=strategy,
+            worker_state=worker_state,
+            risk_df=risk_df,
+            candidate_status_map=candidate_status_map,
+            active_symbols=set(active_symbols),
+            watchlist_symbols=set(watchlist_symbols),
+        )
+        table = _filter_status(table)
+        st.subheader(title)
+        if table.empty:
+            st.info("No symbol rows match the current candidate-status filters.")
+            return
+        display_cols = [
+            col
+            for col in [
+                "symbol",
+                "route",
+                "candidate_status",
+                "strategy",
+                "timeframe",
+                "pf_mean",
+                "expectancy_bps_mean",
+                "max_dd_mean",
+                "closed_trades_mean",
+                "regime",
+                "regime_timeframe",
+                "why_not_trading",
+                "risk_blocked",
+                "entry_signal",
+                "pass_filter",
+                "last_processed_bar",
+                "exposure_pct",
+                "dd_pct",
+                "size_scale",
+                "cycle_state",
+                "trade_status",
+            ]
+            if col in table.columns
+        ]
+        st.dataframe(table[display_cols], width="stretch", hide_index=True)
+
+    _render_strategy_table("trend", "Trend performance")
+    _render_strategy_table("range", "Range performance")
+
+    if not worker_state.last_processed_bars:
+        return
+    st.subheader("Last processed bars")
+    rows = []
+    for key, ts in sorted(worker_state.last_processed_bars.items()):
+        route, _, symbol = key.partition(":")
+        rows.append({"route": route, "symbol": symbol, "last_processed_bar": ts})
+    st.dataframe(pd.DataFrame(rows), use_container_width=True)
+
+
+def _render_charts_tab(
+    *,
+    risk_df: pd.DataFrame,
+    ohlcv_df: pd.DataFrame,
+) -> None:
+    st.subheader("Charts")
+    overlay_enabled = st.checkbox("Enable chart overlay", value=False, key="charts_overlay_enabled")
+    if not overlay_enabled:
+        st.caption("Enable the overlay to render symbol charts.")
+        return
+
+    overlay_strategy = st.selectbox(
+        "Overlay Strategy",
+        options=["range", "trend"],
+        index=0,
+        key="charts_overlay_strategy",
+    )
+    overlay_symbol = st.selectbox(
+        "Overlay Symbol",
+        options=DEFAULT_SYMBOLS,
+        index=1,
+        key="charts_overlay_symbol",
+    )
+    regime_df = _read_optional(DATA_DIR / "regime" / f"{overlay_symbol}_1m_regime.parquet")
+    signal_df = _read_optional(
+        DATA_DIR / "signals" / f"{overlay_symbol}_1m_{overlay_strategy}_signals.parquet"
+    )
+    overlay_fast_mode = st.checkbox("Overlay Fast Mode", value=True, key="charts_overlay_fast_mode")
+    max_rows_default = 300 if overlay_fast_mode else 800
+    max_rows_limit = 2000 if overlay_fast_mode else 5000
+    max_rows = st.slider(
+        "Overlay Bars",
+        min_value=100,
+        max_value=max_rows_limit,
+        value=max_rows_default,
+        step=100,
+        key="charts_overlay_bars",
+    )
+    symbol_ohlcv = _read_optional(DATA_DIR / "parquet" / f"{overlay_symbol}_1m.parquet")
+    overlay = build_overlay_frame(
+        ohlcv_df=symbol_ohlcv if not symbol_ohlcv.empty else ohlcv_df,
+        signal_df=signal_df,
+        regime_df=regime_df,
+        risk_df=risk_df,
+        max_rows=max_rows,
+    )
+    if overlay.empty:
+        st.info("Overlay data unavailable")
+        return
+    overlay["timestamp"] = pd.to_datetime(overlay["timestamp"], utc=True)
+    if len(overlay) > 1:
+        start_default = max(0, len(overlay) - min(300, len(overlay)))
+        idx_range = st.slider(
+            "Visible Range (index)",
+            min_value=0,
+            max_value=len(overlay) - 1,
+            value=(start_default, len(overlay) - 1),
+            step=1,
+            key="charts_overlay_visible_range",
+        )
+        overlay_view = overlay.iloc[idx_range[0] : idx_range[1] + 1].copy()
+    else:
+        overlay_view = overlay.copy()
+    if overlay_fast_mode:
+        overlay_view = _downsample_for_chart(overlay_view, max_points=800)
+    _render_candlestick_overlay(overlay_view)
+    if not overlay_fast_mode:
+        chart = overlay_view.set_index("timestamp")
+        st.line_chart(chart[["ml_score", "regime_band"]])
+        st.caption("Aux overlay: ml_score + regime_band")
+    else:
+        st.caption("Fast mode: aux overlay chart skipped for performance")
+
+
+def _render_analysis_tab(*, portfolio_df: pd.DataFrame) -> None:
+    st.subheader("Analysis")
+    st.caption("Heavy analysis is opt-in to keep the live console fast.")
+    st.subheader("Backtest Snapshot")
+    if portfolio_df.empty:
+        st.info(
+            "No backtest portfolio artifact found. Run `python -m auto_trader.backtest ...` first."
+        )
+    else:
+        bt_c1, bt_c2, bt_c3, bt_c4 = st.columns(4)
+        latest_equity = (
+            float(portfolio_df.iloc[-1]["equity"]) if "equity" in portfolio_df.columns else 0.0
+        )
+        first_equity = (
+            float(portfolio_df.iloc[0]["equity"]) if "equity" in portfolio_df.columns else 0.0
+        )
+        backtest_pnl = latest_equity - first_equity
+        backtest_dd = (
+            float(portfolio_df["drawdown"].max()) * 100.0
+            if "drawdown" in portfolio_df.columns
+            else 0.0
+        )
+        bt_c1.metric("Backtest PnL", f"{backtest_pnl:.2f}")
+        bt_c2.metric("Backtest MaxDD", f"{backtest_dd:.2f}%")
+        bt_c3.metric("Backtest End Equity", f"{latest_equity:.2f}")
+        bt_c4.metric("Rows", str(len(portfolio_df)))
+        if {"timestamp", "equity"}.issubset(portfolio_df.columns):
+            chart_df = portfolio_df.copy()
+            chart_df["timestamp"] = pd.to_datetime(chart_df["timestamp"], utc=True)
+            st.line_chart(chart_df.set_index("timestamp")[["equity"]])
+        with st.expander("Backtest portfolio rows", expanded=False):
+            st.dataframe(portfolio_df.tail(200), use_container_width=True)
+
+    show_multi_symbol_panel = st.checkbox(
+        "Enable Multi-Symbol Panel",
+        value=False,
+        key="analysis_enable_multi_symbol_panel",
+    )
+    show_walkforward = st.checkbox(
+        "Show Walkforward Visual Check",
+        value=False,
+        key="analysis_show_walkforward",
+    )
+
+    if show_multi_symbol_panel:
+        symbols_raw = st.text_input(
+            "Symbols (comma separated)",
+            value=",".join(DEFAULT_SYMBOLS),
+            key="analysis_symbols_input",
+        )
+        max_symbols = st.slider(
+            "Max symbols to render",
+            min_value=2,
+            max_value=20,
+            value=8,
+            step=1,
+            key="analysis_max_symbols",
+        )
+        enable_heavy = st.checkbox(
+            "Enable heavy visualizations (correlation/walkforward tables)",
+            value=False,
+            key="analysis_enable_heavy",
+        )
+        corr_rows = st.slider(
+            "Rows per symbol for correlation",
+            min_value=300,
+            max_value=5000,
+            value=1500,
+            step=100,
+            key="analysis_corr_rows",
+        )
+        symbols = [s.strip().upper() for s in symbols_raw.split(",") if s.strip()]
+        symbols = symbols[:max_symbols]
+        if not symbols:
+            st.info("No symbols configured")
+        else:
+            wf_range = _load_walkforward_metric_map("range", symbols, timeframe="1m")
+            wf_trend = _load_walkforward_metric_map("trend", symbols, timeframe="1m")
+            risk_df = _read_optional(DATA_DIR / "risk" / "risk_eval.parquet")
+            rows = [_symbol_snapshot(s, risk_df, wf_range, wf_trend) for s in symbols]
+            snap = pd.DataFrame(rows)
+            snap["wf_range_pf"] = snap["symbol"].map(
+                lambda s: wf_range.get(str(s), {}).get("pf", 0.0)
+            )
+            snap["wf_range_win_rate"] = snap["symbol"].map(
+                lambda s: wf_range.get(str(s), {}).get("win_rate", 0.0)
+            )
+            snap["wf_range_max_dd"] = snap["symbol"].map(
+                lambda s: wf_range.get(str(s), {}).get("max_dd", 0.0)
+            )
+            snap["wf_range_monthly_pnl"] = snap["symbol"].map(
+                lambda s: wf_range.get(str(s), {}).get("monthly_pnl", 0.0)
+            )
+            snap["wf_trend_pf"] = snap["symbol"].map(
+                lambda s: wf_trend.get(str(s), {}).get("pf", 0.0)
+            )
+            snap["wf_trend_win_rate"] = snap["symbol"].map(
+                lambda s: wf_trend.get(str(s), {}).get("win_rate", 0.0)
+            )
+            snap["wf_trend_max_dd"] = snap["symbol"].map(
+                lambda s: wf_trend.get(str(s), {}).get("max_dd", 0.0)
+            )
+            snap["wf_trend_monthly_pnl"] = snap["symbol"].map(
+                lambda s: wf_trend.get(str(s), {}).get("monthly_pnl", 0.0)
+            )
+            st.dataframe(snap, use_container_width=True)
+
+            if not snap.empty:
+                st.caption("Regime map")
+                mapping = {"RANGE": 1.0, "TREND": 2.0, "HIGH_VOL": 3.0, "UNKNOWN": 0.0}
+                heat = snap.copy()
+                heat["regime_band"] = heat["regime"].map(mapping).fillna(0.0)
+                if alt is not None:
+                    regime_chart = (
+                        alt.Chart(heat)
+                        .mark_rect()
+                        .encode(
+                            x=alt.X("symbol:N", title="symbol"),
+                            y=alt.value(20),
+                            color=alt.Color(
+                                "regime_band:Q",
+                                scale=alt.Scale(
+                                    domain=[0, 1, 2, 3],
+                                    range=["#94a3b8", "#0ea5e9", "#10b981", "#ef4444"],
+                                ),
+                                legend=alt.Legend(title="regime band"),
+                            ),
+                            tooltip=["symbol:N", "regime:N", "regime_band:Q"],
+                        )
+                        .properties(height=60)
+                    )
+                    st.altair_chart(regime_chart, use_container_width=True)
+                st.dataframe(heat[["symbol", "regime", "regime_band"]], use_container_width=True)
+
+                st.caption("Entry ranking")
+                rank = snap.copy()
+                rank["total_entries"] = rank["range_entries"] + rank["trend_entries"]
+                rank = rank.sort_values("total_entries", ascending=False)
+                st.dataframe(
+                    rank[["symbol", "total_entries", "range_entries", "trend_entries"]],
+                    use_container_width=True,
+                )
+
+                st.caption("PnL/DD/Exposure")
+                metrics_cols = [
+                    c
+                    for c in [
+                        "symbol",
+                        "pnl_estimate",
+                        "dd_pct",
+                        "exposure_pct",
+                        "vol_weighted_exposure_pct",
+                        "risk_contribution_pct",
+                        "size_scale",
+                    ]
+                    if c in snap.columns
+                ]
+                st.dataframe(snap[metrics_cols], use_container_width=True)
+
+                st.caption("Volatility-weighted risk ranking")
+                risk_rank = snap.copy()
+                risk_rank = risk_rank.sort_values(
+                    ["risk_contribution_pct", "vol_weighted_exposure_pct"], ascending=False
+                )
+                st.dataframe(
+                    risk_rank[
+                        [
+                            "symbol",
+                            "risk_contribution_pct",
+                            "vol_weighted_exposure_pct",
+                            "size_scale",
+                            "dd_pct",
+                        ]
+                    ],
+                    use_container_width=True,
+                )
+
+                if enable_heavy:
+                    st.caption("Correlation matrix (1m returns)")
+                    ret_mat = _build_return_matrix(symbols, max_rows_per_symbol=int(corr_rows))
+                    if ret_mat.empty or ret_mat.shape[1] < 2:
+                        st.info("Not enough symbol return series for correlation matrix")
+                    else:
+                        corr = ret_mat.corr()
+                        if alt is not None:
+                            corr_long = corr.reset_index().melt(
+                                id_vars="index", var_name="symbol_y", value_name="corr"
+                            )
+                            corr_long = corr_long.rename(columns={"index": "symbol_x"})
+                            heatmap = (
+                                alt.Chart(corr_long)
+                                .mark_rect()
+                                .encode(
+                                    x=alt.X("symbol_x:N", title="symbol"),
+                                    y=alt.Y("symbol_y:N", title="symbol"),
+                                    color=alt.Color(
+                                        "corr:Q",
+                                        scale=alt.Scale(
+                                            domain=[-1, 0, 1],
+                                            range=["#2563eb", "#f8fafc", "#dc2626"],
+                                        ),
+                                        legend=alt.Legend(title="corr"),
+                                    ),
+                                    tooltip=["symbol_x:N", "symbol_y:N", "corr:Q"],
+                                )
+                                .properties(height=260)
+                            )
+                            st.altair_chart(heatmap, use_container_width=True)
+                        st.dataframe(corr, use_container_width=True)
+
+                    st.caption("Walkforward metrics by symbol")
+                    wf_cols = [
+                        "symbol",
+                        "wf_range_pf",
+                        "wf_range_win_rate",
+                        "wf_range_max_dd",
+                        "wf_range_monthly_pnl",
+                        "wf_trend_pf",
+                        "wf_trend_win_rate",
+                        "wf_trend_max_dd",
+                        "wf_trend_monthly_pnl",
+                    ]
+                    st.dataframe(snap[wf_cols], use_container_width=True)
+    else:
+        st.info("Multi-symbol panel is disabled")
+
+    if show_walkforward:
+        strategy = st.selectbox(
+            "Strategy",
+            options=["range", "trend"],
+            index=0,
+            key="analysis_wf_strategy",
+        )
+        wf_symbol = st.selectbox(
+            "WF Symbol",
+            options=DEFAULT_SYMBOLS,
+            index=0,
+            key="analysis_wf_symbol",
+        )
+        wf_summary = _load_walkforward_artifact(wf_symbol, "1m", strategy, "summary")
+
+        if wf_summary.empty:
+            st.info("No walkforward report found. Run `python -m auto_trader.analysis ...` first.")
+        else:
+            st.caption("Fold summary: PF/WinRate/DD/PnL and invalid regime entries")
+            st.dataframe(wf_summary, use_container_width=True)
+            wf_fast_mode = st.checkbox(
+                "Walkforward Fast Mode", value=True, key="analysis_wf_fast_mode"
+            )
+            show_wf_details = st.checkbox(
+                "Show Walkforward Details", value=False, key="analysis_wf_details"
+            )
+            if show_wf_details:
+                max_portfolio_rows = st.slider(
+                    "WF Portfolio Rows",
+                    min_value=200,
+                    max_value=5000,
+                    value=1000,
+                    step=100,
+                    key="analysis_wf_portfolio_rows",
+                )
+                max_trade_rows = st.slider(
+                    "WF Trade Rows",
+                    min_value=50,
+                    max_value=2000,
+                    value=300,
+                    step=50,
+                    key="analysis_wf_trade_rows",
+                )
+
+                wf_portfolio = _load_walkforward_artifact(wf_symbol, "1m", strategy, "portfolio")
+                wf_trades = _load_walkforward_artifact(wf_symbol, "1m", strategy, "trades")
+                wf_regime = _load_walkforward_artifact(wf_symbol, "1m", strategy, "regime_counts")
+
+                if not wf_portfolio.empty:
+                    st.caption("Portfolio")
+                    st.dataframe(wf_portfolio.tail(max_portfolio_rows), use_container_width=True)
+                if not wf_trades.empty:
+                    st.caption("Trades")
+                    st.dataframe(wf_trades.tail(max_trade_rows), use_container_width=True)
+                if not wf_regime.empty:
+                    st.caption("Regime counts")
+                    st.dataframe(wf_regime, use_container_width=True)
+                if wf_fast_mode:
+                    st.caption("Fast mode enabled: portfolio/trade tables are truncated.")
+    else:
+        st.info("Walkforward visual check is disabled")
+
+
+def _render_logs_tab(*, runtime_metrics_path: Path) -> None:
+    st.subheader("Logs")
+    metrics_path_text = st.text_input(
+        "Metrics JSONL path",
+        value=str(runtime_metrics_path),
+        key="logs_runtime_metrics_path",
+    )
+    latest_metrics = _read_latest_jsonl_row(Path(metrics_path_text))
+    if not latest_metrics:
+        st.info("No runtime metrics found. Run `python -m auto_trader.monitor --watch ...` first.")
+    else:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Pending Orders", str(latest_metrics.get("gateway_pending_orders", "-")))
+        c2.metric("Order Latency P95 (ms)", str(latest_metrics.get("order_latency_p95_ms", "-")))
+        c3.metric("Risk Block Count", str(latest_metrics.get("risk_block_count", "-")))
+        c4.metric("System Load(1m)", str(latest_metrics.get("system_loadavg_1m", "-")))
+        runtime_trading = latest_metrics.get("runtime_trading_enabled", False)
+        emergency_stop = latest_metrics.get("runtime_emergency_stop", False)
+        level, messages = _runtime_health_messages(latest_metrics)
+        if level == "critical":
+            st.error("Health: CRITICAL")
+        elif level == "warning":
+            st.warning("Health: WARNING")
+        else:
+            st.success("Health: OK")
+        for msg in messages:
+            st.caption(msg)
+        st.caption(
+            f"runtime_trading_enabled={runtime_trading}, runtime_emergency_stop={emergency_stop}, "
+            f"timestamp={latest_metrics.get('timestamp', '-')}"
+        )
+        st.json(latest_metrics)
+
+    st.subheader("Execution Events")
+    if CONTROL_LOG.exists():
+        events = _read_jsonl_table(str(CONTROL_LOG), tail_rows=100)
+        if events.empty:
+            st.info("No control events yet")
+        else:
+            st.dataframe(events.tail(30), use_container_width=True)
+    else:
+        st.info("No control events yet")
+
+    order_events_path = DATA_DIR / "exchange" / "order_events.jsonl"
+    if order_events_path.exists():
+        st.caption("Order events")
+        order_events = _read_jsonl_table(str(order_events_path), tail_rows=100)
+        if order_events.empty:
+            st.info("No order events yet")
+        else:
+            st.dataframe(order_events.tail(30), use_container_width=True)
+
+    st.subheader("Raw State")
+    runtime_state = _load_runtime_state()
+    worker_state = _load_worker_state()
+    st.json(
+        {
+            "runtime_state": runtime_state,
+            "worker_state": {
+                "updated_at": worker_state.updated_at,
+                "last_cycle_at": worker_state.last_cycle_at,
+                "last_error": worker_state.last_error,
+                "last_processed_bars_count": len(worker_state.last_processed_bars),
+                "last_results_count": len(worker_state.last_results),
+            },
+        }
+    )
+
+
+def _render_sidebar_controls() -> None:
+    st.sidebar.subheader("Controls")
+    st.sidebar.caption(
+        "Fixed here for always-visible operation. Refresh JOB recomputes risk/runtime data."
+    )
+    control_cols = st.sidebar.columns(1)
+    for action in ["START", "STOP", "EMERGENCY_STOP", "EMERGENCY_CANCEL", "CLOSE_ALL"]:
+        if control_cols[0].button(action, type="primary" if "EMERGENCY" in action else "secondary"):
+            now = datetime.now(UTC)
+            append_control_event(
+                CONTROL_LOG,
+                ControlEvent(
+                    action=action,  # type: ignore[arg-type]
+                    requested_at=now,
+                    applied_at=now,
+                    result="accepted",
+                ),
+            )
+            st.sidebar.success(f"{action} recorded")
+
+    job_state = _load_job_state()
+    job_running = str(job_state.get("status", "")) == "running"
+    if st.sidebar.button("Run refresh JOB", disabled=job_running):
+        with st.spinner("Running refresh job..."):
+            result = _run_refresh_job()
+        st.session_state["last_refresh_job"] = result
+        st.rerun()
+
+    if job_state:
+        status = str(job_state.get("status", "unknown"))
+        if status == "success":
+            st.sidebar.success("JOB: success")
+        elif status == "running":
+            st.sidebar.info("JOB: running")
+        elif status == "failed":
+            st.sidebar.error("JOB: failed")
+        else:
+            st.sidebar.caption(f"JOB: {status}")
+        if job_state.get("started_at"):
+            st.sidebar.caption(f"started_at={job_state.get('started_at')}")
+        if job_state.get("finished_at"):
+            st.sidebar.caption(f"finished_at={job_state.get('finished_at')}")
+        if job_state.get("message"):
+            st.sidebar.caption(str(job_state.get("message")))
+        steps_df = _format_job_state(job_state)
+        if not steps_df.empty:
+            st.sidebar.dataframe(steps_df, width="stretch", hide_index=True)
+        stdout_tail = str(job_state.get("stdout_tail", "")).strip()
+        stderr_tail = str(job_state.get("stderr_tail", "")).strip()
+        if stdout_tail:
+            with st.sidebar.expander("JOB stdout"):
+                st.text(stdout_tail)
+        if stderr_tail:
+            with st.sidebar.expander("JOB stderr"):
+                st.text(stderr_tail)
+
+
+@_fragment(AUTO_REFRESH_SEC)
+def _render_console() -> None:
+    runtime_state = _load_runtime_state()
+    worker_state = _load_worker_state()
+    gateway_state = read_json_with_recovery(DATA_DIR / "exchange" / "gateway_state.json")
+    gateway_state = gateway_state if isinstance(gateway_state, dict) else {}
+    risk_df = _read_optional(DATA_DIR / "risk" / "risk_eval.parquet")
+    risk_input_df = _read_optional(DATA_DIR / "risk" / "risk_input.parquet")
+    position_df = _read_optional(DATA_DIR / "positions" / "positions.parquet")
+    regime_snapshot = _load_regime_snapshot()
+    portfolio_df = _read_optional(DATA_DIR / "backtest" / "portfolio.parquet")
+    ohlcv_df = _read_optional(DATA_DIR / "parquet" / "BTCUSDT_1m.parquet")
+    runtime_metrics = _load_runtime_metrics(DEFAULT_RUNTIME_METRICS_PATH)
+    candidate_report = _load_candidate_report()
+
+    overview_tab, trading_tab, charts_tab, analysis_tab, logs_tab = st.tabs(
+        ["Overview", "Trading", "Charts", "Analysis", "Logs"]
+    )
+    with overview_tab:
+        _render_overview_tab(
+            runtime_state=runtime_state,
+            worker_state=worker_state,
+            runtime_metrics=runtime_metrics,
+            risk_df=risk_df,
+            risk_input_df=risk_input_df,
+            regime_snapshot=regime_snapshot,
+            position_df=position_df,
+            gateway_state=gateway_state,
+            candidate_report=candidate_report,
+        )
+    with trading_tab:
+        _render_trading_tab(
+            worker_state=worker_state,
+            position_df=position_df,
+            risk_df=risk_df,
+            candidate_report=candidate_report,
+        )
+    with charts_tab:
+        _render_charts_tab(
+            risk_df=risk_df,
+            ohlcv_df=ohlcv_df,
+        )
+    with analysis_tab:
+        _render_analysis_tab(portfolio_df=portfolio_df)
+    with logs_tab:
+        _render_logs_tab(runtime_metrics_path=DEFAULT_RUNTIME_METRICS_PATH)
+
+
+def _legacy_main() -> None:
     st.set_page_config(page_title="Auto Trader Ops Console", layout="wide")
     st.title("Auto Trader Operations Dashboard")
     st.sidebar.subheader("Performance")
@@ -795,6 +2637,14 @@ def main() -> None:
                         if c in wf_invalid.columns
                     ]
                     st.dataframe(wf_invalid[cols].tail(50), use_container_width=True)
+
+
+def main() -> None:
+    st.set_page_config(page_title="Auto Trader Ops Console", layout="wide")
+    st.title("Auto Trader Operations Dashboard")
+    st.caption("Auto-refresh every 10 seconds. Live state is updated automatically.")
+    _render_sidebar_controls()
+    _render_console()
 
 
 if __name__ == "__main__":

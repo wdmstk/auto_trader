@@ -50,17 +50,24 @@ class OrderGateway:
     def set_connected(self, connected: bool) -> None:
         self._connected = connected
 
-    def submit(self, req: OrderRequest) -> OrderEvent:
+    def submit(
+        self,
+        req: OrderRequest,
+        *,
+        allow_runtime_gate: bool = False,
+        allow_policy_gate: bool = False,
+    ) -> OrderEvent:
         requested_at = now_utc()
-        runtime_block_reason = _runtime_gate_reason(self.config.runtime_state_path)
-        if runtime_block_reason is not None:
-            return _event(
-                req=req,
-                order_id="",
-                status="rejected",
-                reason=runtime_block_reason.value,
-                requested_at=requested_at,
-            )
+        if not allow_runtime_gate:
+            runtime_block_reason = _runtime_gate_reason(self.config.runtime_state_path)
+            if runtime_block_reason is not None:
+                return _event(
+                    req=req,
+                    order_id="",
+                    status="rejected",
+                    reason=runtime_block_reason.value,
+                    requested_at=requested_at,
+                )
         if req.client_order_id in self._seen_client_ids:
             return _event(
                 req=req,
@@ -77,7 +84,7 @@ class OrderGateway:
                 reason=ErrorCode.STALE_SIGNAL.value,
                 requested_at=requested_at,
             )
-        if req.regime == "HIGH_VOL" or (not req.pass_filter):
+        if (not allow_policy_gate) and (req.regime == "HIGH_VOL" or (not req.pass_filter)):
             return _event(
                 req=req,
                 order_id="",

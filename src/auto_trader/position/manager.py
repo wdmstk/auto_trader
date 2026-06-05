@@ -71,6 +71,9 @@ class PositionManager:
     def all_positions(self) -> list[PositionState]:
         return list(self._positions.values())
 
+    def replace_positions(self, positions: list[PositionState]) -> None:
+        self._positions = {pos.symbol: pos for pos in positions}
+
     def emergency_stopped(self) -> bool:
         return self._emergency_stopped
 

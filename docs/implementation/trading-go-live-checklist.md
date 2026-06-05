@@ -62,6 +62,7 @@
 - [x] range閾値調整でシグナル成立不足を解消
   - コマンド: `RANGE_REQUIRE_REVERSAL_CANDLE=false RANGE_WICK_RATIO_MIN=0.3 ./scripts/timeframe_comparison.sh`
   - 結果: range集計で全時間足に有効シグナルを確認（詳細は評価記録参照）
+  - follow-up: `docs/implementation/weekly-revalidation-operations.md` の `range` / `trend` 推奨モードも参照
 
 ## 4. Longrun (8h+)
 - [x] 8時間以上の連続運転証跡

@@ -147,6 +147,38 @@ def test_runtime_gate_blocks_on_emergency_stop(tmp_path: Path) -> None:
     assert transport.calls == 0
 
 
+def test_emergency_close_can_bypass_policy_gate(tmp_path: Path) -> None:
+    runtime_state = tmp_path / "control_state.json"
+    runtime_state.write_text(
+        json.dumps(
+            {
+                "trading_enabled": False,
+                "emergency_stop": True,
+                "close_all_requested": True,
+                "updated_at": datetime.now(UTC).isoformat(),
+            },
+            ensure_ascii=True,
+        ),
+        encoding="utf-8",
+    )
+    transport = FlakyTransport(0)
+    gw = OrderGateway(transport, GatewayConfig(runtime_state_path=str(runtime_state)))
+    req = OrderRequest(
+        symbol="BTCUSDT",
+        side="sell",
+        qty=0.01,
+        signal_ts=datetime.now(UTC),
+        regime="HIGH_VOL",
+        pass_filter=False,
+        client_order_id="cid_emergency_bypass",
+        order_type="market",
+        limit_price=None,
+    )
+    ev = gw.submit(req, allow_runtime_gate=True, allow_policy_gate=True)
+    assert ev.status == "ack"
+    assert transport.calls == 1
+
+
 def test_rate_limit_retries_with_retry_after() -> None:
     waits: list[float] = []
 

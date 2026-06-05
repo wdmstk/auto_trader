@@ -31,6 +31,20 @@ def generate_range_signals(
     merged = _merge_inputs(features_df, regime_df, risk_df)
     merged = merged.sort_values(["symbol", "timeframe", "timestamp"]).reset_index(drop=True)
 
+    n_rows = len(merged)
+    symbol_values = merged["symbol"].astype(str).to_numpy(copy=False)
+    timeframe_values = merged["timeframe"].astype(str).to_numpy(copy=False)
+    regime_values = merged["regime"].astype(str).to_numpy(copy=False)
+    trade_allowed_values = (
+        merged["is_trade_allowed"].fillna(False).astype(bool).to_numpy(copy=False)
+    )
+    risk_blocked_values = merged["risk_blocked"].fillna(False).astype(bool).to_numpy(copy=False)
+    rsi_values = merged["rsi"].astype(float).to_numpy(copy=False)
+    wick_values = merged["wick_ratio"].astype(float).to_numpy(copy=False)
+    mr_values = merged["mean_reversion_distance"].astype(float).to_numpy(copy=False)
+    reversal_values = merged["reversal_candle_flag"].fillna(0).astype(int).to_numpy(copy=False)
+    enabled_symbols = set(cfg.enabled_symbols)
+
     entry_signal: list[bool] = []
     exit_signal: list[bool] = []
     risk_blocked: list[bool] = []
@@ -40,16 +54,18 @@ def generate_range_signals(
     size_ratio: list[float] = []
 
     cooldown_left: dict[tuple[str, str], int] = {}
-    for _, row in merged.iterrows():
+    for i in range(n_rows):
         reasons: list[str] = []
-        blocked = bool(row.get("risk_blocked", False))
-        symbol = str(row.get("symbol", ""))
-        timeframe = str(row.get("timeframe", ""))
+        blocked = bool(risk_blocked_values[i])
+        symbol = str(symbol_values[i])
+        timeframe = str(timeframe_values[i])
         key = (symbol, timeframe)
         cd = int(cooldown_left.get(key, 0))
-        symbol_enabled = (not cfg.enabled_symbols) or (symbol in cfg.enabled_symbols)
+        symbol_enabled = (not enabled_symbols) or (symbol in enabled_symbols)
 
-        is_high_vol = str(row["regime"]) == "HIGH_VOL" or not bool(row["is_trade_allowed"])
+        regime = str(regime_values[i])
+        is_trade_allowed = bool(trade_allowed_values[i])
+        is_high_vol = regime == "HIGH_VOL" or not is_trade_allowed
         if is_high_vol:
             reasons.append("RG_BLOCK_HIGH_VOL")
         if blocked:
@@ -59,14 +75,12 @@ def generate_range_signals(
         if cd > 0:
             reasons.append("RG_BLOCK_REENTRY_COOLDOWN")
 
-        allow_entry_gate = (
-            (str(row["regime"]) == "RANGE") and bool(row["is_trade_allowed"]) and (not blocked)
-        )
+        allow_entry_gate = (regime == "RANGE") and is_trade_allowed and (not blocked)
 
-        rsi_ok = cfg.rsi_min <= _f(row["rsi"]) <= cfg.rsi_max
-        wick_ok = _f(row["wick_ratio"]) >= cfg.wick_ratio_min
-        mr_ok = _f(row["mean_reversion_distance"]) <= cfg.mean_reversion_distance_max
-        rev_ok = (int(row["reversal_candle_flag"]) == 1) if cfg.require_reversal_candle else True
+        rsi_ok = cfg.rsi_min <= float(rsi_values[i]) <= cfg.rsi_max
+        wick_ok = float(wick_values[i]) >= cfg.wick_ratio_min
+        mr_ok = float(mr_values[i]) <= cfg.mean_reversion_distance_max
+        rev_ok = (int(reversal_values[i]) == 1) if cfg.require_reversal_candle else True
         score = (int(rsi_ok) + int(wick_ok) + int(mr_ok) + int(rev_ok)) / 4.0
         score_ok = score >= cfg.min_entry_score
 
@@ -92,8 +106,8 @@ def generate_range_signals(
         elif allow_entry_gate and symbol_enabled and (cd <= 0) and (not score_ok):
             reasons.append("RG_BLOCK_SCORE_LOW")
 
-        exit_mr = abs(_f(row["mean_reversion_distance"])) <= cfg.exit_mean_reversion_neutral_abs
-        exit_regime = str(row["regime"]) != "RANGE"
+        exit_mr = abs(float(mr_values[i])) <= cfg.exit_mean_reversion_neutral_abs
+        exit_regime = regime != "RANGE"
         exit_sig = exit_mr or exit_regime
         if exit_mr:
             reasons.append("RG_EXIT_MEAN_REVERTED")
@@ -111,7 +125,7 @@ def generate_range_signals(
         entry_signal.append(bool(entry))
         exit_signal.append(bool(exit_sig))
         risk_blocked.append(blocked)
-        regimes.append(str(row.get("regime", "")))
+        regimes.append(regime)
         pass_filters.append(bool(allow_entry_gate))
         reason_codes.append(sorted(set(reasons)))
         size_ratio.append(cfg.default_position_size_ratio if entry else 0.0)

@@ -65,12 +65,15 @@ def generate_tp_sl_labels(
 
 def _label_group(g: pd.DataFrame, cfg: LabelConfig) -> pd.DataFrame:
     n = len(g)
+    close_values = g["close"].astype(float).to_numpy(copy=False)
+    high_values = g["high"].astype(float).to_numpy(copy=False)
+    low_values = g["low"].astype(float).to_numpy(copy=False)
     labels: list[int | None] = []
     hit_bars: list[int | None] = []
     reasons: list[str] = []
 
     for i in range(n):
-        entry = _safe_float(g.loc[i, "close"])
+        entry = float(close_values[i])
         tp = entry * (1.0 + cfg.tp_pct)
         sl = entry * (1.0 - cfg.sl_pct)
         label: int | None = None
@@ -79,8 +82,8 @@ def _label_group(g: pd.DataFrame, cfg: LabelConfig) -> pd.DataFrame:
 
         end = min(n, i + 1 + cfg.max_horizon_bars)
         for j in range(i + 1, end):
-            high = _safe_float(g.loc[j, "high"])
-            low = _safe_float(g.loc[j, "low"])
+            high = float(high_values[j])
+            low = float(low_values[j])
             tp_hit = high >= tp
             sl_hit = low <= sl
             if tp_hit and sl_hit:

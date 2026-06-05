@@ -14,6 +14,7 @@ SIGNALS_DIR="${SIGNALS_DIR:-data/signals}"
 OUTPUT_DIR="${OUTPUT_DIR:-data/validation/strategy_check}"
 SYMBOL="${SYMBOL:-BTCUSDT}"
 TIMEFRAME="${TIMEFRAME:-1m}"
+ML_ARTIFACT_PATH="${ML_ARTIFACT_PATH:-}"
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -39,7 +40,8 @@ range_build_out="$("$PYTHON_BIN" -m auto_trader.strategy \
   --risk-path "$RISK_INPUT_PATH" \
   --symbol "$SYMBOL" \
   --timeframe "$TIMEFRAME" \
-  --output-dir "$SIGNALS_DIR")"
+  --output-dir "$SIGNALS_DIR" \
+  ${ML_ARTIFACT_PATH:+--ml-artifact-path "$ML_ARTIFACT_PATH"})"
 echo "$range_build_out"
 RANGE_SIGNALS_PATH="$(echo "$range_build_out" | sed -n 's/^saved=\([^ ]*\).*/\1/p')"
 if [[ -z "$RANGE_SIGNALS_PATH" ]]; then
@@ -54,7 +56,8 @@ trend_build_out="$("$PYTHON_BIN" -m auto_trader.strategy \
   --risk-path "$RISK_INPUT_PATH" \
   --symbol "$SYMBOL" \
   --timeframe "$TIMEFRAME" \
-  --output-dir "$SIGNALS_DIR")"
+  --output-dir "$SIGNALS_DIR" \
+  ${ML_ARTIFACT_PATH:+--ml-artifact-path "$ML_ARTIFACT_PATH"})"
 echo "$trend_build_out"
 TREND_SIGNALS_PATH="$(echo "$trend_build_out" | sed -n 's/^saved=\([^ ]*\).*/\1/p')"
 if [[ -z "$TREND_SIGNALS_PATH" ]]; then

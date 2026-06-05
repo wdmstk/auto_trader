@@ -65,7 +65,7 @@ def compute_features(
 
         # TREND features
         returns = g2["close"].pct_change()
-        sign = returns.apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
+        sign = returns.gt(0).astype(int) - returns.lt(0).astype(int)
         g2["momentum_persistence"] = sign.rolling(cfg.persistence_window).mean().abs()
         rolling_max = g2["close"].shift(1).rolling(cfg.persistence_window).max()
         breakout = (g2["close"] > rolling_max).astype(int)

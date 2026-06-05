@@ -41,18 +41,18 @@ class PositionStore:
         with FileLock(self.lock_path(), timeout_sec=self.lock_timeout_sec):
             df = _read_parquet_with_recovery(self.path())
         out: list[PositionState] = []
-        for _, row in df.iterrows():
-            updated_at = row["updated_at"]
+        for row in df.itertuples(index=False):
+            updated_at = row.updated_at
             if hasattr(updated_at, "to_pydatetime"):
                 updated_at = updated_at.to_pydatetime()
             out.append(
                 PositionState(
-                    symbol=str(row["symbol"]),
-                    side=str(row["side"]),  # type: ignore[arg-type]
-                    qty=float(row["qty"]),
-                    avg_entry=float(row["avg_entry"]),
-                    unrealized_pnl_pct=float(row["unrealized_pnl_pct"]),
-                    add_count=int(row["add_count"]),
+                    symbol=str(row.symbol),
+                    side=str(row.side),  # type: ignore[arg-type]
+                    qty=float(row.qty),
+                    avg_entry=float(row.avg_entry),
+                    unrealized_pnl_pct=float(row.unrealized_pnl_pct),
+                    add_count=int(row.add_count),
                     updated_at=updated_at,
                 )
             )

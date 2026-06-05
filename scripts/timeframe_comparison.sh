@@ -27,6 +27,9 @@ TREND_MIN_ENTRY_SCORE="${TREND_MIN_ENTRY_SCORE:-1.0}"
 TREND_REENTRY_COOLDOWN_BARS="${TREND_REENTRY_COOLDOWN_BARS:-0}"
 TREND_ENABLED_SYMBOLS="${TREND_ENABLED_SYMBOLS:-}"
 DRIFT_REPORT_PATH="${DRIFT_REPORT_PATH:-}"
+ML_ARTIFACT_PATH="${ML_ARTIFACT_PATH:-}"
+ALLOWED_HOURS="${ALLOWED_HOURS:-}"
+CANDIDATE_REPORT_PATH="${CANDIDATE_REPORT_PATH:-}"
 FEE_RATE="${FEE_RATE:-0.0004}"
 SLIPPAGE_RATE="${SLIPPAGE_RATE:-0.0005}"
 SPREAD_RATE="${SPREAD_RATE:-0.0003}"
@@ -49,6 +52,7 @@ echo "symbols=$SYMBOLS timeframes=$TIMEFRAMES strategies=$STRATEGIES folds=$FOLD
 echo "range_cfg: rsi=[$RANGE_RSI_MIN,$RANGE_RSI_MAX] wick>=$RANGE_WICK_RATIO_MIN mr<=$RANGE_MEAN_REVERSION_DISTANCE_MAX require_reversal=$RANGE_REQUIRE_REVERSAL_CANDLE"
 echo "range_gate: min_score=$RANGE_MIN_ENTRY_SCORE cooldown=$RANGE_REENTRY_COOLDOWN_BARS enabled=[$RANGE_ENABLED_SYMBOLS]"
 echo "trend_gate: min_score=$TREND_MIN_ENTRY_SCORE cooldown=$TREND_REENTRY_COOLDOWN_BARS enabled=[$TREND_ENABLED_SYMBOLS]"
+echo "session_gate: allowed_hours=${ALLOWED_HOURS:-off}"
 echo "backtest_cfg: mode=$ORDER_MODE fee=$FEE_RATE maker=$MAKER_FEE_RATE taker=$TAKER_FEE_RATE slippage=$SLIPPAGE_RATE spread=$SPREAD_RATE delay=$DELAY_BARS"
 
 for symbol in ${SYMBOLS//,/ }; do
@@ -71,7 +75,7 @@ import pandas as pd
 src = Path(sys.argv[1])
 dst = Path(sys.argv[2])
 timeframe = sys.argv[3]
-rule_map = {"5m": "5min", "15m": "15min"}
+rule_map = {"5m": "5min", "15m": "15min", "30m": "30min", "1h": "1h"}
 if timeframe not in rule_map:
     raise SystemExit(f"unsupported timeframe: {timeframe}")
 
@@ -129,7 +133,9 @@ PY
           --range-min-entry-score "$RANGE_MIN_ENTRY_SCORE" \
           --range-reentry-cooldown-bars "$RANGE_REENTRY_COOLDOWN_BARS" \
           --range-enabled-symbols "$RANGE_ENABLED_SYMBOLS" \
-          ${DRIFT_REPORT_PATH:+--drift-report-path "$DRIFT_REPORT_PATH"}
+          ${DRIFT_REPORT_PATH:+--drift-report-path "$DRIFT_REPORT_PATH"} \
+          ${ML_ARTIFACT_PATH:+--ml-artifact-path "$ML_ARTIFACT_PATH"} \
+          ${ALLOWED_HOURS:+--allowed-hours "$ALLOWED_HOURS"}
       else
         "$PYTHON_BIN" -m auto_trader.strategy \
           --strategy "$strategy" \
@@ -141,7 +147,9 @@ PY
           --trend-min-entry-score "$TREND_MIN_ENTRY_SCORE" \
           --trend-reentry-cooldown-bars "$TREND_REENTRY_COOLDOWN_BARS" \
           --trend-enabled-symbols "$TREND_ENABLED_SYMBOLS" \
-          ${DRIFT_REPORT_PATH:+--drift-report-path "$DRIFT_REPORT_PATH"}
+          ${DRIFT_REPORT_PATH:+--drift-report-path "$DRIFT_REPORT_PATH"} \
+          ${ML_ARTIFACT_PATH:+--ml-artifact-path "$ML_ARTIFACT_PATH"} \
+          ${ALLOWED_HOURS:+--allowed-hours "$ALLOWED_HOURS"}
       fi
 
       "$PYTHON_BIN" - "$DATA_ROOT/signals/${symbol}_${timeframe}_${strategy}_signals.parquet" <<'PY'
@@ -221,6 +229,14 @@ for symbol in symbols:
                     "gross_pnl_est_mean": float(df["gross_pnl_est"].mean()),
                     "total_cost_est_mean": float(df["total_cost_est"].mean()),
                     "closed_trades_mean": float(df["closed_trades"].mean()),
+                    "limit_order_count_mean": float(df["limit_order_count"].mean()),
+                    "limit_filled_count_mean": float(df["limit_filled_count"].mean()),
+                    "limit_partial_count_mean": float(df["limit_partial_count"].mean()),
+                    "limit_expired_count_mean": float(df["limit_expired_count"].mean()),
+                    "limit_canceled_count_mean": float(df["limit_canceled_count"].mean()),
+                    "limit_fill_rate_mean": float(df["limit_fill_rate"].mean()),
+                    "limit_maker_fill_rate_mean": float(df["limit_maker_fill_rate"].mean()),
+                    "limit_taker_like_rate_mean": float(df["limit_taker_like_rate"].mean()),
                 }
             )
 
@@ -254,5 +270,22 @@ out = {
 summary_path.write_text(json.dumps(out, ensure_ascii=True, indent=2), encoding="utf-8")
 print(summary_path)
 PY
+
+if [[ -n "$CANDIDATE_REPORT_PATH" ]]; then
+  "$PYTHON_BIN" - "$SUMMARY_PATH" "$CANDIDATE_REPORT_PATH" <<'PY'
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+from auto_trader.analysis.candidates import write_candidate_report
+
+summary_path = Path(sys.argv[1])
+candidate_path = Path(sys.argv[2])
+report = write_candidate_report(summary_path, json_path=candidate_path)
+print(candidate_path)
+print(report["status"])
+PY
+fi
 
 echo "done: $SUMMARY_PATH"

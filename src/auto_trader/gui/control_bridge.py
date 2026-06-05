@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, cast
 
 from auto_trader.gui.state import Action
+from auto_trader.stateio import FileLock
 
 
 class ControlActionHandler(Protocol):
@@ -28,10 +30,16 @@ def dispatch_control_events(
     control_log_path: str | Path,
     handler: ControlActionHandler,
     cursor_path: str | Path | None = None,
+    quarantine_path: str | Path | None = None,
 ) -> ControlDispatchResult:
     log_path = Path(control_log_path)
     if not log_path.exists():
         return ControlDispatchResult(processed=0, actions=[])
+    quarantine = (
+        Path(quarantine_path)
+        if quarantine_path is not None
+        else log_path.with_name(f"{log_path.stem}.bad{log_path.suffix}")
+    )
 
     lines = log_path.read_text(encoding="utf-8").splitlines()
     cursor = Path(cursor_path) if cursor_path is not None else None
@@ -41,9 +49,17 @@ def dispatch_control_events(
 
     seen_actions: list[Action] = []
     for line in lines[start_index:]:
-        raw = json.loads(line)
+        try:
+            raw = json.loads(line)
+        except Exception as exc:
+            _append_quarantine(quarantine, line, reason=f"invalid_json:{exc.__class__.__name__}")
+            continue
+        if not isinstance(raw, dict):
+            _append_quarantine(quarantine, line, reason="invalid_json:non_object")
+            continue
         action = str(raw.get("action", "")).upper()
         if action not in {"START", "STOP", "EMERGENCY_STOP", "EMERGENCY_CANCEL", "CLOSE_ALL"}:
+            _append_quarantine(quarantine, line, reason=f"invalid_action:{action or 'missing'}")
             continue
         typed_action = cast(Action, action)
         _dispatch(typed_action, handler)
@@ -85,3 +101,18 @@ def _write_cursor(path: Path, line_no: int) -> None:
         "updated_at": datetime.now(UTC).isoformat(),
     }
     path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+
+
+def _append_quarantine(path: Path, line: str, *, reason: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(f"{path.suffix}.lock")
+    payload = {
+        "reason": reason,
+        "raw_line": line,
+        "recorded_at": datetime.now(UTC).isoformat(),
+    }
+    with FileLock(lock_path, timeout_sec=1.0):
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=True) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
