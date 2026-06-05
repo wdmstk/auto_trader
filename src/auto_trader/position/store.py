@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any, cast
 
 import pandas as pd
 
@@ -49,11 +50,11 @@ class PositionStore:
                 PositionState(
                     symbol=str(row.symbol),
                     side=str(row.side),  # type: ignore[arg-type]
-                    qty=float(row.qty),
-                    avg_entry=float(row.avg_entry),
-                    unrealized_pnl_pct=float(row.unrealized_pnl_pct),
-                    add_count=int(row.add_count),
-                    updated_at=updated_at,
+                    qty=float(cast(Any, row.qty)),
+                    avg_entry=float(cast(Any, row.avg_entry)),
+                    unrealized_pnl_pct=float(cast(Any, row.unrealized_pnl_pct)),
+                    add_count=int(cast(Any, row.add_count)),
+                    updated_at=cast(Any, updated_at),
                 )
             )
         return out

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 import pandas as pd
 
@@ -74,6 +75,7 @@ def run_walkforward_report(
     invalid_entry = merged["entry_signal"] & (merged["regime"] != expected_regime)
 
     for fold, fold_df in merged.groupby("fold", sort=True):
+        fold_value = int(cast(Any, fold))
         fold_df = fold_df.copy()
         if fold_df.empty:
             continue
@@ -110,34 +112,34 @@ def run_walkforward_report(
         )
         if not trades.empty:
             trades = trades.copy()
-            trades["fold"] = fold
+            trades["fold"] = fold_value
             trade_rows.append(trades)
         if not portfolio.empty:
             portfolio = portfolio.copy()
-            portfolio["fold"] = fold
+            portfolio["fold"] = fold_value
             portfolio_rows.append(portfolio)
 
         entries = signal_df[signal_df["entry_signal"]]
         fold_rows.append(
             {
-                "fold": int(fold),
+                "fold": fold_value,
                 "bars": int(len(fold_df)),
                 "entries": int(len(entries)),
                 "entries_long": int((entries["entry_signal"] == True).sum()),  # noqa: E712
                 "invalid_regime_entries": int(
                     (entries["regime"].astype(str) != expected_regime).sum()
                 ),
-                "pf": float(metrics["PF"]),
-                "expectancy": float(metrics["Expectancy"]),
-                "expectancy_bps": float(metrics["ExpectancyBps"]),
-                "win_rate": float(metrics["WinRate"]),
-                "max_dd": float(metrics["MaxDD"]),
-                "monthly_pnl": float(metrics["MonthlyPnL"]),
-                "period_pnl": float(metrics["PeriodPnL"]),
-                "gross_pnl_est": float(metrics["GrossPnLEst"]),
-                "total_cost_est": float(metrics["TotalCostEst"]),
-                "fee_cost": float(metrics["FeeCost"]),
-                "impact_cost_est": float(metrics["ImpactCostEst"]),
+                "pf": float(cast(Any, metrics["PF"])),
+                "expectancy": float(cast(Any, metrics["Expectancy"])),
+                "expectancy_bps": float(cast(Any, metrics["ExpectancyBps"])),
+                "win_rate": float(cast(Any, metrics["WinRate"])),
+                "max_dd": float(cast(Any, metrics["MaxDD"])),
+                "monthly_pnl": float(cast(Any, metrics["MonthlyPnL"])),
+                "period_pnl": float(cast(Any, metrics["PeriodPnL"])),
+                "gross_pnl_est": float(cast(Any, metrics["GrossPnLEst"])),
+                "total_cost_est": float(cast(Any, metrics["TotalCostEst"])),
+                "fee_cost": float(cast(Any, metrics["FeeCost"])),
+                "impact_cost_est": float(cast(Any, metrics["ImpactCostEst"])),
                 "closed_trades": float(metrics["ClosedTrades"]),
                 "limit_order_count": float(metrics["LimitOrderCount"]),
                 "limit_filled_count": float(metrics["LimitFilledCount"]),

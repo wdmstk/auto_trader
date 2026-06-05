@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
@@ -131,10 +131,10 @@ def _recommend_for_strategy(
             "symbol": str(row.symbol),
             "timeframe": str(row.timeframe) if "timeframe" in passing.columns else "",
             "strategy": strategy,
-            "pf_mean": float(row.pf_mean),
-            "expectancy_bps_mean": float(row.expectancy_bps_mean),
-            "period_pnl_mean": float(row.period_pnl_mean),
-            "max_dd_mean": float(row.max_dd_mean),
+            "pf_mean": float(cast(Any, row.pf_mean)),
+            "expectancy_bps_mean": float(cast(Any, row.expectancy_bps_mean)),
+            "period_pnl_mean": float(cast(Any, row.period_pnl_mean)),
+            "max_dd_mean": float(cast(Any, row.max_dd_mean)),
         }
         for row in passing.itertuples(index=False)
     ]
@@ -143,7 +143,7 @@ def _recommend_for_strategy(
 
 
 def _load_rows(summary: str | Path | dict[str, Any]) -> list[dict[str, Any]]:
-    if isinstance(summary, (str, Path)):
+    if isinstance(summary, str) or isinstance(summary, Path):
         path = Path(summary)
         payload = json.loads(path.read_text(encoding="utf-8"))
     else:

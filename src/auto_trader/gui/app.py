@@ -5,9 +5,10 @@ import importlib
 import math
 import subprocess
 import sys
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, ParamSpec, TypeVar, cast
 
 import pandas as pd
 import streamlit as st
@@ -32,17 +33,19 @@ DEFAULT_RUNTIME_METRICS_PATH = DATA_DIR / "validation" / "runtime_metrics.jsonl"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 JOB_STATE_PATH = DATA_DIR / "runtime" / "gui_refresh_job.json"
 
-_STREAMLIT_DATAFRAME = st.dataframe
+_STREAMLIT_DATAFRAME: Any = st.dataframe
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
 
 
-def _dataframe(*args: object, **kwargs: object):
+def _dataframe(*args: object, **kwargs: object) -> Any:
     use_container_width = kwargs.pop("use_container_width", None)
     if "width" not in kwargs and use_container_width is not None:
         kwargs["width"] = "stretch" if use_container_width else "content"
     return _STREAMLIT_DATAFRAME(*args, **kwargs)
 
 
-st.dataframe = _dataframe  # type: ignore[assignment]
+st.dataframe = _dataframe
 
 
 @st.cache_data(ttl=10, show_spinner=False)
@@ -755,15 +758,16 @@ def _render_drift_panel() -> None:
             st.info("No feature-level details")
 
 
-def _fragment(run_every_sec: float):
+def _fragment(run_every_sec: float) -> Callable[[Callable[_P, _T]], Callable[_P, _T]]:
     fragment = getattr(st, "fragment", None)
     if fragment is None:
 
-        def _identity(func):
+        def _identity(func: Callable[_P, _T]) -> Callable[_P, _T]:
             return func
 
         return _identity
-    return fragment(run_every=run_every_sec)
+    fragment_func = cast(Any, fragment(run_every=run_every_sec))
+    return cast(Callable[[Callable[_P, _T]], Callable[_P, _T]], fragment_func)
 
 
 def _parse_datetime(value: object) -> datetime | None:
@@ -772,12 +776,12 @@ def _parse_datetime(value: object) -> datetime | None:
     if value is None:
         return None
     try:
-        parsed = pd.to_datetime(value, utc=True, errors="coerce")
+        parsed = pd.to_datetime(cast(Any, value), utc=True, errors="coerce")
     except Exception:
         return None
     if pd.isna(parsed):
         return None
-    return parsed.to_pydatetime()
+    return cast(datetime, parsed.to_pydatetime())
 
 
 def _age_seconds(value: object, now: datetime | None = None) -> float | None:
@@ -927,11 +931,11 @@ def _active_worker_symbols(worker_state: WorkerState) -> list[str]:
     return sorted(symbols)
 
 
-def _candidate_frame(report: dict[str, object], status: str | None = None) -> pd.DataFrame:
+def _candidate_frame(report: Mapping[str, object], status: str | None = None) -> pd.DataFrame:
     rows = report.get("rows", [])
     if not isinstance(rows, list) or not rows:
         return pd.DataFrame()
-    frame = pd.DataFrame([row for row in rows if isinstance(row, dict)])
+    frame = pd.DataFrame([cast(dict[str, object], row) for row in rows if isinstance(row, dict)])
     if frame.empty:
         return frame
     if status is not None and "candidate_status" in frame.columns:
@@ -939,7 +943,7 @@ def _candidate_frame(report: dict[str, object], status: str | None = None) -> pd
     return frame.reset_index(drop=True)
 
 
-def _candidate_best_by_symbol(report: dict[str, object]) -> dict[str, dict[str, object]]:
+def _candidate_best_by_symbol(report: Mapping[str, object]) -> dict[str, dict[str, object]]:
     best_rows = report.get("best_by_symbol_strategy", [])
     if not isinstance(best_rows, list):
         return {}
@@ -947,10 +951,11 @@ def _candidate_best_by_symbol(report: dict[str, object]) -> dict[str, dict[str, 
     for row in best_rows:
         if not isinstance(row, dict):
             continue
-        symbol = str(row.get("symbol", "")).strip()
+        row_map = cast(dict[str, object], row)
+        symbol = str(row_map.get("symbol", "")).strip()
         if not symbol or symbol in out:
             continue
-        out[symbol] = row
+        out[symbol] = row_map
     return out
 
 
@@ -959,14 +964,16 @@ def _overview_symbol_table(
     symbols: list[str],
     worker_state: WorkerState,
     risk_df: pd.DataFrame,
-    candidate_best: dict[str, dict[str, object]],
+    candidate_best: Mapping[str, Mapping[str, object]],
     candidate_status_map: dict[str, str],
     active_symbols: set[str] | None = None,
     watchlist_symbols: set[str] | None = None,
 ) -> pd.DataFrame:
     worker_frame = _worker_last_results_frame(worker_state)
     worker_lookup = {
-        str(row["symbol"]): row.to_dict() for _, row in worker_frame.iterrows() if "symbol" in row
+        str(row["symbol"]): cast(dict[str, object], row.to_dict())
+        for _, row in worker_frame.iterrows()
+        if "symbol" in row
     }
     last_processed_lookup: dict[str, str] = {}
     for key, value in worker_state.last_processed_bars.items():
@@ -1085,7 +1092,11 @@ def _strategy_symbol_table(
             preferred_regime_timeframe=preferred_regime_timeframe,
         )
         if status == "core":
-            reason = _signal_gate_summary(worker_row) if worker_row else "worker result unavailable"
+            reason = (
+                _signal_gate_summary(cast(Mapping[str, object], worker_row))
+                if worker_row
+                else "worker result unavailable"
+            )
         elif status == "watchlist":
             reason = "watchlist候補"
         elif status == "probe":
@@ -1232,7 +1243,7 @@ def _run_refresh_job() -> dict[str, object]:
             text=True,
             check=False,
         )
-        step_record = {
+        step_record: dict[str, object] = {
             "step": step_name,
             "status": "success" if completed.returncode == 0 else "failed",
             "returncode": completed.returncode,
@@ -1270,7 +1281,7 @@ def _run_refresh_job() -> dict[str, object]:
     return final_state
 
 
-def _format_job_state(job_state: dict[str, object]) -> pd.DataFrame:
+def _format_job_state(job_state: Mapping[str, object]) -> pd.DataFrame:
     steps = job_state.get("steps", [])
     rows: list[dict[str, object]] = []
     if isinstance(steps, list):
@@ -1338,6 +1349,9 @@ def _worker_last_results_frame(worker_state: WorkerState) -> pd.DataFrame:
         trade = result.get("trade", {})
         if not isinstance(trade, dict):
             trade = {}
+        reason_codes = signal.get("reason_codes", [])
+        if not isinstance(reason_codes, list):
+            reason_codes = []
         rows.append(
             {
                 "symbol": symbol,
@@ -1350,9 +1364,7 @@ def _worker_last_results_frame(worker_state: WorkerState) -> pd.DataFrame:
                 "trade_status": str(trade.get("status", "")),
                 "gateway_status": str(trade.get("gateway_status", "")),
                 "gateway_reason": str(trade.get("gateway_reason", "")),
-                "reason_codes": ", ".join(
-                    str(code) for code in signal.get("reason_codes", []) if str(code)
-                ),
+                "reason_codes": ", ".join(str(code) for code in reason_codes if str(code)),
             }
         )
     if not rows:
@@ -1361,7 +1373,7 @@ def _worker_last_results_frame(worker_state: WorkerState) -> pd.DataFrame:
     return frame.sort_values(["symbol"]).reset_index(drop=True)
 
 
-def _worker_status_reason(row: dict[str, object]) -> str:
+def _worker_status_reason(row: Mapping[str, object]) -> str:
     status = str(row.get("status", ""))
     trade_status = str(row.get("trade_status", ""))
     if trade_status in {"entry", "exit", "add"}:
@@ -1379,7 +1391,7 @@ def _worker_status_reason(row: dict[str, object]) -> str:
     return mapping.get(status, status or "unknown")
 
 
-def _signal_gate_summary(row: dict[str, object]) -> str:
+def _signal_gate_summary(row: Mapping[str, object]) -> str:
     trade_status = str(row.get("trade_status", ""))
     if trade_status in {"entry", "exit", "add"}:
         return "発注済み"
@@ -1599,19 +1611,26 @@ def _render_overview_tab(
 
     candidate_rows = _candidate_frame(candidate_report)
     candidate_watchlist = _candidate_frame(candidate_report, "watchlist")
-    candidate_status_map = {
-        str(row.get("symbol", "")): str(row.get("candidate_status", ""))
-        for row in candidate_report.get("best_by_symbol_strategy", [])
-        if isinstance(row, dict)
-    }
+    best_rows = candidate_report.get("best_by_symbol_strategy", [])
+    candidate_status_map: dict[str, str] = {}
+    if isinstance(best_rows, list):
+        for row in best_rows:
+            if isinstance(row, dict):
+                row_map = cast(dict[str, object], row)
+                candidate_status_map[str(row_map.get("symbol", ""))] = str(
+                    row_map.get("candidate_status", "")
+                )
     active_symbols = _active_worker_symbols(worker_state)
-    candidate_symbols = sorted(
-        {
-            str(row.get("symbol", ""))
-            for row in candidate_report.get("rows", [])
-            if isinstance(row, dict) and str(row.get("symbol", ""))
-        }
-    )
+    candidate_rows_raw = candidate_report.get("rows", [])
+    candidate_symbols_set: set[str] = set()
+    if isinstance(candidate_rows_raw, list):
+        for row in candidate_rows_raw:
+            if isinstance(row, dict):
+                row_map = cast(dict[str, object], row)
+                symbol = str(row_map.get("symbol", ""))
+                if symbol:
+                    candidate_symbols_set.add(symbol)
+    candidate_symbols = sorted(candidate_symbols_set)
     watchlist_symbols = (
         sorted(candidate_watchlist["symbol"].astype(str).unique().tolist())
         if not candidate_watchlist.empty and "symbol" in candidate_watchlist.columns
@@ -1708,7 +1727,7 @@ def _render_overview_tab(
                     purpose = "watchlist"
                 else:
                     purpose = "candidate"
-                purpose_rows.append({**row.to_dict(), "purpose": purpose})
+                purpose_rows.append({**cast(dict[str, object], row.to_dict()), "purpose": purpose})
             regime_display = pd.DataFrame(purpose_rows)
             enabled_purposes = {
                 purpose
@@ -1826,11 +1845,15 @@ def _render_trading_tab(
 
     candidate_rows = _candidate_frame(candidate_report)
     candidate_watchlist = _candidate_frame(candidate_report, "watchlist")
-    candidate_status_map = {
-        str(row.get("symbol", "")): str(row.get("candidate_status", ""))
-        for row in candidate_report.get("best_by_symbol_strategy", [])
-        if isinstance(row, dict)
-    }
+    best_rows = candidate_report.get("best_by_symbol_strategy", [])
+    candidate_status_map: dict[str, str] = {}
+    if isinstance(best_rows, list):
+        for row in best_rows:
+            if isinstance(row, dict):
+                row_map = cast(dict[str, object], row)
+                candidate_status_map[str(row_map.get("symbol", ""))] = str(
+                    row_map.get("candidate_status", "")
+                )
     active_symbols = _active_worker_symbols(worker_state)
     watchlist_symbols = (
         sorted(candidate_watchlist["symbol"].astype(str).unique().tolist())

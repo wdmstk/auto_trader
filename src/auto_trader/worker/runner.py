@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, cast
 
 import pandas as pd
 
@@ -75,7 +75,7 @@ class LiveTradingWorker:
         config: WorkerConfig,
         market_client: BinanceKlineClient | None = None,
         transport: object | None = None,
-        sleeper=time.sleep,
+        sleeper: Any = time.sleep,
     ) -> None:
         self.config = config
         self.market_client = market_client or BinanceKlineClient(
@@ -103,10 +103,12 @@ class LiveTradingWorker:
     def run_once(self) -> dict[str, object]:
         runtime_state = self._read_runtime_state()
         cycle_started_at = _now_iso()
+        orders: list[dict[str, object]] = []
+        symbols: dict[str, dict[str, object]] = {}
         summary: dict[str, object] = {
             "cycle_started_at": cycle_started_at,
-            "orders": [],
-            "symbols": {},
+            "orders": orders,
+            "symbols": symbols,
             "runtime": runtime_state,
         }
         mark_prices: dict[str, float] = {}
@@ -126,7 +128,7 @@ class LiveTradingWorker:
 
         if runtime_state["emergency_stop"] or runtime_state["close_all_requested"]:
             flattened = self._flatten_positions(mark_prices, reason="emergency_close")
-            summary["orders"] = flattened
+            orders.extend(flattened)
             self._persist_cycle(summary, cycle_started_at)
             return summary
 
@@ -139,7 +141,7 @@ class LiveTradingWorker:
             frame_15m = closed_by_symbol.get(symbol)
             if frame_15m is None or frame_15m.empty:
                 symbol_summary["status"] = "missing_data"
-                summary["symbols"][symbol] = symbol_summary
+                symbols[symbol] = symbol_summary
                 continue
             latest_bar_ts = str(pd.to_datetime(frame_15m["timestamp"].iloc[-1], utc=True))
             mark_price = float(frame_15m["close"].iloc[-1])
@@ -147,7 +149,7 @@ class LiveTradingWorker:
             route = self._route_for_symbol(symbol)
             if route is None:
                 symbol_summary["status"] = "not_enabled"
-                summary["symbols"][symbol] = symbol_summary
+                symbols[symbol] = symbol_summary
                 continue
 
             state_key = f"{route}:{symbol}"
@@ -158,10 +160,10 @@ class LiveTradingWorker:
             if signal_frame is None or signal_frame.empty:
                 self.worker_state.last_processed_bars[state_key] = latest_bar_ts
                 symbol_summary["status"] = "no_signal"
-                summary["symbols"][symbol] = symbol_summary
+                symbols[symbol] = symbol_summary
                 continue
 
-            latest = signal_frame.iloc[-1].to_dict()
+            latest = cast(dict[str, object], signal_frame.iloc[-1].to_dict())
             symbol_summary["signal"] = {
                 "timestamp": str(latest.get("timestamp", "")),
                 "regime": str(latest.get("regime", "")),
@@ -198,15 +200,23 @@ class LiveTradingWorker:
                 )
                 symbol_summary["trade"] = action_result
                 if action_result.get("order_submitted"):
-                    summary["orders"].append(action_result)
-            summary["symbols"][symbol] = symbol_summary
+                    orders.append(action_result)
+            symbols[symbol] = symbol_summary
 
         self._persist_cycle(summary, cycle_started_at)
         return summary
 
     def _persist_cycle(self, summary: dict[str, object], cycle_started_at: str) -> None:
         self.worker_state.last_cycle_at = cycle_started_at
-        self.worker_state.last_results = dict(summary.get("symbols", {}))
+        symbols_obj = summary.get("symbols", {})
+        if isinstance(symbols_obj, dict):
+            self.worker_state.last_results = {
+                str(symbol): cast(dict[str, object], result)
+                for symbol, result in symbols_obj.items()
+                if isinstance(result, dict)
+            }
+        else:
+            self.worker_state.last_results = {}
         self.worker_state.last_error = ""
         self.worker_state.updated_at = _now_iso()
         self.worker_state.save(self.config.worker_state_path)
@@ -250,14 +260,15 @@ class LiveTradingWorker:
         risk_blocked: bool,
         allow_runtime_gate: bool,
     ) -> dict[str, object]:
-        signal_ts = pd.to_datetime(latest_row.get("timestamp"), utc=True).to_pydatetime()
+        signal_ts = pd.to_datetime(cast(Any, latest_row.get("timestamp")), utc=True).to_pydatetime()
         regime = str(latest_row.get("regime", ""))
         pass_filter = bool(latest_row.get("pass_filter", False))
         entry_signal = bool(latest_row.get("entry_signal", False))
         exit_signal = bool(latest_row.get("exit_signal", False))
         add_signal = bool(latest_row.get("add_signal", False))
-        size_ratio = float(latest_row.get("position_size_ratio", 0.0))
-        reason_codes = latest_row.get("signal_reason_codes", [])
+        size_ratio = float(cast(Any, latest_row.get("position_size_ratio", 0.0)))
+        reason_codes_value = latest_row.get("signal_reason_codes", [])
+        reason_codes = reason_codes_value if isinstance(reason_codes_value, list) else []
         order_mode = (
             self.config.trend_order_mode if route == "trend" else self.config.range_order_mode
         )
@@ -466,7 +477,7 @@ class LiveTradingWorker:
         features = compute_features(base, config=self.config.feature_config)
         regime = classify_regime(features, config=self.config.regime_config)
         if route == "range":
-            signals = generate_range_signals(
+            signals: pd.DataFrame = generate_range_signals(
                 features_df=features,
                 regime_df=regime,
                 config=self.config.range_strategy,
@@ -495,8 +506,12 @@ class LiveTradingWorker:
         closed_cutoff = pd.to_datetime(base["timestamp"].iloc[-1], utc=True).floor(
             _pandas_timeframe_rule(self.config.strategy_timeframe)
         )
-        out = signals[pd.to_datetime(signals["timestamp"], utc=True) <= closed_cutoff].copy()
-        return out
+        return cast(
+            pd.DataFrame,
+            signals[
+                pd.to_datetime(cast(Any, signals["timestamp"]), utc=True) <= closed_cutoff
+            ].copy(),
+        )
 
     def _load_closed_market_frames(self) -> dict[str, pd.DataFrame]:
         closed_frames: dict[str, pd.DataFrame] = {}
