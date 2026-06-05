@@ -32,6 +32,22 @@ def generate_trend_signals(
     merged = _merge_inputs(features_df, regime_df, risk_df, pnl_df)
     merged = merged.sort_values(["symbol", "timeframe", "timestamp"]).reset_index(drop=True)
 
+    n_rows = len(merged)
+    symbol_values = merged["symbol"].astype(str).to_numpy(copy=False)
+    timeframe_values = merged["timeframe"].astype(str).to_numpy(copy=False)
+    regime_values = merged["regime"].astype(str).to_numpy(copy=False)
+    trade_allowed_values = (
+        merged["is_trade_allowed"].fillna(False).astype(bool).to_numpy(copy=False)
+    )
+    risk_blocked_values = merged["risk_blocked"].fillna(False).astype(bool).to_numpy(copy=False)
+    breakout_values = merged["breakout_persistence"].astype(float).to_numpy(copy=False)
+    momentum_values = merged["momentum_persistence"].astype(float).to_numpy(copy=False)
+    pullback_values = merged["pullback_shallowness"].astype(float).to_numpy(copy=False)
+    higher_high_values = merged["higher_high_persistence"].astype(float).to_numpy(copy=False)
+    trend_efficiency_values = merged["trend_efficiency"].astype(float).to_numpy(copy=False)
+    unrealized_values = merged["unrealized_pnl_pct"].astype(float).to_numpy(copy=False)
+    enabled_symbols = set(cfg.enabled_symbols)
+
     entry_signal: list[bool] = []
     exit_signal: list[bool] = []
     add_signal: list[bool] = []
@@ -43,18 +59,20 @@ def generate_trend_signals(
 
     state: dict[tuple[str, str], dict[str, int | bool]] = {}
 
-    for _, row in merged.iterrows():
+    for i in range(n_rows):
         reasons: list[str] = []
-        blocked = bool(row["risk_blocked"])
-        high_vol = (str(row["regime"]) == "HIGH_VOL") or (not bool(row["is_trade_allowed"]))
-        symbol = str(row.get("symbol", ""))
-        timeframe = str(row.get("timeframe", ""))
+        blocked = bool(risk_blocked_values[i])
+        regime = str(regime_values[i])
+        is_trade_allowed = bool(trade_allowed_values[i])
+        high_vol = (regime == "HIGH_VOL") or (not is_trade_allowed)
+        symbol = str(symbol_values[i])
+        timeframe = str(timeframe_values[i])
         key = (symbol, timeframe)
         st = state.setdefault(key, {"in_position": False, "add_count": 0, "cooldown": 0})
         in_position = bool(st["in_position"])
         current_add_count = int(st["add_count"])
         cooldown = int(st["cooldown"])
-        symbol_enabled = (not cfg.enabled_symbols) or (symbol in cfg.enabled_symbols)
+        symbol_enabled = (not enabled_symbols) or (symbol in enabled_symbols)
 
         if high_vol:
             reasons.append("TR_BLOCK_HIGH_VOL")
@@ -65,13 +83,13 @@ def generate_trend_signals(
         if cooldown > 0:
             reasons.append("TR_BLOCK_REENTRY_COOLDOWN")
 
-        regime_ok = str(row["regime"]) == "TREND" and bool(row["is_trade_allowed"])
+        regime_ok = regime == "TREND" and is_trade_allowed
         gate_ok = regime_ok and (not high_vol) and (not blocked)
 
-        breakout_ok = _f(row["breakout_persistence"]) >= cfg.breakout_persistence_min
-        momentum_ok = _f(row["momentum_persistence"]) >= cfg.momentum_persistence_min
-        pullback_ok = _f(row["pullback_shallowness"]) >= cfg.pullback_shallowness_min
-        higher_high_ok = _f(row["higher_high_persistence"]) >= cfg.higher_high_persistence_min
+        breakout_ok = float(breakout_values[i]) >= cfg.breakout_persistence_min
+        momentum_ok = float(momentum_values[i]) >= cfg.momentum_persistence_min
+        pullback_ok = float(pullback_values[i]) >= cfg.pullback_shallowness_min
+        higher_high_ok = float(higher_high_values[i]) >= cfg.higher_high_persistence_min
         score = (int(breakout_ok) + int(momentum_ok) + int(pullback_ok) + int(higher_high_ok)) / 4.0
         score_ok = score >= cfg.min_entry_score
 
@@ -98,8 +116,10 @@ def generate_trend_signals(
         elif gate_ok and symbol_enabled and (cooldown <= 0) and (not score_ok):
             reasons.append("TR_BLOCK_SCORE_LOW")
 
-        exit_by_regime = str(row["regime"]) != "TREND"
-        exit_by_trend_weaken = _f(row["trend_efficiency"]) < cfg.trend_efficiency_exit_threshold
+        exit_by_regime = regime != "TREND"
+        exit_by_trend_weaken = (
+            float(trend_efficiency_values[i]) < cfg.trend_efficiency_exit_threshold
+        )
         exit = exit_by_regime or exit_by_trend_weaken or high_vol
         if exit_by_regime:
             reasons.append("TR_EXIT_REGIME_CHANGED")
@@ -107,7 +127,7 @@ def generate_trend_signals(
             reasons.append("TR_EXIT_TREND_WEAKENED")
 
         # add signal (pyramid) only when already in position and in profit
-        unrealized_pnl = _f(row.get("unrealized_pnl_pct", 0.0))
+        unrealized_pnl = float(unrealized_values[i])
         can_add = in_position and (unrealized_pnl > 0.0) and (current_add_count < cfg.max_add_count)
         add = gate_ok and can_add and breakout_ok and momentum_ok
         if add:
@@ -138,7 +158,7 @@ def generate_trend_signals(
         exit_signal.append(bool(exit))
         add_signal.append(bool(add))
         risk_blocked.append(blocked)
-        regimes.append(str(row.get("regime", "")))
+        regimes.append(regime)
         pass_filters.append(bool(gate_ok))
         reason_codes.append(sorted(set(reasons)))
         position_size_ratio.append(cfg.default_position_size_ratio if entry else 0.0)

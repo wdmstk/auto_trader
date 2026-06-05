@@ -154,21 +154,41 @@ def evaluate_portfolio_risk(
     has_vwe = "vol_weighted_exposure_pct" in inputs.columns
     has_rc = "risk_contribution_pct" in inputs.columns
     has_mv = "missing_vol_ratio" in inputs.columns
-    for row in inputs.itertuples(index=False):
+    timestamps = inputs["timestamp"].to_numpy(copy=False)
+    symbols = inputs["symbol"].astype(str).to_numpy(copy=False)
+    current_equity = inputs["current_equity"].astype(float).to_numpy(copy=False)
+    equity_peak = inputs["equity_peak"].astype(float).to_numpy(copy=False)
+    symbol_exposure = inputs["symbol_exposure_pct"].astype(float).to_numpy(copy=False)
+    portfolio_exposure = inputs["portfolio_exposure_pct"].astype(float).to_numpy(copy=False)
+    concentration = inputs["concentration_score"].astype(float).to_numpy(copy=False)
+    correlated = (
+        inputs["correlated_exposure_pct"].astype(float).to_numpy(copy=False)
+        if has_correlated_exposure
+        else None
+    )
+    vol_weighted = (
+        inputs["vol_weighted_exposure_pct"].astype(float).to_numpy(copy=False) if has_vwe else None
+    )
+    risk_contribution = (
+        inputs["risk_contribution_pct"].astype(float).to_numpy(copy=False) if has_rc else None
+    )
+    missing_vol = inputs["missing_vol_ratio"].astype(float).to_numpy(copy=False) if has_mv else None
+
+    for i in range(len(inputs)):
         out = manager.evaluate(
-            timestamp=_to_datetime_utc(row.timestamp),
-            symbol=str(row.symbol),
-            current_equity=_to_float(row.current_equity),
-            equity_peak=_to_float(row.equity_peak),
-            symbol_exposure_pct=_to_float(row.symbol_exposure_pct),
-            portfolio_exposure_pct=_to_float(row.portfolio_exposure_pct),
-            concentration_score=_to_float(row.concentration_score),
-            correlated_exposure_pct=_to_float(row.correlated_exposure_pct)
-            if has_correlated_exposure
+            timestamp=_to_datetime_utc(timestamps[i]),
+            symbol=str(symbols[i]),
+            current_equity=float(current_equity[i]),
+            equity_peak=float(equity_peak[i]),
+            symbol_exposure_pct=float(symbol_exposure[i]),
+            portfolio_exposure_pct=float(portfolio_exposure[i]),
+            concentration_score=float(concentration[i]),
+            correlated_exposure_pct=float(correlated[i]) if correlated is not None else 0.0,
+            vol_weighted_exposure_pct=float(vol_weighted[i]) if vol_weighted is not None else 0.0,
+            risk_contribution_pct=float(risk_contribution[i])
+            if risk_contribution is not None
             else 0.0,
-            vol_weighted_exposure_pct=_to_float(row.vol_weighted_exposure_pct) if has_vwe else 0.0,
-            risk_contribution_pct=_to_float(row.risk_contribution_pct) if has_rc else 0.0,
-            missing_vol_ratio=_to_float(row.missing_vol_ratio) if has_mv else 0.0,
+            missing_vol_ratio=float(missing_vol[i]) if missing_vol is not None else 0.0,
         )
         rows.append(out)
     return pd.DataFrame(rows)
@@ -194,8 +214,12 @@ def ensure_correlated_exposure_column(risk_inputs: pd.DataFrame) -> pd.DataFrame
         errors="coerce",
     ).fillna(0.0)
 
-    grouped = out.groupby("timestamp", dropna=False)["_symbol_exposure_pct_num"].apply(
-        lambda s: float(s.nlargest(2).sum())
+    grouped = (
+        out.groupby("timestamp", dropna=False)["_symbol_exposure_pct_num"]
+        .nlargest(2)
+        .groupby(level=0)
+        .sum()
+        .astype(float)
     )
     out["correlated_exposure_pct"] = out["timestamp"].map(grouped).fillna(0.0).astype(float)
     out = out.drop(columns=["_symbol_exposure_pct_num"])

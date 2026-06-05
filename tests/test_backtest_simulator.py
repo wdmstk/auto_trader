@@ -106,7 +106,7 @@ def test_limit_mode_emits_order_status_rows() -> None:
     ohlcv.loc[2, "low"] = 101.8
     ohlcv.loc[3, "high"] = 103.5
     ohlcv.loc[3, "low"] = 103.2
-    trades, _, _ = run_backtest(
+    trades, _, metrics = run_backtest(
         ohlcv_df=ohlcv,
         signals_df=signals,
         ml_df=ml,
@@ -120,6 +120,8 @@ def test_limit_mode_emits_order_status_rows() -> None:
     assert "order_mode" in trades.columns
     assert (trades["order_mode"] == "limit").all()
     assert set(trades["status"]).issubset({"filled", "partial", "expired", "canceled"})
+    assert "LimitOrderCount" in metrics
+    assert "LimitTakerLikeRate" in metrics
 
 
 def test_fee_split_for_market_and_limit() -> None:

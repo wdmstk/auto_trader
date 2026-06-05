@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 import pandas as pd
 
@@ -50,6 +51,19 @@ def run_walkforward_report(
     if merged.empty:
         raise ValueError("walkforward input is empty after merge")
 
+    merged["entry_signal"] = (
+        merged.get("entry_signal", pd.Series(False, index=merged.index)).fillna(False).astype(bool)
+    )
+    merged["exit_signal"] = (
+        merged.get("exit_signal", pd.Series(False, index=merged.index)).fillna(False).astype(bool)
+    )
+    merged["pass_filter"] = (
+        merged.get("pass_filter", pd.Series(False, index=merged.index)).fillna(False).astype(bool)
+    )
+    merged["regime"] = (
+        merged.get("regime", pd.Series("", index=merged.index)).fillna("").astype(str)
+    )
+
     fold_idx = _assign_folds(merged["timestamp"], cfg.n_folds)
     merged["fold"] = fold_idx
 
@@ -58,12 +72,11 @@ def run_walkforward_report(
     portfolio_rows: list[pd.DataFrame] = []
 
     expected_regime = "RANGE" if cfg.strategy == "range" else "TREND"
-    invalid_entry = (
-        merged.get("entry_signal", pd.Series(False, index=merged.index)).fillna(False).astype(bool)
-    ) & (merged.get("regime", pd.Series("", index=merged.index)).astype(str) != expected_regime)
+    invalid_entry = merged["entry_signal"] & (merged["regime"] != expected_regime)
 
-    for fold in sorted(set(fold_idx)):
-        fold_df = merged[merged["fold"] == fold].copy()
+    for fold, fold_df in merged.groupby("fold", sort=True):
+        fold_value = int(cast(Any, fold))
+        fold_df = fold_df.copy()
         if fold_df.empty:
             continue
         market_df = fold_df[
@@ -99,35 +112,43 @@ def run_walkforward_report(
         )
         if not trades.empty:
             trades = trades.copy()
-            trades["fold"] = fold
+            trades["fold"] = fold_value
             trade_rows.append(trades)
         if not portfolio.empty:
             portfolio = portfolio.copy()
-            portfolio["fold"] = fold
+            portfolio["fold"] = fold_value
             portfolio_rows.append(portfolio)
 
-        entries = signal_df[signal_df["entry_signal"].fillna(False).astype(bool)]
+        entries = signal_df[signal_df["entry_signal"]]
         fold_rows.append(
             {
-                "fold": int(fold),
+                "fold": fold_value,
                 "bars": int(len(fold_df)),
                 "entries": int(len(entries)),
                 "entries_long": int((entries["entry_signal"] == True).sum()),  # noqa: E712
                 "invalid_regime_entries": int(
                     (entries["regime"].astype(str) != expected_regime).sum()
                 ),
-                "pf": float(metrics["PF"]),
-                "expectancy": float(metrics["Expectancy"]),
-                "expectancy_bps": float(metrics["ExpectancyBps"]),
-                "win_rate": float(metrics["WinRate"]),
-                "max_dd": float(metrics["MaxDD"]),
-                "monthly_pnl": float(metrics["MonthlyPnL"]),
-                "period_pnl": float(metrics["PeriodPnL"]),
-                "gross_pnl_est": float(metrics["GrossPnLEst"]),
-                "total_cost_est": float(metrics["TotalCostEst"]),
-                "fee_cost": float(metrics["FeeCost"]),
-                "impact_cost_est": float(metrics["ImpactCostEst"]),
+                "pf": float(cast(Any, metrics["PF"])),
+                "expectancy": float(cast(Any, metrics["Expectancy"])),
+                "expectancy_bps": float(cast(Any, metrics["ExpectancyBps"])),
+                "win_rate": float(cast(Any, metrics["WinRate"])),
+                "max_dd": float(cast(Any, metrics["MaxDD"])),
+                "monthly_pnl": float(cast(Any, metrics["MonthlyPnL"])),
+                "period_pnl": float(cast(Any, metrics["PeriodPnL"])),
+                "gross_pnl_est": float(cast(Any, metrics["GrossPnLEst"])),
+                "total_cost_est": float(cast(Any, metrics["TotalCostEst"])),
+                "fee_cost": float(cast(Any, metrics["FeeCost"])),
+                "impact_cost_est": float(cast(Any, metrics["ImpactCostEst"])),
                 "closed_trades": float(metrics["ClosedTrades"]),
+                "limit_order_count": float(metrics["LimitOrderCount"]),
+                "limit_filled_count": float(metrics["LimitFilledCount"]),
+                "limit_partial_count": float(metrics["LimitPartialCount"]),
+                "limit_expired_count": float(metrics["LimitExpiredCount"]),
+                "limit_canceled_count": float(metrics["LimitCanceledCount"]),
+                "limit_fill_rate": float(metrics["LimitFillRate"]),
+                "limit_maker_fill_rate": float(metrics["LimitMakerFillRate"]),
+                "limit_taker_like_rate": float(metrics["LimitTakerLikeRate"]),
             }
         )
 
@@ -191,11 +212,16 @@ def _assign_folds(ts: pd.Series, n_folds: int) -> list[int]:
     n = len(ts)
     if n_folds <= 1 or n <= 1:
         return [0] * n
-    boundaries = [int(i * n / n_folds) for i in range(n_folds + 1)]
-    folds = [0] * n
-    for fold in range(n_folds):
-        start = boundaries[fold]
-        end = boundaries[fold + 1]
-        for idx in range(start, end):
-            folds[idx] = fold
-    return folds
+    fold_sizes = [n // n_folds] * n_folds
+    for idx in range(n % n_folds):
+        fold_sizes[idx] += 1
+    folds = pd.Series(range(n_folds), dtype="int64").repeat(fold_sizes).to_numpy()
+    if len(folds) < n:
+        folds = pd.concat(
+            [
+                pd.Series(folds),
+                pd.Series([n_folds - 1] * (n - len(folds))),
+            ],
+            ignore_index=True,
+        ).to_numpy()
+    return [int(v) for v in folds[:n]]

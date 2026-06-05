@@ -5,7 +5,12 @@ from pathlib import Path
 import pandas as pd
 
 from auto_trader.ml.dataset import DatasetArtifacts, add_timeseries_split, build_dataset
-from auto_trader.ml.model import ModelArtifacts, apply_model_filter, train_binary_classifier
+from auto_trader.ml.model import (
+    ModelArtifacts,
+    apply_model_artifacts,
+    save_model_artifacts,
+    train_binary_classifier,
+)
 
 
 def run_ml_pipeline(
@@ -14,6 +19,8 @@ def run_ml_pipeline(
     regime_path: str | Path,
     signals_path: str | Path,
     labels_path: str | Path,
+    artifact_dir: str | Path | None = None,
+    model_version: str = "lgbm-entry-filter-v1",
 ) -> tuple[pd.DataFrame, DatasetArtifacts, ModelArtifacts]:
     features = pd.read_parquet(features_path)
     regime = pd.read_parquet(regime_path)
@@ -30,11 +37,12 @@ def run_ml_pipeline(
     trained = train_binary_classifier(
         dataset=with_split,
         feature_columns=artifacts.feature_columns,
+        model_version=model_version,
     )
-    scored = apply_model_filter(
-        model=trained.model,
-        threshold=trained.threshold,
+    if artifact_dir is not None:
+        save_model_artifacts(trained, artifact_dir)
+    scored = apply_model_artifacts(
         dataset=with_split,
-        feature_columns=artifacts.feature_columns,
+        artifacts=trained,
     )
     return scored, artifacts, trained

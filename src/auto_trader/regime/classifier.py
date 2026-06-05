@@ -73,17 +73,26 @@ def _classify_group(g: pd.DataFrame, cfg: RegimeConfig) -> pd.DataFrame:
     result["is_trade_allowed"] = False
     result["generated_at"] = datetime.now(UTC)
 
-    atr_mean = g["atr"].rolling(50, min_periods=10).mean()
-    atr_std = g["atr"].rolling(50, min_periods=10).std(ddof=0)
-    atr_z = (g["atr"] - atr_mean) / atr_std.replace(0.0, pd.NA)
+    atr_values = g["atr"].astype(float).to_numpy(copy=False)
+    bb_width_values = g["bb_width"].astype(float).to_numpy(copy=False)
+    trend_eff_values = g["trend_efficiency"].astype(float).to_numpy(copy=False)
+    breakout_values = g["breakout_persistence"].astype(float).to_numpy(copy=False)
+    momentum_values = g["momentum_persistence"].astype(float).to_numpy(copy=False)
+    mr_values = g["mean_reversion_distance"].astype(float).to_numpy(copy=False)
+    warmup_values = g["is_warmup"].fillna(False).astype(bool).to_numpy(copy=False)
 
-    ret_abs = g["trend_efficiency"].abs()
+    atr_series = pd.Series(atr_values, index=g.index)
+    atr_mean = atr_series.rolling(50, min_periods=10).mean()
+    atr_std = atr_series.rolling(50, min_periods=10).std(ddof=0)
+    atr_z = (atr_series - atr_mean) / atr_std.replace(0.0, pd.NA)
+
+    ret_abs = pd.Series(trend_eff_values, index=g.index).abs()
     ret_mean = ret_abs.rolling(50, min_periods=10).mean()
     ret_std = ret_abs.rolling(50, min_periods=10).std(ddof=0)
     ret_z = (ret_abs - ret_mean) / ret_std.replace(0.0, pd.NA)
 
-    bb_width_rank = g["bb_width"].rank(pct=True) * 100.0
-    adx_proxy = (g["trend_efficiency"].abs() * 100.0).clip(0, 50)
+    bb_width_rank = pd.Series(bb_width_values, index=g.index).rank(pct=True) * 100.0
+    adx_proxy = (ret_abs * 100.0).clip(0, 50)
 
     high_vol_mask = (atr_z >= cfg.high_vol_atr_zscore_threshold) | (
         ret_z >= cfg.high_vol_return_abs_zscore_threshold
@@ -108,7 +117,7 @@ def _classify_group(g: pd.DataFrame, cfg: RegimeConfig) -> pd.DataFrame:
 
     for i in range(len(g)):
         reason_codes: list[str] = []
-        if bool(g.loc[i, "is_warmup"]):
+        if bool(warmup_values[i]):
             regimes.append("HIGH_VOL")
             confidences.append(0.0)
             vol_states.append("extreme")
@@ -154,11 +163,14 @@ def _classify_group(g: pd.DataFrame, cfg: RegimeConfig) -> pd.DataFrame:
         regime: Regime = active_regime
         regimes.append(regime)
         confidence = _confidence_for_regime(
-            regime,
-            atr_i,
-            ret_i,
-            g.iloc[i],
-            _safe_float(bb_width_rank.iloc[i]),
+            regime=regime,
+            atr_z=atr_i,
+            ret_z=ret_i,
+            breakout_persistence=float(breakout_values[i]),
+            momentum_persistence=float(momentum_values[i]),
+            trend_efficiency=float(trend_eff_values[i]),
+            mean_reversion_distance=float(mr_values[i]),
+            bb_width_pct=float(bb_width_rank.iloc[i]),
         )
         confidences.append(float(max(0.0, min(1.0, confidence))))
         vol_states.append(_vol_state(atr_i, ret_i))
@@ -186,24 +198,26 @@ def _vol_state(atr_z: float, ret_z: float) -> str:
 
 
 def _confidence_for_regime(
+    *,
     regime: Regime,
     atr_z: float,
     ret_z: float,
-    row: pd.Series,
+    breakout_persistence: float,
+    momentum_persistence: float,
+    trend_efficiency: float,
+    mean_reversion_distance: float,
     bb_width_pct: float,
 ) -> float:
     if regime == "HIGH_VOL":
         return min(1.0, max(_safe_float(atr_z), _safe_float(ret_z)) / 5.0)
     if regime == "TREND":
         score = (
-            _safe_float(row.get("breakout_persistence", 0.0))
-            + _safe_float(row.get("momentum_persistence", 0.0))
-            + min(1.0, _safe_float(row.get("trend_efficiency", 0.0)) * 2.0)
+            breakout_persistence + momentum_persistence + min(1.0, trend_efficiency * 2.0)
         ) / 3.0
         return score
     # RANGE
     width_score = max(0.0, 1.0 - (_safe_float(bb_width_pct) / 100.0))
-    mean_rev = min(1.0, abs(_safe_float(row.get("mean_reversion_distance", 0.0))) / 2.0)
+    mean_rev = min(1.0, abs(mean_reversion_distance) / 2.0)
     return (width_score + mean_rev) / 2.0
 
 

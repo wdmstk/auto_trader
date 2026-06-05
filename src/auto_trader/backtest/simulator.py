@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
+import numpy as np
 import pandas as pd
 
 Side = Literal["buy", "sell"]
@@ -56,6 +57,51 @@ def run_backtest(
     merged["regime"] = merged["regime"].fillna("")
     merged["pass_filter"] = merged["pass_filter"].fillna(False).astype(bool)
 
+    n_rows = len(merged)
+    timestamp_values = merged["timestamp"].to_numpy(copy=False)
+    close_values = merged["close"].astype(float).to_numpy(copy=False)
+    high_values = merged["high"].astype(float).to_numpy(copy=False)
+    low_values = merged["low"].astype(float).to_numpy(copy=False)
+    volume_values = (
+        merged.get("volume", pd.Series(0.0, index=merged.index))
+        .fillna(0.0)
+        .astype(float)
+        .to_numpy(copy=False)
+    )
+    entry_values = merged["entry_signal"].to_numpy(dtype=bool, copy=False)
+    exit_values = merged["exit_signal"].to_numpy(dtype=bool, copy=False)
+    pass_values = merged["pass_filter"].to_numpy(dtype=bool, copy=False)
+    regime_values = merged["regime"].astype(str).to_numpy(copy=False)
+
+    if n_rows > 0:
+        exec_idx = np.arange(n_rows, dtype=int) + int(cfg.execution_delay_bars)
+        np.clip(exec_idx, 0, n_rows - 1, out=exec_idx)
+        delayed_close_values = close_values[exec_idx]
+        delayed_high_values = high_values[exec_idx]
+        delayed_low_values = low_values[exec_idx]
+        delayed_volume_values = volume_values[exec_idx]
+        delayed_next_high_values = np.empty(n_rows, dtype=float)
+        delayed_next_low_values = np.empty(n_rows, dtype=float)
+        delayed_next_high_values[:-1] = high_values[1:]
+        delayed_next_low_values[:-1] = low_values[1:]
+        delayed_next_high_values[-1] = np.nan
+        delayed_next_low_values[-1] = np.nan
+        delayed_next_high_values = delayed_next_high_values[exec_idx]
+        delayed_next_low_values = delayed_next_low_values[exec_idx]
+    else:
+        delayed_close_values = close_values
+        delayed_high_values = high_values
+        delayed_low_values = low_values
+        delayed_volume_values = volume_values
+        delayed_next_high_values = np.array([], dtype=float)
+        delayed_next_low_values = np.array([], dtype=float)
+
+    blocked_values = (regime_values == "HIGH_VOL") | (~pass_values)
+    market_buy_prices = delayed_close_values * (1.0 + cfg.slippage_rate + cfg.spread_rate)
+    market_sell_prices = delayed_close_values * (1.0 - cfg.slippage_rate - cfg.spread_rate)
+    limit_buy_prices = delayed_close_values * (1.0 - cfg.limit_offset_rate)
+    limit_sell_prices = delayed_close_values * (1.0 + cfg.limit_offset_rate)
+
     trades: list[dict[str, object]] = []
     portfolio: list[dict[str, object]] = []
 
@@ -64,21 +110,17 @@ def run_backtest(
     entry_price = 0.0
     equity_peak = cfg.initial_cash
 
-    for i, row in enumerate(merged.itertuples(index=False), start=0):
-        ts = _to_datetime_utc(row.timestamp)
-        close = _to_float(row.close)
-        high = _to_float(row.high)
-        low = _to_float(row.low)
+    for i in range(n_rows):
+        ts = timestamp_values[i].to_pydatetime()
+        close = float(close_values[i])
+        high = float(high_values[i])
+        low = float(low_values[i])
 
-        delayed_idx = i + cfg.execution_delay_bars
-        delayed_row = merged.iloc[delayed_idx] if delayed_idx < len(merged) else merged.iloc[i]
-        exec_price_base = float(delayed_row["close"])
+        blocked = bool(blocked_values[i])
 
-        blocked = (str(row.regime) == "HIGH_VOL") or (not bool(row.pass_filter))
-
-        if bool(row.entry_signal) and not blocked and position_qty == 0.0:
+        if entry_values[i] and not blocked and position_qty == 0.0:
             if cfg.order_mode == "market":
-                px = _apply_market_price(exec_price_base, "buy", cfg)
+                px = float(market_buy_prices[i])
                 fee = px * cfg.unit_size * _taker_fee_rate(cfg)
                 cash -= (px * cfg.unit_size) + fee
                 position_qty = cfg.unit_size
@@ -97,19 +139,17 @@ def run_backtest(
                     )
                 )
             else:
+                limit_px = float(limit_buy_prices[i])
+                next_high = delayed_next_high_values[i]
+                next_low = delayed_next_low_values[i]
                 touched, dwell = _limit_fill_state(
                     side="buy",
-                    limit_price=exec_price_base * (1.0 - cfg.limit_offset_rate),
-                    cur_high=float(delayed_row["high"]),
-                    cur_low=float(delayed_row["low"]),
-                    next_high=float(merged.iloc[delayed_idx + 1]["high"])
-                    if delayed_idx + 1 < len(merged)
-                    else None,
-                    next_low=float(merged.iloc[delayed_idx + 1]["low"])
-                    if delayed_idx + 1 < len(merged)
-                    else None,
+                    limit_price=limit_px,
+                    cur_high=float(delayed_high_values[i]),
+                    cur_low=float(delayed_low_values[i]),
+                    next_high=None if np.isnan(next_high) else float(next_high),
+                    next_low=None if np.isnan(next_low) else float(next_low),
                 )
-                limit_px = exec_price_base * (1.0 - cfg.limit_offset_rate)
                 if dwell:
                     fee = limit_px * cfg.unit_size * _maker_fee_rate(cfg)
                     cash -= (limit_px * cfg.unit_size) + fee
@@ -132,7 +172,7 @@ def run_backtest(
                     partial_qty = _limit_partial_qty(
                         order_qty=cfg.unit_size,
                         cfg=cfg,
-                        bar_volume=_to_float(delayed_row.get("volume", 0.0)),
+                        bar_volume=float(delayed_volume_values[i]),
                     )
                     if partial_qty > 0:
                         fee = limit_px * partial_qty * _maker_fee_rate(cfg)
@@ -182,9 +222,9 @@ def run_backtest(
                         )
                     )
 
-        if bool(row.exit_signal) and position_qty > 0.0:
+        if exit_values[i] and position_qty > 0.0:
             if cfg.order_mode == "market":
-                px = _apply_market_price(exec_price_base, "sell", cfg)
+                px = float(market_sell_prices[i])
                 fee = px * position_qty * _taker_fee_rate(cfg)
                 cash += (px * position_qty) - fee
                 trades.append(
@@ -203,18 +243,16 @@ def run_backtest(
                 position_qty = 0.0
                 entry_price = 0.0
             else:
-                limit_px = exec_price_base * (1.0 + cfg.limit_offset_rate)
+                limit_px = float(limit_sell_prices[i])
+                next_high = delayed_next_high_values[i]
+                next_low = delayed_next_low_values[i]
                 touched, dwell = _limit_fill_state(
                     side="sell",
                     limit_price=limit_px,
-                    cur_high=float(delayed_row["high"]),
-                    cur_low=float(delayed_row["low"]),
-                    next_high=float(merged.iloc[delayed_idx + 1]["high"])
-                    if delayed_idx + 1 < len(merged)
-                    else None,
-                    next_low=float(merged.iloc[delayed_idx + 1]["low"])
-                    if delayed_idx + 1 < len(merged)
-                    else None,
+                    cur_high=float(delayed_high_values[i]),
+                    cur_low=float(delayed_low_values[i]),
+                    next_high=None if np.isnan(next_high) else float(next_high),
+                    next_low=None if np.isnan(next_low) else float(next_low),
                 )
                 if dwell:
                     fee = limit_px * position_qty * _maker_fee_rate(cfg)
@@ -238,7 +276,7 @@ def run_backtest(
                     partial_qty = _limit_partial_qty(
                         order_qty=position_qty,
                         cfg=cfg,
-                        bar_volume=_to_float(delayed_row.get("volume", 0.0)),
+                        bar_volume=float(delayed_volume_values[i]),
                     )
                     if partial_qty > 0:
                         fee = limit_px * partial_qty * _maker_fee_rate(cfg)
@@ -328,6 +366,14 @@ def summarize_metrics(
             "FeeCost": 0.0,
             "ImpactCostEst": 0.0,
             "ClosedTrades": 0.0,
+            "LimitOrderCount": 0.0,
+            "LimitFilledCount": 0.0,
+            "LimitPartialCount": 0.0,
+            "LimitExpiredCount": 0.0,
+            "LimitCanceledCount": 0.0,
+            "LimitFillRate": 0.0,
+            "LimitMakerFillRate": 0.0,
+            "LimitTakerLikeRate": 0.0,
         }
 
     closed = _pair_roundtrips(trades_df)
@@ -360,6 +406,7 @@ def summarize_metrics(
         if not trades_df.empty
         else 0.0
     )
+    limit_stats = _limit_order_stats(trades_df)
     if trades_df.empty:
         impact_cost = 0.0
     else:
@@ -393,6 +440,7 @@ def summarize_metrics(
         "FeeCost": fee_cost,
         "ImpactCostEst": impact_cost,
         "ClosedTrades": float(len(closed)),
+        **limit_stats,
     }
 
 
@@ -490,21 +538,26 @@ def _pair_roundtrips(trades_df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=["entry_ts", "exit_ts", "pnl", "entry_notional"])
     rows: list[dict[str, object]] = []
     open_trade: dict[str, object] | None = None
-    for _, t in trades_df.iterrows():
-        side = str(t["side"])
+    for t in trades_df.itertuples(index=False):
+        side = str(t.side)
         if side == "buy" and open_trade is None:
-            open_trade = dict(t)
+            open_trade = {
+                "timestamp": t.timestamp,
+                "price": t.price,
+                "size": t.size,
+                "fee": t.fee,
+            }
             continue
         if side == "sell" and open_trade is not None:
             entry_value = _to_float(open_trade["price"]) * _to_float(
                 open_trade["size"]
             ) + _to_float(open_trade["fee"])
-            exit_value = _to_float(t["price"]) * _to_float(t["size"]) - _to_float(t["fee"])
+            exit_value = _to_float(t.price) * _to_float(t.size) - _to_float(t.fee)
             pnl = exit_value - entry_value
             rows.append(
                 {
                     "entry_ts": open_trade["timestamp"],
-                    "exit_ts": t["timestamp"],
+                    "exit_ts": t.timestamp,
                     "pnl": pnl,
                     "entry_notional": _to_float(open_trade["price"])
                     * _to_float(open_trade["size"]),
@@ -512,6 +565,56 @@ def _pair_roundtrips(trades_df: pd.DataFrame) -> pd.DataFrame:
             )
             open_trade = None
     return pd.DataFrame(rows)
+
+
+def _limit_order_stats(trades_df: pd.DataFrame) -> dict[str, float]:
+    if (
+        trades_df.empty
+        or "order_mode" not in trades_df.columns
+        or "status" not in trades_df.columns
+    ):
+        return {
+            "LimitOrderCount": 0.0,
+            "LimitFilledCount": 0.0,
+            "LimitPartialCount": 0.0,
+            "LimitExpiredCount": 0.0,
+            "LimitCanceledCount": 0.0,
+            "LimitFillRate": 0.0,
+            "LimitMakerFillRate": 0.0,
+            "LimitTakerLikeRate": 0.0,
+        }
+
+    limit_trades = trades_df[trades_df["order_mode"].astype(str) == "limit"]
+    if limit_trades.empty:
+        return {
+            "LimitOrderCount": 0.0,
+            "LimitFilledCount": 0.0,
+            "LimitPartialCount": 0.0,
+            "LimitExpiredCount": 0.0,
+            "LimitCanceledCount": 0.0,
+            "LimitFillRate": 0.0,
+            "LimitMakerFillRate": 0.0,
+            "LimitTakerLikeRate": 0.0,
+        }
+
+    filled = float((limit_trades["status"] == "filled").sum())
+    partial = float((limit_trades["status"] == "partial").sum())
+    expired = float((limit_trades["status"] == "expired").sum())
+    canceled = float((limit_trades["status"] == "canceled").sum())
+    total = float(len(limit_trades))
+    maker_fill_rate = filled / total if total > 0 else 0.0
+    fill_rate = (filled + partial) / total if total > 0 else 0.0
+    taker_like_rate = 1.0 - maker_fill_rate if total > 0 else 0.0
+    return {
+        "LimitOrderCount": total,
+        "LimitFilledCount": filled,
+        "LimitPartialCount": partial,
+        "LimitExpiredCount": expired,
+        "LimitCanceledCount": canceled,
+        "LimitFillRate": fill_rate,
+        "LimitMakerFillRate": maker_fill_rate,
+        "LimitTakerLikeRate": taker_like_rate,
+    }
 
 
 def _to_float(v: object) -> float:

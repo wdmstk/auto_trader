@@ -96,6 +96,10 @@ def main() -> int:
                 api_key=api_key,
                 api_secret=api_secret,
                 order_path=order_path,
+                time_path=(
+                    "/fapi/v1/time" if args.mode == "testnet-futures-live" else "/api/v3/time"
+                ),
+                sync_server_time=True,
             )
         )
     gw = OrderGateway(

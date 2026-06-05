@@ -25,6 +25,11 @@
 5. `./scripts/update_go_live_checklist.sh` を実行し、Auto判定欄を同期する。
 6. `docs/implementation/trading-go-live-checklist.md` で最終判定（Go/Conditional/No-Go）を確定する。
 
+## 運用ランブック
+- runtime / worker / monitor / risk の常駐・定期運用: `docs/implementation/runtime-control-operations.md`
+- 週次戦略再評価: `docs/implementation/weekly-revalidation-operations.md`
+- ライブ監視コンソール: `src/auto_trader/gui/app.py` の `Overview / Trading / Analysis` タブ
+
 ## Doc First ルール（必須）
 - 実装開始前に、対象PhaseのSpecを `docs/specs/` に追加または更新する。
 - Specに未記載のI/O契約はコードへ持ち込まない。

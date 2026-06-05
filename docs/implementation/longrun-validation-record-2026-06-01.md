@@ -74,6 +74,36 @@ python -m auto_trader.exchange \
 - Interpretation:
   - Futures testnet 向け認証・送信・runtime gate 連携が成立。
 
+## Additional Evidence (Futures Testnet: MARKET/LIMIT Recheck)
+- Command:
+```bash
+python -m auto_trader.exchange \
+  --mode testnet-futures-live \
+  --symbol BTCUSDT --side buy --qty 0.001 --pass-filter \
+  --runtime-state-path data/runtime/control_state.json \
+  --state-path data/exchange/gateway_state.json
+```
+- Result:
+  - `status=ack`
+  - `reason=accepted:NEW`
+  - `order_id=13820487896`
+- Command:
+```bash
+python -m auto_trader.exchange \
+  --mode testnet-futures-live \
+  --symbol BTCUSDT --side buy --qty 0.001 --pass-filter \
+  --order-type limit --limit-price 60000 \
+  --runtime-state-path data/runtime/control_state.json \
+  --state-path data/exchange/gateway_state.json
+```
+- Result:
+  - `status=ack`
+  - `reason=accepted:NEW`
+  - `order_id=13820490452`
+- Interpretation:
+  - `MARKET` と `LIMIT(IOC)` の両方で futures testnet 疎通を再確認できた。
+  - `testnet-futures-live` はサーバ時刻同期を有効化したため、初回の `-1021` は解消済み。
+
 ## Additional Evidence (Runtime Gate on Futures Testnet)
 - Scenario:
   - `STOP` -> 注文拒否を確認

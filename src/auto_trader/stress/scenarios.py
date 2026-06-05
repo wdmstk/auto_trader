@@ -150,22 +150,17 @@ def _apply_silent_ws_stale(
     sig.loc[sig["stale_latency_sec"] >= float(stale_fail_sec), "stale_level"] = "fail"
     sig["emergency_stop"] = False
     fail_mask = sig["stale_level"] == "fail"
-    consec = 0
-    first_fail_idx: int | None = None
-    first_emergency_idx: int | None = None
-    for i, is_fail in enumerate(fail_mask.tolist()):
-        consec = consec + 1 if is_fail else 0
-        if is_fail and first_fail_idx is None:
-            first_fail_idx = i
-        if consec >= int(emergency_cycles):
-            sig.at[sig.index[i], "emergency_stop"] = True
-            if first_emergency_idx is None:
-                first_emergency_idx = i
+    fail_groups = (~fail_mask).cumsum()
+    fail_streak = fail_mask.groupby(fail_groups).cumcount().add(1).where(fail_mask, 0)
+    emergency_mask = fail_streak >= int(emergency_cycles)
+    sig.loc[emergency_mask, "emergency_stop"] = True
+    first_fail_idx = int(fail_mask.idxmax()) if bool(fail_mask.any()) else None
+    first_emergency_idx = int(emergency_mask.idxmax()) if bool(emergency_mask.any()) else None
     detect_to_stop = 0.0
     if first_fail_idx is not None and first_emergency_idx is not None:
         detect_to_stop = float(
-            sig["stale_latency_sec"].iloc[first_emergency_idx]
-            - sig["stale_latency_sec"].iloc[first_fail_idx]
+            sig["stale_latency_sec"].loc[first_emergency_idx]
+            - sig["stale_latency_sec"].loc[first_fail_idx]
         )
     sig["stale_detect_to_stop_latency_sec"] = detect_to_stop
     return sig, int(fail_mask.sum())

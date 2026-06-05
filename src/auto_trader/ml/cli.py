@@ -13,6 +13,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--signals-path", required=True)
     p.add_argument("--labels-path", required=True)
     p.add_argument("--output-path", default="data/ml/scored.parquet")
+    p.add_argument("--artifact-dir", default="data/ml/artifacts/latest")
+    p.add_argument("--model-version", default="lgbm-entry-filter-v1")
     return p
 
 
@@ -23,13 +25,16 @@ def main() -> int:
         regime_path=Path(args.regime_path),
         signals_path=Path(args.signals_path),
         labels_path=Path(args.labels_path),
+        artifact_dir=Path(args.artifact_dir),
+        model_version=args.model_version,
     )
     out_path = Path(args.output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     scored.to_parquet(out_path, index=False)
     print(
         f"saved={out_path} rows={len(scored)} threshold={trained.threshold:.2f} "
-        f"valid_accuracy={trained.metrics['valid_accuracy']:.4f}"
+        f"valid_f1={trained.metrics['valid_f1']:.4f} "
+        f"artifact={args.artifact_dir}"
     )
     return 0
 

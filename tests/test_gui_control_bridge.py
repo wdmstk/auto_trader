@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -77,3 +78,34 @@ def test_dispatch_control_events_end_to_end_with_cursor(tmp_path: Path) -> None:
     assert third.processed == 1
     assert third.actions == ["CLOSE_ALL"]
     assert handler.calls == ["START", "EMERGENCY_STOP", "CLOSE_ALL"]
+
+
+def test_dispatch_control_events_quarantines_invalid_lines(tmp_path: Path) -> None:
+    log_path = tmp_path / "control_events.jsonl"
+    quarantine_path = tmp_path / "control_events.bad.jsonl"
+    cursor_path = tmp_path / "control_cursor.json"
+    log_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"action": "START"}),
+                "{broken json",
+                json.dumps({"action": "NOPE"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    handler = DummyHandler()
+    result = dispatch_control_events(
+        control_log_path=log_path,
+        handler=handler,
+        cursor_path=cursor_path,
+        quarantine_path=quarantine_path,
+    )
+
+    assert result.processed == 1
+    assert result.actions == ["START"]
+    assert handler.calls == ["START"]
+    quarantined = quarantine_path.read_text(encoding="utf-8").splitlines()
+    assert len(quarantined) == 2

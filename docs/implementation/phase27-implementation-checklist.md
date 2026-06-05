@@ -24,7 +24,7 @@
 
 ## Done定義
 - [x] market と limit で比較可能なレポートを出力できる
-- [ ] gross/net/cost内訳が一貫する
+- [x] gross/net/cost内訳が一貫する
 - [x] partial fill 状態整合性テストが通る
 - [x] order_mode 次元を含む cost grid 比較ができる
 - [x] spec-review を作成済み
@@ -33,3 +33,4 @@
 - [ ] queue_ahead の時間減衰（bar経過で先行数量を減衰）
 - [ ] GTC近似（最大Nバー持ち越し）モデルの追加
 - [ ] 銘柄別 depth/queue 初期値プロファイル化
+- [x] limit 実績集計（filled/partial/expired/canceled, taker-like rate）を週次レポートへ反映
