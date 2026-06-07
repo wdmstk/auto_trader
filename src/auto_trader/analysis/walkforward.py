@@ -6,7 +6,7 @@ from typing import Any, cast
 
 import pandas as pd
 
-from auto_trader.backtest.simulator import BacktestConfig, OrderMode, run_backtest
+from auto_trader.backtest.simulator import BacktestConfig, OrderMode, pair_roundtrips, run_backtest
 
 
 @dataclass(frozen=True)
@@ -69,6 +69,7 @@ def run_walkforward_report(
 
     fold_rows: list[dict[str, object]] = []
     trade_rows: list[pd.DataFrame] = []
+    closed_trade_rows: list[pd.DataFrame] = []
     portfolio_rows: list[pd.DataFrame] = []
 
     expected_regime = "RANGE" if cfg.strategy == "range" else "TREND"
@@ -114,6 +115,10 @@ def run_walkforward_report(
             trades = trades.copy()
             trades["fold"] = fold_value
             trade_rows.append(trades)
+            closed = pair_roundtrips(trades)
+            if not closed.empty:
+                closed["fold"] = fold_value
+                closed_trade_rows.append(closed)
         if not portfolio.empty:
             portfolio = portfolio.copy()
             portfolio["fold"] = fold_value
@@ -154,6 +159,9 @@ def run_walkforward_report(
 
     summary = pd.DataFrame(fold_rows).sort_values("fold").reset_index(drop=True)
     trades_all = pd.concat(trade_rows, ignore_index=True) if trade_rows else pd.DataFrame()
+    closed_trades_all = (
+        pd.concat(closed_trade_rows, ignore_index=True) if closed_trade_rows else pd.DataFrame()
+    )
     portfolio_all = (
         pd.concat(portfolio_rows, ignore_index=True) if portfolio_rows else pd.DataFrame()
     )
@@ -167,6 +175,7 @@ def run_walkforward_report(
 
     summary_path = out_dir / f"walkforward_{stamp}_summary.parquet"
     trades_path = out_dir / f"walkforward_{stamp}_trades.parquet"
+    closed_trades_path = out_dir / f"walkforward_{stamp}_closed_trades.parquet"
     portfolio_path = out_dir / f"walkforward_{stamp}_portfolio.parquet"
     regime_path = out_dir / f"walkforward_{stamp}_regime_counts.parquet"
     invalid_path = out_dir / f"walkforward_{stamp}_invalid_entries.parquet"
@@ -174,6 +183,7 @@ def run_walkforward_report(
 
     summary.to_parquet(summary_path, index=False)
     trades_all.to_parquet(trades_path, index=False)
+    closed_trades_all.to_parquet(closed_trades_path, index=False)
     portfolio_all.to_parquet(portfolio_path, index=False)
     regime_counts.to_parquet(regime_path, index=False)
     invalid_rows.to_parquet(invalid_path, index=False)
@@ -192,6 +202,7 @@ def run_walkforward_report(
     return {
         "summary_path": str(summary_path),
         "trades_path": str(trades_path),
+        "closed_trades_path": str(closed_trades_path),
         "portfolio_path": str(portfolio_path),
         "regime_counts_path": str(regime_path),
         "invalid_entries_path": str(invalid_path),

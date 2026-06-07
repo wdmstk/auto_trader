@@ -8,6 +8,11 @@ from auto_trader.analysis.trade_routes import (
 
 def test_build_trade_route_selection_prefers_core_probe_over_watchlist() -> None:
     report = {
+        "statistical_qualification": {
+            "status": "pass",
+            "qualification_report_path": "qualification.json",
+            "passed_route_keys": ["range:BNBUSDT:30m"],
+        },
         "candidates": {
             "rows": [
                 {
@@ -48,6 +53,23 @@ def test_build_trade_route_selection_prefers_core_probe_over_watchlist() -> None
     assert out["trade_routes"][0]["strategy"] == "range"
     assert out["trade_routes"][0]["timeframe"] == "30m"
     assert out["trade_routes"][0]["expected_regime"] == "RANGE"
+    assert out["trade_routes"][0]["statistical_status"] == "pass"
+
+
+def test_build_trade_route_selection_is_fail_closed_without_statistical_report() -> None:
+    report = {
+        "candidates": {
+            "rows": [
+                {
+                    "symbol": "ETHUSDT",
+                    "timeframe": "15m",
+                    "strategy": "trend",
+                    "candidate_status": "core",
+                }
+            ]
+        }
+    }
+    assert build_trade_route_selection(report)["trade_routes"] == []
 
 
 def test_resolve_live_trade_routes_prefers_selection_trade_routes() -> None:

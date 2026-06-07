@@ -99,6 +99,11 @@ def main() -> int:
                 time_path=(
                     "/fapi/v1/time" if args.mode == "testnet-futures-live" else "/api/v3/time"
                 ),
+                exchange_info_path=(
+                    "/fapi/v1/exchangeInfo"
+                    if args.mode == "testnet-futures-live"
+                    else "/api/v3/exchangeInfo"
+                ),
                 sync_server_time=True,
             )
         )

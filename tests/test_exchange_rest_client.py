@@ -217,6 +217,45 @@ def test_rest_transport_uses_configured_order_path() -> None:
     assert seen["url"] == "https://example.com/fapi/v1/order"
 
 
+def test_rest_transport_uses_configured_exchange_info_path() -> None:
+    seen_urls: list[str] = []
+
+    def sender(req: Request, __: float) -> str:
+        seen_urls.append(req.full_url)
+        if req.full_url.endswith("/fapi/v1/exchangeInfo?symbol=BTCUSDT"):
+            return json.dumps(
+                {
+                    "symbols": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "filters": [
+                                {"filterType": "PRICE_FILTER", "tickSize": "0.1"},
+                                {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001"},
+                            ],
+                        }
+                    ]
+                },
+                ensure_ascii=True,
+            )
+        return json.dumps({"orderId": "12345", "status": "NEW"}, ensure_ascii=True)
+
+    t = BinanceRestTransport(
+        RestClientConfig(
+            base_url="https://example.com",
+            order_path="/fapi/v1/order",
+            exchange_info_path="/fapi/v1/exchangeInfo",
+            api_key="k",
+            api_secret="s",
+        ),
+        sender=sender,
+    )
+
+    ok, _, _ = t.send_order(_order())
+
+    assert ok is True
+    assert "https://example.com/fapi/v1/exchangeInfo?symbol=BTCUSDT" in seen_urls
+
+
 def test_rest_transport_handles_network_error() -> None:
     def sender(_: Request, __: float) -> str:
         raise URLError("down")

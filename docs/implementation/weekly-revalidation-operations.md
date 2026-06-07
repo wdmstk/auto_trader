@@ -89,6 +89,12 @@
 ## 判定ルール
 - `trend`: `PF >= 1.2`, `EXPbps > 0`, `PeriodPnL > 0`, `DD <= 0.08`
 - `range`: `PF >= 1.2`, `EXPbps > 0`, `PeriodPnL > 0`, `DD <= 0.08`
+- live昇格には `data/validation/statistical_qualification/qualification_report.json` の
+  route・strategy両方の `status=pass` を必須とする。
+- 統計条件は route 30件、strategy 100件、最終OOS 30日かつ20%以上、
+  bootstrap 95% CI、Monte Carlo DD/損失確率で判定する。
+- frozen OOS manifest不一致または統計レポート未取得時はfail-closedとし、
+  対象routeをwatchlistへ降格して `selection.trade_routes` から除外する。
 - `weekly_revalidation_report.json` の `status` は `market` 側を本線判定に使い、`limit` は診断用途として別保存する。
 - `range` は `symbol_gating_recommendation.json` の `RANGE_ENABLED_SYMBOLS` に含まれる銘柄のみで採用判定する。
 - いずれか未達は `warn` 扱い（運用継続は可、symbol gating再調整を優先）。

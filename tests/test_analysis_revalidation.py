@@ -115,6 +115,17 @@ def test_weekly_revalidation_uses_selected_symbols_for_range(tmp_path: Path) -> 
         "missing_feature_ratio": 0.0,
         "report_path": str(tmp_path / "drift.json"),
     }
+    statistical_report = {
+        "status": "pass",
+        "qualification_report_path": str(tmp_path / "qualification.json"),
+        "passed_route_keys": [
+            "trend:ETHUSDT:15m",
+            "trend:XRPUSDT:15m",
+            "range:SOLUSDT:15m",
+            "range:XRPUSDT:15m",
+        ],
+        "routes": [],
+    }
 
     report = build_weekly_revalidation_report(
         market_summary,
@@ -122,6 +133,7 @@ def test_weekly_revalidation_uses_selected_symbols_for_range(tmp_path: Path) -> 
         symbol_gating=symbol_gating,
         candidate_report=candidate_report,
         drift_report=drift_report,
+        statistical_report=statistical_report,
         timeframe="15m",
     )
 
@@ -141,3 +153,4 @@ def test_weekly_revalidation_uses_selected_symbols_for_range(tmp_path: Path) -> 
     assert report["metrics"]["range"]["pf"] == 5.5
     assert report["metrics"]["range"]["exp_bps"] == 35.25
     assert report["limit_metrics"]["range"]["exp_bps"] == -3.0
+    assert report["statistical_qualification"]["status"] == "pass"

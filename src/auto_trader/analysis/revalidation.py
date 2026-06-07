@@ -12,6 +12,7 @@ def build_weekly_revalidation_report(
     symbol_gating: str | Path | dict[str, Any] | None = None,
     candidate_report: str | Path | dict[str, Any] | None = None,
     drift_report: str | Path | dict[str, Any] | None = None,
+    statistical_report: str | Path | dict[str, Any] | None = None,
     timeframe: str = "15m",
 ) -> dict[str, Any]:
     market_rows = _load_rows(market_summary)
@@ -19,6 +20,7 @@ def build_weekly_revalidation_report(
     gating = _load_obj(symbol_gating) if symbol_gating is not None else {}
     candidate = _load_obj(candidate_report) if candidate_report is not None else {}
     drift = _load_obj(drift_report) if drift_report is not None else {}
+    statistical = _load_obj(statistical_report) if statistical_report is not None else {}
 
     selected_symbols = {
         "trend": _csv_symbols(gating.get("trend_enabled_symbols", [])),
@@ -28,15 +30,24 @@ def build_weekly_revalidation_report(
     limit = _summarize(limit_rows, selected_symbols=selected_symbols, timeframe=timeframe)
 
     drift_status = str(drift.get("status", "unknown"))
+    statistical_status = str(statistical.get("status", "missing")) if statistical else "missing"
+    candidate = _apply_statistical_to_candidate(candidate, statistical)
     market_status = str(market["status"])
     limit_status = str(limit["status"])
-    status = "pass" if market_status == "pass" and drift_status not in {"warn", "fail"} else "warn"
+    status = (
+        "pass"
+        if market_status == "pass"
+        and drift_status not in {"warn", "fail"}
+        and statistical_status == "pass"
+        else "warn"
+    )
     decision = {
         "status": status,
         "market_reason": _check_reason("market", market["checks"], market_status),
         "limit_reason": _check_reason("limit", limit["checks"], limit_status),
         "drift_reason": _drift_reason(drift_status, drift),
         "candidate_reason": _candidate_reason(candidate),
+        "statistical_reason": _statistical_reason(statistical_status, statistical),
     }
 
     return {
@@ -65,6 +76,7 @@ def build_weekly_revalidation_report(
             "missing_feature_ratio": float(drift.get("missing_feature_ratio", 0.0) or 0.0),
             "report_path": str(drift.get("report_path", "")),
         },
+        "statistical_qualification": statistical,
     }
 
 
@@ -230,6 +242,26 @@ def _candidate_reason(candidate: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _statistical_reason(status: str, report: dict[str, Any]) -> dict[str, Any]:
+    if not report:
+        return {"status": "missing", "reason": "statistical qualification report unavailable"}
+    failed_routes = [
+        str(row.get("route_key", ""))
+        for row in report.get("routes", [])
+        if isinstance(row, dict) and str(row.get("status", "")) != "pass"
+    ]
+    return {
+        "status": status,
+        "reason": (
+            "statistical qualification satisfied"
+            if status == "pass"
+            else f"statistical qualification failed: {len(failed_routes)} routes"
+        ),
+        "failed_routes": failed_routes,
+        "report_path": str(report.get("qualification_report_path", "")),
+    }
+
+
 def _candidate_summary(candidate: dict[str, Any]) -> dict[str, Any]:
     core = _csv_symbols(candidate.get("core_symbols", []))
     probe = _csv_symbols(candidate.get("probe_symbols", []))
@@ -263,3 +295,33 @@ def _candidate_summary(candidate: dict[str, Any]) -> dict[str, Any]:
         "watchlist_count": int(route_counts.get("watchlist", len(watchlist)) or len(watchlist)),
         "limit_metrics": limit_metrics,
     }
+
+
+def _apply_statistical_to_candidate(
+    candidate: dict[str, Any], statistical: dict[str, Any]
+) -> dict[str, Any]:
+    if not candidate:
+        return candidate
+    passed = {str(value) for value in statistical.get("passed_route_keys", []) if str(value)}
+    statistical_status = str(statistical.get("status", "missing"))
+    out = dict(candidate)
+    rows = candidate.get("rows", [])
+    if isinstance(rows, list):
+        qualified_rows: list[dict[str, Any]] = []
+        for raw in rows:
+            if not isinstance(raw, dict):
+                continue
+            row = dict(raw)
+            route_key = (
+                f"{str(row.get('strategy', '')).strip()}:"
+                f"{str(row.get('symbol', '')).strip()}:"
+                f"{str(row.get('timeframe', '')).strip()}"
+            )
+            row["statistical_status"] = (
+                "pass" if statistical_status == "pass" and route_key in passed else "fail"
+            )
+            if row.get("candidate_status") == "core" and row["statistical_status"] != "pass":
+                row["candidate_status"] = "watchlist"
+            qualified_rows.append(row)
+        out["rows"] = qualified_rows
+    return out

@@ -376,7 +376,7 @@ def summarize_metrics(
             "LimitTakerLikeRate": 0.0,
         }
 
-    closed = _pair_roundtrips(trades_df)
+    closed = pair_roundtrips(trades_df)
     if closed.empty:
         win_rate = 0.0
         expectancy = 0.0
@@ -536,7 +536,7 @@ def _taker_fee_rate(cfg: BacktestConfig) -> float:
     return cfg.taker_fee_rate if cfg.taker_fee_rate > 0.0 else cfg.fee_rate
 
 
-def _pair_roundtrips(trades_df: pd.DataFrame) -> pd.DataFrame:
+def pair_roundtrips(trades_df: pd.DataFrame) -> pd.DataFrame:
     if trades_df.empty:
         return pd.DataFrame(columns=["entry_ts", "exit_ts", "pnl", "entry_notional"])
     rows: list[dict[str, object]] = []
@@ -564,6 +564,13 @@ def _pair_roundtrips(trades_df: pd.DataFrame) -> pd.DataFrame:
                     "pnl": pnl,
                     "entry_notional": _to_float(open_trade["price"])
                     * _to_float(open_trade["size"]),
+                    "return_bps": (
+                        pnl
+                        / (_to_float(open_trade["price"]) * _to_float(open_trade["size"]))
+                        * 10_000.0
+                        if _to_float(open_trade["price"]) * _to_float(open_trade["size"]) > 0.0
+                        else 0.0
+                    ),
                 }
             )
             open_trade = None

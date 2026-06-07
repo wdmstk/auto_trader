@@ -99,11 +99,12 @@ def _write_weekly_report(path: Path, *, trend: list[str], range_: list[str]) -> 
     path.write_text(
         json.dumps(
             {
+                "statistical_qualification": {"status": "pass"},
                 "selection": {
                     "trend_enabled_symbols": trend,
                     "range_enabled_symbols": range_,
                     "timeframe": "15m",
-                }
+                },
             },
             ensure_ascii=True,
         ),
@@ -116,6 +117,7 @@ def _write_weekly_route_report(path: Path) -> None:
     path.write_text(
         json.dumps(
             {
+                "statistical_qualification": {"status": "pass"},
                 "selection": {
                     "trade_routes": [
                         {
@@ -124,9 +126,10 @@ def _write_weekly_route_report(path: Path) -> None:
                             "timeframe": "30m",
                             "expected_regime": "RANGE",
                             "candidate_status": "core",
+                            "statistical_status": "pass",
                         }
                     ]
-                }
+                },
             },
             ensure_ascii=True,
         ),
@@ -139,6 +142,7 @@ def _write_weekly_multi_route_report(path: Path) -> None:
     path.write_text(
         json.dumps(
             {
+                "statistical_qualification": {"status": "pass"},
                 "selection": {
                     "trade_routes": [
                         {
@@ -147,6 +151,7 @@ def _write_weekly_multi_route_report(path: Path) -> None:
                             "timeframe": "15m",
                             "expected_regime": "RANGE",
                             "candidate_status": "core",
+                            "statistical_status": "pass",
                         },
                         {
                             "symbol": "XRPUSDT",
@@ -154,9 +159,10 @@ def _write_weekly_multi_route_report(path: Path) -> None:
                             "timeframe": "15m",
                             "expected_regime": "TREND",
                             "candidate_status": "core",
+                            "statistical_status": "pass",
                         },
                     ]
-                }
+                },
             },
             ensure_ascii=True,
         ),
