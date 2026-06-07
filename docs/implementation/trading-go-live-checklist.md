@@ -77,6 +77,16 @@
 - [x] `updated_at` 更新継続
 - [x] watcher 生存継続
 
+## 4.5 Statistical Qualification
+- [ ] routeごとの最終OOS closed tradesが30件以上
+- [ ] trend/rangeごとの最終OOS closed tradesが100件以上
+- [ ] 最終OOSが30日以上かつ全期間の20%以上
+- [ ] 95% bootstrap CI下限が `PF > 1.0` かつ `ExpectancyBps > 0`
+- [ ] Monte CarloでDD 95 percentileが8%以下かつ終了損失確率が5%以下
+- [ ] frozen manifestとデータリーク監査がpass
+  - 証跡: `data/validation/statistical_qualification/qualification_report.json`
+  - manifest: `data/validation/statistical_qualification/frozen_manifest.json`
+
 ## 5. Open Items
 - [ ] route-centric worker変更後の運用証跡を再取得する
   - 残件:
@@ -97,7 +107,7 @@
   - route-centric変更後の8h longrun完了
   - Futures Testnetで複数routeのposition/order整合を確認
   - Runtime Metricsしきい値を連続運転で満たす
-- 判定者: Codex
+- 判定者: auto
 - 判定日: 2026-06-07
 
 最新判定の正本:
@@ -113,11 +123,13 @@
 - go_live_ready: false
 - health_status: pass
 - weekly_status: pass
-- longrun_rows: 16
-- unmet_reasons: post-change 8h longrun and Futures Testnet evidence required
+- statistical_status: missing
+- longrun_rows: 17
+- unmet_reasons:
+  - statistical qualification が missing（No-Go）
 <!-- AUTO_DECISION_NOTES_END -->
 
 <!-- AUTO_OPEN_ITEMS_START -->
 ### Auto Open Items
-- [ ] route-centric変更後の8h longrunとFutures Testnet証跡を再取得する
+- [ ] statistical qualification が missing（No-Go）
 <!-- AUTO_OPEN_ITEMS_END -->

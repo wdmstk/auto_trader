@@ -72,6 +72,10 @@ def main() -> int:
 
     health_status = str(health.get("overall_status", "unknown"))
     weekly_status = str(weekly.get("status", "unknown")) if weekly else "missing"
+    statistical = weekly.get("statistical_qualification", {}) if weekly else {}
+    statistical_status = (
+        str(statistical.get("status", "missing")) if isinstance(statistical, dict) else "missing"
+    )
     rows = len(checkpoints)
     has_rows = rows > 0
     lock_residual = any(bool(r.get("runtime_lock_residual", False) or r.get("notify_lock_residual", False)) for r in checkpoints)
@@ -82,7 +86,13 @@ def main() -> int:
 
     longrun_ok = has_rows and (not lock_residual) and runtime_alive_all and updated_progress_any
     metrics_ok = health_status in {"pass", "warn"}
-    go_ready = longrun_ok and metrics_ok and health_status == "pass"
+    go_ready = (
+        longrun_ok
+        and metrics_ok
+        and health_status == "pass"
+        and weekly_status == "pass"
+        and statistical_status == "pass"
+    )
     reasons: list[str] = []
     if not has_rows:
         reasons.append("longrun checkpoints が未取得")
@@ -102,6 +112,8 @@ def main() -> int:
         reasons.append("weekly strategy revalidation が warn（要調整）")
     if weekly_status == "missing":
         reasons.append("weekly strategy revalidation report が未取得")
+    if statistical_status != "pass":
+        reasons.append(f"statistical qualification が {statistical_status}（No-Go）")
 
     md = mark_checkbox(md, "8時間以上の連続運転証跡", has_rows)
     md = mark_checkbox(md, "Runtime Metrics 自動採点レポートを取得", bool(health))
@@ -122,6 +134,7 @@ def main() -> int:
         f"- go_live_ready: {'true' if go_ready else 'false'}",
         f"- health_status: {health_status}",
         f"- weekly_status: {weekly_status}",
+        f"- statistical_status: {statistical_status}",
         f"- longrun_rows: {rows}",
     ]
     if reasons:
@@ -165,6 +178,7 @@ def main() -> int:
         "rows": rows,
         "health_status": health_status,
         "weekly_status": weekly_status,
+        "statistical_status": statistical_status,
         "longrun_ok": longrun_ok,
         "metrics_ok": metrics_ok,
         "go_live_ready": go_ready,

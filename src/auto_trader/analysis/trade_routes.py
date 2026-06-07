@@ -13,9 +13,20 @@ def build_trade_route_selection(
     payload = _load_obj(report)
     primary = payload.get("candidates", payload)
     probe = payload.get("range_probe_candidates", {})
+    statistical = _load_obj(payload.get("statistical_qualification", {}))
+    passed_route_keys = {
+        str(value) for value in statistical.get("passed_route_keys", []) if str(value)
+    }
+    statistical_status = str(statistical.get("status", "missing"))
 
     rows = _candidate_rows(primary) + _candidate_rows(probe)
-    core_rows = [row for row in rows if str(row.get("candidate_status", "")) == "core"]
+    core_rows = [
+        row
+        for row in rows
+        if str(row.get("candidate_status", "")) == "core"
+        and statistical_status == "pass"
+        and _row_route_key(row) in passed_route_keys
+    ]
     ordered = sorted(core_rows, key=_route_sort_key, reverse=True)
 
     selected: list[dict[str, Any]] = []
@@ -40,6 +51,8 @@ def build_trade_route_selection(
                 "max_dd_mean": _num(row.get("max_dd_mean", 0.0)),
                 "closed_trades_mean": _num(row.get("closed_trades_mean", 0.0)),
                 "candidate_score": _num(row.get("candidate_score", 0.0)),
+                "statistical_status": "pass",
+                "qualification_report_path": str(statistical.get("qualification_report_path", "")),
             }
         )
 
@@ -274,6 +287,14 @@ def _num(value: object) -> float:
         return float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return 0.0
+
+
+def _row_route_key(row: dict[str, Any]) -> str:
+    return (
+        f"{str(row.get('strategy', '')).strip()}:"
+        f"{str(row.get('symbol', '')).strip()}:"
+        f"{str(row.get('timeframe', '')).strip()}"
+    )
 
 
 def _load_obj(payload: str | Path | dict[str, Any]) -> dict[str, Any]:

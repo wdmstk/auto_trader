@@ -698,6 +698,7 @@ class LiveTradingWorker:
                     api_secret=api_secret,
                     order_path="/fapi/v1/order",
                     time_path="/fapi/v1/time",
+                    exchange_info_path="/fapi/v1/exchangeInfo",
                     sync_server_time=True,
                 )
             )
@@ -757,6 +758,9 @@ class LiveTradingWorker:
     def _routes_from_weekly_report(
         self, payload: dict[str, object]
     ) -> tuple[TradeRoute, ...] | None:
+        statistical = payload.get("statistical_qualification", {})
+        if not isinstance(statistical, dict) or str(statistical.get("status", "")) != "pass":
+            return ()
         selection = payload.get("selection", {})
         if isinstance(selection, dict):
             trade_routes = self._normalize_trade_routes(selection.get("trade_routes"))
@@ -818,6 +822,8 @@ class LiveTradingWorker:
         routes: list[TradeRoute] = []
         for item in value:
             if not isinstance(item, dict):
+                continue
+            if str(item.get("statistical_status", "")) != "pass":
                 continue
             route = self._route_from_row(item)
             if route is None:

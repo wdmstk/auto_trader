@@ -41,6 +41,9 @@ ALLOWLIST_ENV="$OUT_DIR/symbol_gating.env"
 CANDIDATE_REPORT_PATH="$OUT_DIR/candidate_report.json"
 RANGE_PROBE_REPORT_DIR="$OUT_DIR/range_probe"
 RANGE_PROBE_REPORT_PATH="$RANGE_PROBE_REPORT_DIR/candidate_report.json"
+STATISTICAL_DIR="${STATISTICAL_DIR:-data/validation/statistical_qualification}"
+STATISTICAL_REPORT_PATH="$STATISTICAL_DIR/qualification_report.json"
+STATISTICAL_MANIFEST_PATH="$STATISTICAL_DIR/frozen_manifest.json"
 
 SUMMARY_PATH="$OUT_DIR/timeframe_comparison_summary.json"
 SUMMARY_PATH="$SUMMARY_PATH" CANDIDATE_REPORT_PATH="$CANDIDATE_REPORT_PATH" ./scripts/timeframe_comparison.sh
@@ -69,6 +72,26 @@ SUMMARY_PATH="$SUMMARY_PATH" \
 CANDIDATE_REPORT_PATH="$CANDIDATE_REPORT_PATH" \
 ML_ARTIFACT_PATH="${ML_ARTIFACT_PATH:-}" \
 ./scripts/timeframe_comparison.sh
+
+mkdir -p "$STATISTICAL_DIR"
+PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+python - "$SUMMARY_PATH" "$STATISTICAL_MANIFEST_PATH" "$STATISTICAL_REPORT_PATH" "$DELAY_BARS" <<'EOF_PY'
+from __future__ import annotations
+
+import json
+import sys
+
+from auto_trader.analysis.statistical import build_statistical_qualification
+
+report = build_statistical_qualification(
+    sys.argv[1],
+    analysis_dir="data/analysis",
+    manifest_path=sys.argv[2],
+    report_path=sys.argv[3],
+    execution_delay_bars=int(sys.argv[4]),
+)
+print(json.dumps({"status": report["status"], "report_path": sys.argv[3]}, ensure_ascii=True))
+EOF_PY
 
 LIMIT_SUMMARY_PATH="$OUT_DIR/timeframe_comparison_limit_summary.json"
 SUMMARY_PATH="$LIMIT_SUMMARY_PATH" \
@@ -184,7 +207,8 @@ python - \
   "$CANDIDATE_REPORT_PATH" \
   "$RANGE_PROBE_REPORT_PATH" \
   "$OUT_DIR/weekly_revalidation_report.json" \
-  "$DRIFT_REPORT_PATH" <<'EOF_PY'
+  "$DRIFT_REPORT_PATH" \
+  "$STATISTICAL_REPORT_PATH" <<'EOF_PY'
 from __future__ import annotations
 
 import sys
@@ -197,6 +221,7 @@ candidate_path = Path(sys.argv[4])
 probe_candidate_path = Path(sys.argv[5])
 dst = Path(sys.argv[6])
 drift_path = Path(sys.argv[7])
+statistical_path = Path(sys.argv[8])
 
 import json
 
@@ -209,6 +234,7 @@ report = build_weekly_revalidation_report(
     symbol_gating=gating_path,
     candidate_report=candidate_path,
     drift_report=drift_path,
+    statistical_report=statistical_path,
     timeframe="15m",
 )
 if probe_candidate_path.exists():
