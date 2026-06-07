@@ -18,6 +18,14 @@
 - 約定判定: `filled|partial|expired|canceled`
 - コスト内訳: `fee_cost`, `spread_cost`, `impact_cost`
 - 評価指標: `gross_pnl`, `net_pnl`, `expectancy_bps`
+- 週次/候補レポート向けの limit evidence summary
+  - `filled / partial / expired / canceled / taker-like`
+  - `market` 本線判定と `limit` 診断理由の分離表示
+- route-centric candidate artifacts
+  - route 定義: `symbol + strategy + timeframe`
+  - `route_counts` と `symbol_counts` を分離して保存
+  - `selection.trade_routes` は全 `core` route を保持する
+  - `weekly_core_feedback.json` を route 正本、`weekly_core_feedback.env` を shell 補助とする
 
 ## 前提条件
 - 既存のリスクゲートとruntimeゲートは不変。
@@ -35,13 +43,18 @@
 3. 評価軸
 - grossが正でもnetが負になるケースを明示検知。
 - cost sensitivity（fee/slippage/spread/delay）をレポートする。
+- 週次再評価では `market` を本線、`limit` を診断として分離表示する。
+- 週次候補/feedback/worker 入力は route を正規単位とし、同一 symbol の複数 route を保持する。
 
 ## 失敗モードと対策
 - 過度な楽観約定: 到達条件を保守的に設定。
 - partial fill 状態不整合: 注文状態遷移ログを必須化。
 - maker前提崩壊: taker化率を監視し閾値超過時warn。
+- symbol 件数と route 件数の混同: report schema で `route_counts` / `symbol_counts` を分離する。
 
 ## テスト観点
 - limit/marketの切替が正しく機能する。
 - partial/expired/canceled 遷移が整合する。
 - コスト内訳が net pnl と一致する。
+- weekly/candidate report に limit evidence summary が反映される。
+- `selection.trade_routes` が symbol dedupe なしで複数 route を保持する。

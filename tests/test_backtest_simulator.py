@@ -153,6 +153,46 @@ def test_fee_split_for_market_and_limit() -> None:
     assert float(limit_trades["fee"].sum()) >= 0.0
 
 
+def test_pf_no_loss_is_high_not_zero() -> None:
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    ohlcv_rows = []
+    signal_rows = []
+    prices = [100, 101, 102, 103]
+    for i, p in enumerate(prices):
+        ts = base + timedelta(minutes=i)
+        ohlcv_rows.append(
+            {
+                "symbol": "BTCUSDT",
+                "timeframe": "1m",
+                "timestamp": ts,
+                "open": p,
+                "high": p + 0.5,
+                "low": p - 0.5,
+                "close": p,
+                "volume": 1000 + i,
+            }
+        )
+        signal_rows.append(
+            {
+                "symbol": "BTCUSDT",
+                "timeframe": "1m",
+                "timestamp": ts,
+                "entry_signal": i == 1,
+                "exit_signal": i == 2,
+                "regime": "RANGE",
+            }
+        )
+
+    trades, _, metrics = run_backtest(
+        ohlcv_df=pd.DataFrame(ohlcv_rows),
+        signals_df=pd.DataFrame(signal_rows),
+        config=BacktestConfig(execution_delay_bars=0),
+    )
+    assert not trades.empty
+    assert float(metrics["PF"]) >= 1.2
+    assert float(metrics["PF"]) == 100.0
+
+
 def test_limit_depth_queue_model_reduces_partial_fill() -> None:
     ohlcv, signals, ml = _sample_inputs()
     ohlcv.loc[2, "high"] = 102.2
