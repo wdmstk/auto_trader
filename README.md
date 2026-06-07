@@ -18,7 +18,7 @@
 
 ## 現在の実装ステータス
 
-Phase 0-25 の主要運用機能まで実装済み:
+Phase 0-29 の主要運用機能まで実装済み:
 - `pyproject.toml` によるPythonプロジェクト基盤
 - 品質ゲート: `ruff` / `mypy` / `pytest` / `pre-commit`
 - 設定ローダ（`config.<env>.yaml` + 環境変数上書き）
@@ -29,10 +29,10 @@ Phase 0-25 の主要運用機能まで実装済み:
 - Runtime metrics health check / longrun evidence / Go-Live checklist auto update
 - timeframe policy（`15m(regime) + 5m(signal) + 1m(execution)`）評価導線
 - range/trend の symbol gating + cooldown + entry score 導線
-- 週次戦略再評価ジョブ（`./scripts/weekly_strategy_revalidation.sh`）
+- 週次戦略再評価ジョブ（定期実行は `./scripts/weekly_strategy_revalidation_with_core.sh`、手動本線は `./scripts/weekly_strategy_revalidation.sh`）
 
 Phase 26-29（drift検知 / 指値最適化 / ボラ加重エクスポージャー / chaos test拡張）は
-Spec/Checklist運用を再開して順次実装します。
+実装済みで、Spec/Review/Checklist を軸に継続調整します。
 
 ## ドキュメント構成
 
@@ -427,13 +427,21 @@ STRICT=false \
 ## Weekly Strategy Revalidation
 
 ```bash
-./scripts/weekly_strategy_revalidation.sh
+./scripts/weekly_strategy_revalidation_with_core.sh
 ```
 
 成果物:
 - `data/validation/weekly_revalidation/weekly_revalidation_report.json`
 - `data/validation/weekly_revalidation/timeframe_comparison_summary.json`
 - `data/validation/weekly_revalidation/cost_grid_result.json`
+
+自動売買対象の daily backtest:
+
+```bash
+./scripts/backtest_symbol_rotation.sh
+```
+
+このスクリプトは `data/validation/weekly_revalidation/weekly_revalidation_report.json` の `selection.trade_routes` を起点に、live の自動売買対象だけを backtest します。
 
 ## Dry-Run Orchestrator（Phase 19）
 

@@ -20,14 +20,16 @@
 2. `docs/implementation/` に `spec-review-phaseXX-YYYY-MM-DD.md` を作成する。
 3. `docs/implementation/phaseXX-implementation-checklist.md` を更新する。
 4. 証跡スクリプトを実行する。
-   - 週次再評価: `./scripts/weekly_strategy_revalidation.sh`
+   - 週次再評価（定期実行）: `./scripts/weekly_strategy_revalidation_with_core.sh`
+   - 週次再評価（手動本線）: `./scripts/weekly_strategy_revalidation.sh`
+   - 自動売買対象の daily backtest: `./scripts/backtest_symbol_rotation.sh`
    - longrun / health: `./scripts/longrun_8h_check.sh` または既存証跡確認
 5. `./scripts/update_go_live_checklist.sh` を実行し、Auto判定欄を同期する。
 6. `docs/implementation/trading-go-live-checklist.md` で最終判定（Go/Conditional/No-Go）を確定する。
 
 ## 運用ランブック
 - runtime / worker / monitor / risk の常駐・定期運用: `docs/implementation/runtime-control-operations.md`
-- 週次戦略再評価: `docs/implementation/weekly-revalidation-operations.md`
+- 週次戦略再評価（定期実行は `./scripts/weekly_strategy_revalidation_with_core.sh`、手動本線は `./scripts/weekly_strategy_revalidation.sh`）: `docs/implementation/weekly-revalidation-operations.md`
 - ライブ監視コンソール: `src/auto_trader/gui/app.py` の `Overview / Trading / Analysis` タブ
 
 ## Doc First ルール（必須）
