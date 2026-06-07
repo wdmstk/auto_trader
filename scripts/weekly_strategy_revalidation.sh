@@ -16,9 +16,11 @@ export STRATEGIES="${STRATEGIES:-range,trend}"
 export FOLDS="${FOLDS:-4}"
 
 export RANGE_REQUIRE_REVERSAL_CANDLE="${RANGE_REQUIRE_REVERSAL_CANDLE:-false}"
-export RANGE_WICK_RATIO_MIN="${RANGE_WICK_RATIO_MIN:-0.3}"
+export RANGE_WICK_RATIO_MIN="${RANGE_WICK_RATIO_MIN:-0.2}"
 export RANGE_REENTRY_COOLDOWN_BARS="${RANGE_REENTRY_COOLDOWN_BARS:-2}"
-export RANGE_ENABLED_SYMBOLS="${RANGE_ENABLED_SYMBOLS:-SOLUSDT,XRPUSDT,BNBUSDT}"
+export RANGE_ENABLED_SYMBOLS="${RANGE_ENABLED_SYMBOLS:-SOLUSDT,XRPUSDT}"
+export RANGE_PROBE_SYMBOLS="${RANGE_PROBE_SYMBOLS:-BNBUSDT}"
+export RANGE_PROBE_TIMEFRAMES="${RANGE_PROBE_TIMEFRAMES:-15m,30m,1h}"
 
 export TREND_REENTRY_COOLDOWN_BARS="${TREND_REENTRY_COOLDOWN_BARS:-2}"
 export TREND_ENABLED_SYMBOLS="${TREND_ENABLED_SYMBOLS:-ETHUSDT,XRPUSDT,ADAUSDT}"
@@ -36,9 +38,12 @@ DRIFT_REPORT_PATH="$OUT_DIR/feature_drift_report.json"
 DRIFT_ONLINE_STATS_PATH="$OUT_DIR/feature_online_stats.json"
 ALLOWLIST_JSON="$OUT_DIR/symbol_gating_recommendation.json"
 ALLOWLIST_ENV="$OUT_DIR/symbol_gating.env"
+CANDIDATE_REPORT_PATH="$OUT_DIR/candidate_report.json"
+RANGE_PROBE_REPORT_DIR="$OUT_DIR/range_probe"
+RANGE_PROBE_REPORT_PATH="$RANGE_PROBE_REPORT_DIR/candidate_report.json"
 
 SUMMARY_PATH="$OUT_DIR/timeframe_comparison_summary.json"
-SUMMARY_PATH="$SUMMARY_PATH" ./scripts/timeframe_comparison.sh
+SUMMARY_PATH="$SUMMARY_PATH" CANDIDATE_REPORT_PATH="$CANDIDATE_REPORT_PATH" ./scripts/timeframe_comparison.sh
 
 PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
 python - "$SUMMARY_PATH" "$ALLOWLIST_JSON" "$ALLOWLIST_ENV" <<'EOF_PY'
@@ -60,10 +65,17 @@ set -a
 source "$ALLOWLIST_ENV"
 set +a
 
-SUMMARY_PATH="$SUMMARY_PATH" ML_ARTIFACT_PATH="${ML_ARTIFACT_PATH:-}" ./scripts/timeframe_comparison.sh
+SUMMARY_PATH="$SUMMARY_PATH" \
+CANDIDATE_REPORT_PATH="$CANDIDATE_REPORT_PATH" \
+ML_ARTIFACT_PATH="${ML_ARTIFACT_PATH:-}" \
+./scripts/timeframe_comparison.sh
 
 LIMIT_SUMMARY_PATH="$OUT_DIR/timeframe_comparison_limit_summary.json"
-SUMMARY_PATH="$LIMIT_SUMMARY_PATH" ORDER_MODE=limit ML_ARTIFACT_PATH="${ML_ARTIFACT_PATH:-}" ./scripts/timeframe_comparison.sh
+SUMMARY_PATH="$LIMIT_SUMMARY_PATH" \
+CANDIDATE_REPORT_PATH="$OUT_DIR/candidate_report_limit.json" \
+ORDER_MODE=limit \
+ML_ARTIFACT_PATH="${ML_ARTIFACT_PATH:-}" \
+./scripts/timeframe_comparison.sh
 
 PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
 python - "$SUMMARY_PATH" "$ALLOWLIST_JSON" "$ALLOWLIST_ENV" <<'EOF_PY'
@@ -143,6 +155,20 @@ set -a
 source "$LIMIT_DEFAULTS_ENV"
 set +a
 
+if [[ -n "${RANGE_PROBE_SYMBOLS:-}" ]]; then
+  SUMMARY_PATH="$RANGE_PROBE_REPORT_DIR/timeframe_comparison_summary.json" \
+  CANDIDATE_REPORT_PATH="$RANGE_PROBE_REPORT_PATH" \
+  OUT_DIR="$RANGE_PROBE_REPORT_DIR" \
+  SYMBOLS="$RANGE_PROBE_SYMBOLS" \
+  TIMEFRAMES="$RANGE_PROBE_TIMEFRAMES" \
+  STRATEGIES=range \
+  RANGE_ENABLED_SYMBOLS="$RANGE_PROBE_SYMBOLS" \
+  RANGE_REQUIRE_REVERSAL_CANDLE=false \
+  RANGE_WICK_RATIO_MIN=0.2 \
+  RANGE_REENTRY_COOLDOWN_BARS=2 \
+  ./scripts/timeframe_candidate_scan.sh
+fi
+
 PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
 python -m auto_trader.drift \
   --features-glob "data/features/*_15m_features.parquet" \
@@ -154,90 +180,53 @@ python -m auto_trader.drift \
 python - \
   "$OUT_DIR/timeframe_comparison_summary.json" \
   "$OUT_DIR/timeframe_comparison_limit_summary.json" \
+  "$OUT_DIR/symbol_gating_recommendation.json" \
+  "$CANDIDATE_REPORT_PATH" \
+  "$RANGE_PROBE_REPORT_PATH" \
   "$OUT_DIR/weekly_revalidation_report.json" \
   "$DRIFT_REPORT_PATH" <<'EOF_PY'
 from __future__ import annotations
 
-import json
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 
-src = Path(sys.argv[1])
-limit_src = Path(sys.argv[2])
-dst = Path(sys.argv[3])
-drift_path = Path(sys.argv[4])
-drift = json.loads(drift_path.read_text()) if drift_path.exists() else {}
+market_summary = Path(sys.argv[1])
+limit_summary = Path(sys.argv[2])
+gating_path = Path(sys.argv[3])
+candidate_path = Path(sys.argv[4])
+probe_candidate_path = Path(sys.argv[5])
+dst = Path(sys.argv[6])
+drift_path = Path(sys.argv[7])
 
-def load_rows(path: Path) -> list[dict[str, object]]:
-    if not path.exists():
-        return []
-    obj = json.loads(path.read_text())
-    return list(obj.get("rows", []))
+import json
 
-def mean(rows: list[dict[str, object]], strategy: str, key: str) -> float:
-    vals = [float(r.get(key, 0.0)) for r in rows if r.get("strategy") == strategy and r.get("timeframe") == "15m"]
-    return sum(vals) / len(vals) if vals else 0.0
+from auto_trader.analysis.revalidation import build_weekly_revalidation_report
+from auto_trader.analysis.trade_routes import build_trade_route_selection
 
-def summarize(rows: list[dict[str, object]]) -> dict[str, object]:
-    trend_pf = mean(rows, "trend", "pf_mean")
-    trend_exp = mean(rows, "trend", "expectancy_bps_mean")
-    trend_pnl = mean(rows, "trend", "period_pnl_mean")
-    trend_dd = mean(rows, "trend", "max_dd_mean")
-    range_pf = mean(rows, "range", "pf_mean")
-    range_exp = mean(rows, "range", "expectancy_bps_mean")
-    range_pnl = mean(rows, "range", "period_pnl_mean")
-    range_dd = mean(rows, "range", "max_dd_mean")
-    checks = {
-        "trend_pf_ge_1_2": trend_pf >= 1.2,
-        "trend_expbps_gt_0": trend_exp > 0.0,
-        "trend_period_pnl_gt_0": trend_pnl > 0.0,
-        "trend_dd_le_0_08": trend_dd <= 0.08,
-        "range_pf_ge_1_2": range_pf >= 1.2,
-        "range_expbps_gt_0": range_exp > 0.0,
-        "range_period_pnl_gt_0": range_pnl > 0.0,
-        "range_dd_le_0_08": range_dd <= 0.08,
-    }
-    status = "pass" if all(checks.values()) else "warn"
-    return {
-        "status": status,
-        "metrics": {
-            "trend": {"pf": trend_pf, "exp_bps": trend_exp, "period_pnl": trend_pnl, "dd": trend_dd},
-            "range": {"pf": range_pf, "exp_bps": range_exp, "period_pnl": range_pnl, "dd": range_dd},
-        },
-        "checks": checks,
-    }
-
-market = summarize(load_rows(src))
-limit = summarize(load_rows(limit_src))
-
-status = "pass" if market["status"] == "pass" and limit["status"] == "pass" else "warn"
-drift_status = str(drift.get("status", "unknown"))
-if drift_status in {"warn", "fail"}:
-    status = "warn"
-out = {
-    "schema_version": "1.2",
-    "checked_at": datetime.now(UTC).isoformat(),
-    "status": status,
-    "metrics": market["metrics"],
-    "limit_metrics": limit["metrics"],
-    "checks": market["checks"],
-    "limit_checks": limit["checks"],
-    "market_status": market["status"],
-    "limit_status": limit["status"],
-    "summary_paths": {
-        "market": str(src),
-        "limit": str(limit_src),
-    },
-    "drift": {
-        "status": drift_status,
-        "drift_trade_block": bool(drift.get("drift_trade_block", False)),
-        "fail_feature_ratio": float(drift.get("fail_feature_ratio", 0.0) or 0.0),
-        "missing_feature_ratio": float(drift.get("missing_feature_ratio", 0.0) or 0.0),
-        "report_path": str(drift_path),
-    },
+report = build_weekly_revalidation_report(
+    market_summary,
+    limit_summary,
+    symbol_gating=gating_path,
+    candidate_report=candidate_path,
+    drift_report=drift_path,
+    timeframe="15m",
+)
+if probe_candidate_path.exists():
+    try:
+        report["range_probe_candidates"] = json.loads(probe_candidate_path.read_text(encoding="utf-8"))
+    except Exception:
+        report["range_probe_candidates"] = {"status": "warn", "path": str(probe_candidate_path)}
+route_selection = build_trade_route_selection(report, default_timeframe="15m")
+selection = report.get("selection", {})
+if not isinstance(selection, dict):
+    selection = {}
+selection.update(route_selection)
+report["selection"] = selection
+report["summary_paths"] = {
+    "market": str(market_summary),
+    "limit": str(limit_summary),
 }
-dst.write_text(json.dumps(out, ensure_ascii=True, indent=2), encoding="utf-8")
+dst.write_text(json.dumps(report, ensure_ascii=True, indent=2), encoding="utf-8")
 print(dst)
 EOF_PY
 

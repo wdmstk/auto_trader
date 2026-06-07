@@ -46,6 +46,26 @@ class BinanceKlineClient:
                 raise ValueError("unexpected response from Binance")
             return result
 
+    def fetch_json(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        query = f"?{urlencode(params)}" if params else ""
+        url = f"{self.base_url}{path}{query}"
+        request = Request(url, headers={"User-Agent": "auto-trader/0.1"})
+        with urlopen(request, timeout=self.timeout_sec) as response:
+            payload = response.read().decode("utf-8")
+            return json.loads(payload)
+
+    def fetch_exchange_info(self) -> dict[str, Any]:
+        result = self.fetch_json("/api/v3/exchangeInfo")
+        if not isinstance(result, dict):
+            raise ValueError("unexpected exchangeInfo response from Binance")
+        return result
+
+    def fetch_24h_tickers(self) -> list[dict[str, Any]]:
+        result = self.fetch_json("/api/v3/ticker/24hr")
+        if not isinstance(result, list):
+            raise ValueError("unexpected 24hr ticker response from Binance")
+        return [row for row in result if isinstance(row, dict)]
+
     def fetch_with_retry(
         self,
         *,

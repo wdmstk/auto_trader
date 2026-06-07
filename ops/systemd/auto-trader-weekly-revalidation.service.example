@@ -1,0 +1,11 @@
+[Unit]
+Description=Auto Trader Weekly Revalidation
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/komug/projects/auto_trader
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/komug/projects/auto_trader/scripts/weekly_strategy_revalidation_with_core.sh
+StandardOutput=journal
+StandardError=journal
