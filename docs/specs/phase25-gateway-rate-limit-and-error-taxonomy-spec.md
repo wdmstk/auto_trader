@@ -17,6 +17,10 @@
 - 注文イベント reason（標準化済みコード）
 - リトライ時待機時間
 - 永続化状態の整合性（atomic write / lock / recovery）
+- 発注前の symbol precision 正規化
+  - `price` は `PRICE_FILTER.tickSize`
+  - `quantity` は `LOT_SIZE.stepSize`
+- `minQty` 未満は自動増量せず reject
 
 ## 前提条件
 - stale/high_vol/runtime gate は従来どおり最優先で reject する。
@@ -65,11 +69,17 @@
 - `runtime/control_state.json`
 - `notify_state.json`
 - 適用ポリシーは 5 と同一（atomic / lock / backup recovery）
+7. 発注正規化
+- Binance の `exchangeInfo` を使い、symbol ごとの `tickSize/stepSize/minQty` をキャッシュする。
+- worker/gateway が live 発注する前に、limit price と quantity を symbol precision に合わせて丸める。
+- 丸め後の quantity が `minQty` 未満の場合は、リスク上限を守るため自動増量せず reject する。
+- 丸め後の値を order event に残し、reject 調査時に実際の送信値を確認できるようにする。
 ## 失敗モードと対策
 - 429連発: backoff上限と試行回数で暴走防止。
 - 未知reason: `UNKNOWN_ERROR` へフォールバックして追跡可能化。
 - 書き込み競合: lock取得失敗で破壊的上書きを回避。
 - 部分書き込み/破損: atomic replace + backup restore で復旧可能化。
+- precision未対応: `exchangeInfo` ベースの丸めを必須化し、`-1111` reject を事前に抑止する。
 
 ## テスト観点
 - `rate_limit` reason で待機し再試行すること。
@@ -77,3 +87,5 @@
 - 既存ゲート系 reject が維持されること。
 - lock未取得時に失敗を検出できること。
 - 破損ファイルから `.bak` 復旧できること。
+- precision が異なる銘柄でも `qty/price` が送信前に正規化されること。
+- `minQty` 未満の注文が自動増量されず、送信前に reject されること。

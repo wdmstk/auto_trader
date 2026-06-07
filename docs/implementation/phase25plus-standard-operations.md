@@ -22,7 +22,8 @@
 - Done定義と証跡パスを一致させる。
 
 4. 証跡スクリプト実行
-- 週次再評価: `./scripts/weekly_strategy_revalidation.sh`
+- 週次再評価（定期実行）: `./scripts/weekly_strategy_revalidation_with_core.sh`
+- 週次再評価（手動本線）: `./scripts/weekly_strategy_revalidation.sh`
 - 週次の `range` / `trend` 推奨モード詳細: `docs/implementation/weekly-revalidation-operations.md`
 - longrun / health: `./scripts/longrun_8h_check.sh` または既存証跡の確認
 
@@ -33,6 +34,12 @@
 6. 判定確定
 - `docs/implementation/trading-go-live-checklist.md` の `Auto Decision Notes` と `判定日` を正本とする。
 - Go / Conditional Go / No-Go を本文に確定記録する。
+
+## Documentation-First ルール
+- 行動に影響する変更は、必ず spec -> review -> checklist -> code -> test の順で進める。
+- Spec にない UI / I/O / ルーティング / 判定ロジックは実装しない。
+- 既存の実装に合わせて文書を後追い修正する場合でも、review と checklist を必ず残す。
+- 変更後は、レビュー本文か checklist に証跡と残留リスクを必ず追記する。
 
 ## 運用ルール
 - longrun / runtime metrics 判定は従来どおり自動判定を主軸とする。

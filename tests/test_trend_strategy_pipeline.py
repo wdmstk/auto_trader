@@ -1,3 +1,5 @@
+# mypy: disable-error-code=no-untyped-def
+
 from __future__ import annotations
 
 import json
@@ -129,7 +131,7 @@ def test_trend_pipeline_blocks_entries_when_drift_trade_block(tmp_path: Path) ->
     assert bool(out["entry_signal"].any()) is False
 
 
-def test_trend_pipeline_applies_ml_artifact_filter(tmp_path: Path) -> None:
+def test_trend_pipeline_applies_ml_artifact_filter(tmp_path: Path, monkeypatch) -> None:
     base = datetime(2026, 1, 1, tzinfo=UTC)
     feats: list[dict[str, object]] = []
     regimes: list[dict[str, object]] = []
@@ -239,3 +241,16 @@ def test_trend_pipeline_applies_ml_artifact_filter(tmp_path: Path) -> None:
     assert "ml_model_version" in out.columns
     assert out["pass_filter"].equals(out["ml_pass_filter"])
     assert bool((~out["pass_filter"]).any()) is True
+
+    monkeypatch.setenv("ML_ARTIFACT_PATH", str(tmp_path / "artifacts_high"))
+    env_out, _ = build_and_save_trend_signals(
+        features_path=fpath,
+        regime_path=rpath,
+        symbol="ETHUSDT",
+        timeframe="1m",
+        output_dir=tmp_path / "signals_env",
+        pnl_path=ppath,
+    )
+    assert "ml_score" in env_out.columns
+    assert "ml_score_source" in env_out.columns
+    assert env_out["ml_score"].notna().any()

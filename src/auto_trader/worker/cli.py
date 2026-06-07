@@ -14,6 +14,10 @@ def _csv_text(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in text.split(",") if item.strip())
 
 
+def _env_bool(name: str, default: str = "0") -> bool:
+    return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Live trading worker for testnet.")
     p.add_argument("--watch", action="store_true")
@@ -26,6 +30,24 @@ def _build_parser() -> argparse.ArgumentParser:
         "--trend-symbols", default=os.getenv("TREND_ENABLED_SYMBOLS", "ETHUSDT,XRPUSDT,ADAUSDT")
     )
     p.add_argument("--range-symbols", default=os.getenv("RANGE_ENABLED_SYMBOLS", "XRPUSDT"))
+    p.add_argument(
+        "--weekly-revalidation-report-path",
+        default=os.getenv(
+            "WEEKLY_REVALIDATION_REPORT_PATH",
+            "data/validation/weekly_revalidation/weekly_revalidation_report.json",
+        ),
+    )
+    p.set_defaults(auto_sync_weekly_symbols=_env_bool("AUTO_SYNC_WEEKLY_SYMBOLS", "1"))
+    p.add_argument(
+        "--auto-sync-weekly-symbols",
+        dest="auto_sync_weekly_symbols",
+        action="store_true",
+    )
+    p.add_argument(
+        "--no-auto-sync-weekly-symbols",
+        dest="auto_sync_weekly_symbols",
+        action="store_false",
+    )
     p.add_argument(
         "--trend-order-mode",
         choices=["market", "limit"],
@@ -91,6 +113,8 @@ def main() -> int:
         symbols=_csv_text(args.symbols),
         trend_symbols=_csv_text(args.trend_symbols),
         range_symbols=_csv_text(args.range_symbols),
+        weekly_revalidation_report_path=str(args.weekly_revalidation_report_path).strip(),
+        auto_sync_weekly_symbols=bool(args.auto_sync_weekly_symbols),
         trend_order_mode=args.trend_order_mode,
         range_order_mode=args.range_order_mode,
         allowed_hours=str(args.allowed_hours).strip() or None,

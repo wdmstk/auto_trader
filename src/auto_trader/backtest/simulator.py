@@ -387,7 +387,10 @@ def summarize_metrics(
         losses = closed[closed["pnl"] < 0.0]
         gross_profit = float(wins["pnl"].sum())
         gross_loss = float((-losses["pnl"]).sum())
-        pf = gross_profit / gross_loss if gross_loss > 0 else 0.0
+        # No-loss samples should still surface as a very strong PF candidate.
+        # We keep a finite sentinel instead of infinity so downstream scoring and JSON
+        # serialization remain stable.
+        pf = gross_profit / gross_loss if gross_loss > 0 else (100.0 if gross_profit > 0 else 0.0)
         win_rate = float((closed["pnl"] > 0.0).mean())
         expectancy = float(closed["pnl"].mean())
         valid_notional = closed[closed["entry_notional"] > 0.0]

@@ -64,6 +64,21 @@ def test_rest_transport_sends_limit_ioc_fields() -> None:
     seen: dict[str, object] = {}
 
     def sender(req: Request, __: float) -> str:
+        if req.full_url.endswith("/api/v3/exchangeInfo?symbol=BTCUSDT"):
+            return json.dumps(
+                {
+                    "symbols": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "filters": [
+                                {"filterType": "PRICE_FILTER", "tickSize": "0.1"},
+                                {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001"},
+                            ],
+                        }
+                    ]
+                },
+                ensure_ascii=True,
+            )
         seen["body"] = cast(bytes, req.data or b"").decode("utf-8")
         return json.dumps({"orderId": "67890", "status": "NEW"}, ensure_ascii=True)
 
@@ -91,6 +106,94 @@ def test_rest_transport_sends_limit_ioc_fields() -> None:
     assert params["type"] == ["LIMIT"]
     assert params["timeInForce"] == ["IOC"]
     assert params["price"] == ["65000.5"]
+
+
+def test_rest_transport_normalizes_qty_and_price_by_symbol_filters() -> None:
+    seen: dict[str, object] = {}
+
+    def sender(req: Request, __: float) -> str:
+        if req.full_url.endswith("/api/v3/exchangeInfo?symbol=BTCUSDT"):
+            return json.dumps(
+                {
+                    "symbols": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "filters": [
+                                {"filterType": "PRICE_FILTER", "tickSize": "0.5"},
+                                {"filterType": "LOT_SIZE", "stepSize": "0.01", "minQty": "0.01"},
+                            ],
+                        }
+                    ]
+                },
+                ensure_ascii=True,
+            )
+        seen["body"] = cast(bytes, req.data or b"").decode("utf-8")
+        return json.dumps({"orderId": "99999", "status": "NEW"}, ensure_ascii=True)
+
+    t = BinanceRestTransport(
+        RestClientConfig(
+            base_url="https://example.com",
+            order_path="/api/v3/order",
+            api_key="k",
+            api_secret="s",
+        ),
+        sender=sender,
+    )
+    order = OrderRequest(
+        **{
+            **_order().__dict__,
+            "qty": 0.123456,
+            "order_type": "limit",
+            "limit_price": 65000.57,
+        }
+    )
+    ok, order_id, reason = t.send_order(order)
+    assert ok is True
+    assert order_id == "99999"
+    assert reason.startswith("accepted:")
+    params = parse_qs(str(seen["body"]))
+    assert params["quantity"] == ["0.12"]
+    assert params["price"] == ["65000.5"]
+
+
+def test_rest_transport_rejects_qty_below_min_without_upsizing() -> None:
+    order_requests = 0
+
+    def sender(req: Request, __: float) -> str:
+        nonlocal order_requests
+        if req.full_url.endswith("/api/v3/exchangeInfo?symbol=BTCUSDT"):
+            return json.dumps(
+                {
+                    "symbols": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "filters": [
+                                {"filterType": "LOT_SIZE", "stepSize": "0.01", "minQty": "0.10"},
+                            ],
+                        }
+                    ]
+                },
+                ensure_ascii=True,
+            )
+        order_requests += 1
+        return json.dumps({"orderId": "unexpected", "status": "NEW"}, ensure_ascii=True)
+
+    transport = BinanceRestTransport(
+        RestClientConfig(
+            base_url="https://example.com",
+            api_key="k",
+            api_secret="s",
+        ),
+        sender=sender,
+    )
+    order = OrderRequest(**{**_order().__dict__, "qty": 0.099})
+
+    ok, order_id, reason = transport.send_order(order)
+
+    assert ok is False
+    assert order_id == ""
+    assert reason == "invalid_order_request:qty_below_min"
+    assert order_requests == 0
 
 
 def test_rest_transport_uses_configured_order_path() -> None:

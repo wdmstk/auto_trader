@@ -30,6 +30,16 @@ positions = PositionStore(positions_dir).load()
 
 rows: list[dict[str, object]] = []
 now = datetime.now(UTC).isoformat()
+columns = [
+    "timestamp",
+    "symbol",
+    "current_equity",
+    "equity_peak",
+    "symbol_exposure_pct",
+    "portfolio_exposure_pct",
+    "concentration_score",
+    "correlated_exposure_pct",
+]
 if positions:
     notionals = {pos.symbol: abs(float(pos.qty) * float(pos.avg_entry)) for pos in positions}
     total_notional = sum(notionals.values())
@@ -53,6 +63,6 @@ if positions:
         )
 
 output_path.parent.mkdir(parents=True, exist_ok=True)
-pd.DataFrame(rows).to_parquet(output_path, index=False)
+pd.DataFrame(rows, columns=columns).to_parquet(output_path, index=False)
 print(f"rows={len(rows)}")
 PY

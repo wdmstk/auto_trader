@@ -48,7 +48,7 @@ def test_backtest_pipeline_outputs_artifacts(tmp_path: Path) -> None:
         )
 
     ohlcv_path = tmp_path / "ohlcv.parquet"
-    sig_path = tmp_path / "signals.parquet"
+    sig_path = tmp_path / "ETHUSDT_1m_trend_signals.parquet"
     ml_path = tmp_path / "ml.parquet"
     pd.DataFrame(ohlcv_rows).to_parquet(ohlcv_path, index=False)
     pd.DataFrame(signal_rows).to_parquet(sig_path, index=False)
@@ -63,6 +63,12 @@ def test_backtest_pipeline_outputs_artifacts(tmp_path: Path) -> None:
     assert Path(tmp_path / "backtest" / "trades.parquet").exists()
     assert Path(tmp_path / "backtest" / "portfolio.parquet").exists()
     assert Path(tmp_path / "backtest" / "metrics.parquet").exists()
+    metadata = Path(tmp_path / "backtest" / "metadata.json")
+    assert metadata.exists()
+    payload = pd.read_json(metadata, typ="series")
+    assert payload["symbol"] == "ETHUSDT"
+    assert payload["timeframe"] == "1m"
+    assert payload["strategy"] == "trend"
     assert "PF" in metrics
     assert "Expectancy" in metrics
     assert "ExpectancyBps" in metrics

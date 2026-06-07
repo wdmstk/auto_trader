@@ -16,6 +16,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--qty", type=float, required=True)
     p.add_argument("--price", type=float, required=True)
     p.add_argument("--is-add", action="store_true")
+    p.add_argument("--strategy", default="legacy")
+    p.add_argument("--timeframe", default="15m")
     p.add_argument("--output-dir", default="data/positions")
     return p
 
@@ -30,6 +32,8 @@ def main() -> int:
         price=args.price,
         filled_at=datetime.now(UTC),
         is_add=bool(args.is_add),
+        strategy=args.strategy,
+        timeframe=args.timeframe,
     )
     state = pm.apply_fill(fill)
     store = PositionStore(Path(args.output_dir))

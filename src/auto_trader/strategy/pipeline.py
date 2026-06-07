@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from auto_trader.drift.gate import is_drift_trade_blocked
-from auto_trader.strategy.ml_filter import apply_signal_ml_filter
+from auto_trader.strategy.ml_filter import apply_signal_ml_filter, resolve_ml_artifact_path
 from auto_trader.strategy.range_strategy import RangeStrategyConfig, generate_range_signals
 from auto_trader.strategy.session_gate import apply_session_gate
 from auto_trader.strategy.store import SignalParquetStore
@@ -36,12 +36,13 @@ def build_and_save_range_signals(
         risk_df=risk,
         config=config,
     )
-    if ml_artifact_path is not None:
+    resolved_ml_artifact_path = resolve_ml_artifact_path(ml_artifact_path)
+    if resolved_ml_artifact_path is not None:
         signals = _apply_ml_filter(
             features_df=features,
             regime_df=regime,
             signals_df=signals,
-            artifact_path=ml_artifact_path,
+            artifact_path=resolved_ml_artifact_path,
         )
     if allowed_hours:
         signals = apply_session_gate(signals, allowed_hours=allowed_hours)

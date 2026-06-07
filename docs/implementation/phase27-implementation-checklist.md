@@ -14,6 +14,11 @@
 - [x] limit約定判定ロジック（filled/partial/expired）追加
 - [x] partial fill 後の状態遷移実装
 - [x] cost grid レポートへ order_mode 指標追加
+- [x] candidate/weekly report へ limit evidence summary を反映
+- [x] market 本線 / limit 診断の理由情報を report に反映
+- [x] route-centric candidate schema（`route_counts` / `symbol_counts` / shadow routes）を導入
+- [x] `weekly_core_feedback.json` を route 正本として追加
+- [x] worker 入力 `selection.trade_routes` を複数同一-symbol route 対応へ拡張
 - [x] ユニット/統合テストを追加
 - [x] 実注文経路（exchange）へ order_type（market/limit）導線を追加
   - `LIMIT` は `IOC` 固定（未約定は cancel 扱い）
@@ -27,6 +32,8 @@
 - [x] gross/net/cost内訳が一貫する
 - [x] partial fill 状態整合性テストが通る
 - [x] order_mode 次元を含む cost grid 比較ができる
+- [x] route 件数と symbol 件数が report 上で混同されない
+- [x] worker が同一 symbol の複数 route を live 反映できる
 - [x] spec-review を作成済み
 
 ## 次PR候補（約定モデル強化）

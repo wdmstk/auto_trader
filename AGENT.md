@@ -37,6 +37,24 @@ Priority order:
 
 ---
 
+# Documentation-First Workflow
+
+Any behavior-affecting change must follow this order:
+
+1. Update the relevant spec in `docs/specs/`.
+2. Write or update the matching spec review in `docs/implementation/`.
+3. Update the phase implementation checklist in `docs/implementation/`.
+4. Implement the code change.
+5. Run the relevant tests and record the result back into the review/checklist.
+
+Do not ship behavioral code changes without a matching spec/review/checklist trail.
+If docs and code diverge, reconcile the docs first and then bring the code back in line.
+This also applies to route-selection, worker execution, report schema, and migration work.
+When a change affects persisted data or runtime inputs, document the target schema and
+backward-compatibility rule before editing code.
+
+---
+
 # System Philosophy
 
 This is NOT a:

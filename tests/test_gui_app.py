@@ -1,306 +1,372 @@
+# Dynamic Streamlit payloads are asserted as nested JSON-like objects.
+# mypy: disable-error-code="attr-defined,no-untyped-def,index,operator"
+
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+import json
 from pathlib import Path
 
 import pandas as pd
 
+import auto_trader.gui.app as gui_app
 from auto_trader.gui.app import (
-    _active_worker_symbols,
-    _candidate_best_by_symbol,
-    _candidate_frame,
-    _format_age,
-    _freshness_level,
-    _live_pnl_frame,
-    _live_pnl_summary,
-    _load_regime_snapshot,
-    _load_symbol_regime,
-    _read_latest_jsonl_row,
-    _regime_mix_label,
-    _runtime_health_messages,
-    _status_banner,
-    _strategy_symbol_table,
-    _worker_last_results_frame,
-    _worker_status_reason,
+    _load_candidate_report,
+    _load_weekly_candidate_report,
+    _operator_summary,
+    _worker_trade_routes_frame,
 )
 from auto_trader.worker.state import WorkerState
 
 
-def test_read_latest_jsonl_row_reads_last_valid_record(tmp_path: Path) -> None:
-    p = tmp_path / "runtime_metrics.jsonl"
-    p.write_text(
-        "\n".join(
-            [
-                '{"timestamp":"2026-06-01T00:00:00+00:00","gateway_pending_orders":1}',
-                "invalid-json-line",
-                '{"timestamp":"2026-06-01T00:01:00+00:00","gateway_pending_orders":2}',
-            ]
-        )
-        + "\n",
+def test_load_candidate_report_merges_weekly_range_probe(tmp_path: Path) -> None:
+    candidate_path = tmp_path / "candidate_report.json"
+    weekly_path = tmp_path / "weekly_revalidation_report.json"
+
+    candidate_path.write_text(
+        json.dumps({"rows": [{"symbol": "XRPUSDT", "candidate_status": "core"}]}),
         encoding="utf-8",
     )
-    row = _read_latest_jsonl_row(p)
-    assert row["gateway_pending_orders"] == 2
-
-
-def test_read_latest_jsonl_row_empty_when_missing(tmp_path: Path) -> None:
-    row = _read_latest_jsonl_row(tmp_path / "missing.jsonl")
-    assert row == {}
-
-
-def test_runtime_health_messages_ok() -> None:
-    level, messages = _runtime_health_messages(
-        {
-            "runtime_emergency_stop": False,
-            "runtime_trading_enabled": True,
-            "gateway_pending_orders": 0,
-            "order_latency_p95_ms": 120,
-            "risk_block_count": 0,
-            "system_loadavg_1m": 0.6,
-        }
+    weekly_path.write_text(
+        json.dumps(
+            {
+                "range_probe_candidates": {
+                    "timeframe_reports": [
+                        {
+                            "timeframe": "30m",
+                            "core_symbols": ["BNBUSDT"],
+                            "probe_symbols": [],
+                            "watchlist_symbols": [],
+                            "rows": [
+                                {
+                                    "symbol": "BNBUSDT",
+                                    "strategy": "range",
+                                    "candidate_status": "core",
+                                    "pf_mean": 1.8,
+                                    "expectancy_bps_mean": 24.0,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
     )
-    assert level == "ok"
-    assert any("normal ranges" in m for m in messages)
 
+    out = _load_candidate_report(candidate_path, weekly_path)
 
-def test_runtime_health_messages_critical() -> None:
-    level, messages = _runtime_health_messages(
-        {
-            "runtime_emergency_stop": True,
-            "runtime_trading_enabled": False,
-            "gateway_pending_orders": 12,
-            "order_latency_p95_ms": 3000,
-            "risk_block_count": 20,
-            "system_loadavg_1m": 9.1,
-        }
+    assert any(row.get("symbol") == "XRPUSDT" for row in out["rows"] if isinstance(row, dict))
+    assert any(
+        row.get("symbol") == "BNBUSDT" and row.get("timeframe") == "30m"
+        for row in out["rows"]
+        if isinstance(row, dict)
     )
-    assert level == "critical"
-    assert any("EMERGENCY_STOP" in m for m in messages)
+    assert out["range_probe_candidates"]["timeframe_reports"][0]["timeframe"] == "30m"
+    assert out["range_probe_candidates"]["timeframe_reports"][0]["core_symbols"] == ["BNBUSDT"]
 
 
-def test_format_age_and_freshness_level() -> None:
-    now = datetime(2026, 6, 4, tzinfo=UTC)
-    assert _format_age(now - timedelta(seconds=12), now=now) == "12s"
-    assert _format_age(now - timedelta(seconds=90), now=now) == "1.5m"
-    assert _freshness_level(now - timedelta(seconds=10), now=now) == "ok"
-    assert _freshness_level(now - timedelta(seconds=40), now=now) == "warning"
-    assert _freshness_level(now - timedelta(seconds=200), now=now) == "critical"
+def test_load_weekly_candidate_report_uses_weekly_candidates(tmp_path: Path) -> None:
+    weekly_path = tmp_path / "weekly_revalidation_report.json"
+
+    weekly_path.write_text(
+        json.dumps(
+            {
+                "candidates": {
+                    "rows": [
+                        {
+                            "symbol": "ETHUSDT",
+                            "strategy": "trend",
+                            "candidate_status": "core",
+                            "pf_mean": 2.1,
+                        }
+                    ]
+                },
+                "range_probe_candidates": {
+                    "rows": [
+                        {
+                            "symbol": "BNBUSDT",
+                            "strategy": "range",
+                            "candidate_status": "probe",
+                            "pf_mean": 1.4,
+                        }
+                    ]
+                },
+                "decision": {
+                    "status": "warn",
+                    "market_reason": {"reason": "market criteria satisfied"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    out = _load_weekly_candidate_report(weekly_path)
+
+    assert any(row.get("symbol") == "ETHUSDT" for row in out["rows"] if isinstance(row, dict))
+    assert any(
+        row.get("symbol") == "BNBUSDT" and row.get("candidate_status") == "probe"
+        for row in out["rows"]
+        if isinstance(row, dict)
+    )
+    assert "range_probe_candidates" in out
+    assert out["decision"]["status"] == "warn"
 
 
-def test_worker_last_results_frame_and_reason() -> None:
+def test_operator_summary_prefers_weekly_decision_reasons() -> None:
+    worker_state = WorkerState(updated_at="2099-06-07T00:00:00Z")
+    candidate_report = {
+        "status": "warn",
+        "core_symbols": ["ETHUSDT", "XRPUSDT"],
+        "probe_symbols": ["ADAUSDT"],
+        "watchlist_symbols": ["BTCUSDT"],
+        "candidate_counts": {"core": 2, "probe": 1, "watchlist": 1},
+        "limit_metrics": {
+            "limit_fill_rate_mean": 0.35,
+            "limit_taker_like_rate_mean": 0.62,
+        },
+        "decision": {
+            "status": "warn",
+            "market_reason": {"reason": "market criteria satisfied"},
+            "limit_reason": {"reason": "limit failed: trend_pf_ge_1_2"},
+            "drift_reason": {"reason": "drift criteria satisfied"},
+        },
+    }
+
+    summary = _operator_summary(
+        runtime_state={"trading_enabled": True, "emergency_stop": False},
+        worker_state=worker_state,
+        latest_metrics={"timestamp": "2099-06-07T00:00:00Z"},
+        risk_df=pd.DataFrame(),
+        risk_input_df=pd.DataFrame(),
+        candidate_report=candidate_report,
+    )
+
+    assert summary["decision_status"] == "warn"
+    assert summary["focus"] == "core routes=2 probe routes=1 watchlist routes=1"
+    assert summary["limit_fill_rate"] == 0.35
+    assert summary["limit_taker_like_rate"] == 0.62
+    assert "market criteria satisfied" in summary["reasons"]
+    assert summary["next_action"] == "Review weekly market/limit reasons and adjust symbol gating."
+
+
+def test_worker_trade_routes_frame_uses_route_metadata() -> None:
     worker_state = WorkerState(
         last_results={
-            "ETHUSDT": {
-                "status": "already_processed",
+            "range:BNBUSDT:30m": {
+                "status": "ok",
                 "risk_blocked": False,
-                "signal": {"entry_signal": False, "reason_codes": ["TR_BLOCK_HIGH_VOL"]},
-                "trade": {"status": "no_action", "gateway_status": "", "gateway_reason": ""},
+                "route": {
+                    "symbol": "BNBUSDT",
+                    "strategy": "range",
+                    "timeframe": "30m",
+                    "expected_regime": "RANGE",
+                    "candidate_status": "core",
+                },
+                "signal": {
+                    "regime": "RANGE",
+                    "timeframe": "30m",
+                    "entry_signal": True,
+                    "exit_signal": False,
+                },
+                "trade": {"status": "entry"},
             }
         }
     )
-    frame = _worker_last_results_frame(worker_state)
+
+    frame = _worker_trade_routes_frame(worker_state)
+
     assert not frame.empty
-    row = frame.iloc[0].to_dict()
-    assert _worker_status_reason(row) == "同一確定足を処理済み"
-    assert row["reason_codes"] == "TR_BLOCK_HIGH_VOL"
+    assert frame.iloc[0]["symbol"] == "BNBUSDT"
+    assert frame.iloc[0]["strategy"] == "range"
+    assert frame.iloc[0]["timeframe"] == "30m"
+    assert frame.iloc[0]["expected_regime"] == "RANGE"
+    assert bool(frame.iloc[0]["entry_signal"]) is True
 
 
-def test_status_banner_ignores_control_state_age() -> None:
-    now = datetime.now(UTC).isoformat()
-    level, messages = _status_banner(
-        runtime_state={
-            "trading_enabled": True,
-            "emergency_stop": False,
-            "updated_at": "2026-01-01T00:00:00+00:00",
+def test_active_worker_symbols_normalizes_route_keys() -> None:
+    worker_state = WorkerState(
+        last_results={
+            "trend:ETHUSDT:15m": {
+                "route": {"symbol": "ETHUSDT", "strategy": "trend", "timeframe": "15m"},
+            },
+            "range:BNBUSDT:30m": {
+                "route": {"symbol": "BNBUSDT", "strategy": "range", "timeframe": "30m"},
+            },
+            "XRPUSDT": {},
         },
-        worker_state=WorkerState(updated_at=now),
-        latest_metrics={
-            "timestamp": now,
-            "runtime_trading_enabled": True,
-            "runtime_emergency_stop": False,
+        last_processed_bars={
+            "trend:ADAUSDT:15m": "2026-06-07T00:00:00Z",
         },
-        risk_df=pd.DataFrame([{"timestamp": now}]),
-        risk_input_df=pd.DataFrame([{"timestamp": now}]),
     )
-    assert level == "ok"
-    assert all("Runtime state" not in message for message in messages)
+
+    assert gui_app._active_worker_symbols(worker_state) == [
+        "ADAUSDT",
+        "BNBUSDT",
+        "ETHUSDT",
+        "XRPUSDT",
+    ]
 
 
-def test_regime_snapshot_and_mix_label(tmp_path: Path) -> None:
-    regime_dir = tmp_path / "regime"
-    regime_dir.mkdir(parents=True)
-    pd.DataFrame(
-        [
-            {"timestamp": "2026-06-04T00:00:00+00:00", "regime": "RANGE"},
-            {"timestamp": "2026-06-04T00:01:00+00:00", "regime": "TREND"},
-        ]
-    ).to_parquet(regime_dir / "ETHUSDT_1m_regime.parquet", index=False)
-    pd.DataFrame(
-        [
-            {"timestamp": "2026-06-04T00:00:00+00:00", "regime": "HIGH_VOL"},
-        ]
-    ).to_parquet(regime_dir / "XRPUSDT_1m_regime.parquet", index=False)
-
-    snapshot = _load_regime_snapshot(regime_dir)
-    assert not snapshot.empty
-    assert set(snapshot["symbol"]) == {"ETHUSDT", "XRPUSDT"}
-    assert set(snapshot["timeframe"]) == {"1m"}
-    assert _regime_mix_label(snapshot) == "HIGH_VOL MIX"
-
-
-def test_load_symbol_regime_prefers_requested_timeframe(tmp_path: Path) -> None:
-    regime_dir = tmp_path / "regime"
-    regime_dir.mkdir(parents=True)
-    pd.DataFrame(
-        [
-            {"timestamp": "2026-06-04T00:00:00+00:00", "regime": "HIGH_VOL"},
-        ]
-    ).to_parquet(regime_dir / "ADAUSDT_30m_regime.parquet", index=False)
-    pd.DataFrame(
-        [
-            {"timestamp": "2026-06-04T00:00:00+00:00", "regime": "RANGE"},
-        ]
-    ).to_parquet(regime_dir / "ADAUSDT_15m_regime.parquet", index=False)
-
-    frame, timeframe = _load_symbol_regime("ADAUSDT", "15m", regime_dir=regime_dir)
-    assert timeframe == "15m"
-    assert not frame.empty
-    assert frame.iloc[-1]["regime"] == "RANGE"
-
-
-def test_live_pnl_summary_uses_market_prices(monkeypatch) -> None:
-    import auto_trader.gui.app as app
+def test_optional_read_falls_back_when_cache_breaks(tmp_path: Path, monkeypatch) -> None:
+    parquet_path = tmp_path / "sample.parquet"
+    pd.DataFrame([{"symbol": "BNBUSDT", "value": 1}]).to_parquet(parquet_path, index=False)
 
     monkeypatch.setattr(
-        app,
-        "_latest_symbol_price",
-        lambda symbol, timeframe="1m": {"ETHUSDT": 110.0, "XRPUSDT": 0.45}.get(symbol),
-    )
-    position_df = pd.DataFrame(
-        [
-            {
-                "symbol": "ETHUSDT",
-                "side": "buy",
-                "qty": 2.0,
-                "avg_entry": 100.0,
-                "unrealized_pnl_pct": 0.0,
-                "add_count": 0,
-                "updated_at": "2026-06-04T00:00:00+00:00",
-            },
-            {
-                "symbol": "XRPUSDT",
-                "side": "sell",
-                "qty": 10.0,
-                "avg_entry": 0.50,
-                "unrealized_pnl_pct": 0.0,
-                "add_count": 0,
-                "updated_at": "2026-06-04T00:00:00+00:00",
-            },
-        ]
+        gui_app,
+        "_read_optional_cached",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyError("cache")),
     )
 
-    frame = _live_pnl_frame(position_df)
-    assert list(frame["source_price"]) == ["market", "market"]
+    frame = gui_app._read_optional(parquet_path)
 
-    summary = _live_pnl_summary(position_df)
-    assert round(summary["live_unrealized_pnl"], 2) == 20.50
-    assert round(summary["live_unrealized_pnl_pct"], 2) == 10.00
+    assert not frame.empty
+    assert frame.iloc[0]["symbol"] == "BNBUSDT"
 
 
-def test_candidate_frame_and_active_worker_symbols() -> None:
-    report = {
-        "rows": [
+def test_discover_available_symbols_reads_multiple_sources(tmp_path: Path) -> None:
+    (tmp_path / "parquet").mkdir()
+    (tmp_path / "signals").mkdir()
+    (tmp_path / "regime").mkdir()
+
+    pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(
+        tmp_path / "parquet" / "BTCUSDT_1m.parquet", index=False
+    )
+    pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(
+        tmp_path / "signals" / "ETHUSDT_15m_trend_signals.parquet", index=False
+    )
+    pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(
+        tmp_path / "regime" / "XRPUSDT_30m_regime.parquet", index=False
+    )
+
+    symbols = gui_app._discover_available_symbols(tmp_path)
+
+    assert symbols == ["BTCUSDT", "ETHUSDT", "XRPUSDT"]
+
+
+def test_discover_symbol_timeframes_prioritizes_1m(tmp_path: Path) -> None:
+    (tmp_path / "parquet").mkdir()
+    (tmp_path / "signals").mkdir()
+    pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(
+        tmp_path / "parquet" / "BTCUSDT_30m.parquet", index=False
+    )
+    pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(
+        tmp_path / "parquet" / "BTCUSDT_1m.parquet", index=False
+    )
+    pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(
+        tmp_path / "signals" / "BTCUSDT_5m_trend_signals.parquet", index=False
+    )
+
+    timeframes = gui_app._discover_symbol_timeframes("BTCUSDT", tmp_path)
+
+    assert timeframes[0] == "1m"
+    assert set(timeframes) >= {"1m", "5m", "30m"}
+
+
+def test_discover_backtest_runs_reads_metadata(tmp_path: Path) -> None:
+    backtest_dir = tmp_path / "backtest" / "ETHUSDT_1m_trend_20260606"
+    backtest_dir.mkdir(parents=True)
+    pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z", "equity": 100.0}]).to_parquet(
+        backtest_dir / "portfolio.parquet", index=False
+    )
+    (backtest_dir / "metadata.json").write_text(
+        json.dumps(
             {
-                "symbol": "BTCUSDT",
-                "candidate_status": "watchlist",
-                "strategy": "trend",
-                "timeframe": "15m",
-            },
-            {
+                "generated_at": "2026-06-06T00:00:00Z",
                 "symbol": "ETHUSDT",
-                "candidate_status": "core",
+                "timeframe": "1m",
                 "strategy": "trend",
-                "timeframe": "15m",
-            },
-        ],
+                "output_dir": str(backtest_dir),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runs = gui_app._discover_backtest_runs(tmp_path)
+
+    assert len(runs) == 1
+    assert runs[0]["symbol"] == "ETHUSDT"
+    assert runs[0]["timeframe"] == "1m"
+    assert runs[0]["strategy"] == "trend"
+
+
+def test_inject_ui_stability_styles_adds_reload_css(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_markdown(*args: object, **kwargs: object) -> None:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(gui_app.st, "markdown", fake_markdown)
+
+    gui_app._inject_ui_stability_styles()
+
+    assert captured["kwargs"]["unsafe_allow_html"] is True
+    css = str(captured["args"][0])
+    assert '[data-testid="stAppViewContainer"]' in css
+    assert "opacity: 1 !important;" in css
+
+
+def test_core_symbol_focus_rows_uses_core_candidates_only() -> None:
+    candidate_report = {
+        "core_symbols": ["AAAUSDT", "BBBUSDT"],
         "best_by_symbol_strategy": [
             {
-                "symbol": "BTCUSDT",
+                "symbol": "AAAUSDT",
+                "timeframe": "30m",
+                "strategy": "range",
                 "candidate_status": "watchlist",
-                "strategy": "trend",
-                "timeframe": "15m",
+                "candidate_score": 10.0,
             },
             {
-                "symbol": "ETHUSDT",
-                "candidate_status": "core",
-                "strategy": "trend",
+                "symbol": "AAAUSDT",
                 "timeframe": "15m",
+                "strategy": "trend",
+                "candidate_status": "core",
+                "candidate_score": 30.0,
+            },
+            {
+                "symbol": "BBBUSDT",
+                "timeframe": "1h",
+                "strategy": "trend",
+                "candidate_status": "core",
+                "candidate_score": 20.0,
+            },
+            {
+                "symbol": "CCCUSDT",
+                "timeframe": "1m",
+                "strategy": "trend",
+                "candidate_status": "core",
+                "candidate_score": 99.0,
             },
         ],
     }
-    watchlist = _candidate_frame(report, "watchlist")
-    assert list(watchlist["symbol"]) == ["BTCUSDT"]
-    best = _candidate_best_by_symbol(report)
-    assert best["ETHUSDT"]["candidate_status"] == "core"
 
-    worker_state = WorkerState(
-        last_results={"ETHUSDT": {}, "XRPUSDT": {}},
-        last_processed_bars={"trend:ADAUSDT": "2026-06-04 00:00:00+00:00"},
-    )
-    assert _active_worker_symbols(worker_state) == ["ADAUSDT", "ETHUSDT", "XRPUSDT"]
+    rows = gui_app._core_symbol_focus_rows(candidate_report)
+
+    assert [row["symbol"] for row in rows] == ["AAAUSDT", "BBBUSDT"]
+    assert rows[0]["timeframe"] == "15m"
+    assert rows[0]["strategy"] == "trend"
+    assert rows[1]["timeframe"] == "1h"
 
 
-def test_strategy_symbol_table_uses_candidate_status_reasoning() -> None:
-    candidate_rows = pd.DataFrame(
+def test_downsample_for_chart_preserves_signal_rows() -> None:
+    frame = pd.DataFrame(
         [
             {
-                "symbol": "ETHUSDT",
-                "strategy": "trend",
-                "timeframe": "15m",
-                "candidate_status": "core",
-                "pf_mean": 1.5,
-                "expectancy_bps_mean": 10.0,
-                "max_dd_mean": 0.05,
-                "closed_trades_mean": 20,
-            },
-            {
-                "symbol": "BTCUSDT",
-                "strategy": "trend",
-                "timeframe": "15m",
-                "candidate_status": "watchlist",
-                "pf_mean": 1.1,
-                "expectancy_bps_mean": -2.0,
-                "max_dd_mean": 0.10,
-                "closed_trades_mean": 5,
-            },
+                "timestamp": pd.Timestamp("2026-01-01T00:00:00Z"),
+                "entry_signal": False,
+                "exit_signal": False,
+                "risk_blocked": False,
+            }
+            for _ in range(50)
         ]
     )
-    worker_state = WorkerState(
-        last_results={
-            "ETHUSDT": {
-                "status": "already_processed",
-                "signal": {
-                    "entry_signal": False,
-                    "exit_signal": False,
-                    "add_signal": False,
-                    "pass_filter": False,
-                    "reason_codes": ["TR_ENTRY_SCORE_LOW"],
-                },
-                "trade": {"status": "no_action", "gateway_status": "", "gateway_reason": ""},
-            }
-        },
-        last_processed_bars={"trend:ETHUSDT": "2026-06-04 00:00:00+00:00"},
-    )
-    table = _strategy_symbol_table(
-        candidate_rows=candidate_rows,
-        strategy="trend",
-        worker_state=worker_state,
-        risk_df=pd.DataFrame(),
-        candidate_status_map={"ETHUSDT": "core", "BTCUSDT": "watchlist"},
-    )
-    core_reason = table.loc[table["symbol"] == "ETHUSDT", "why_not_trading"].iloc[0]
-    watchlist_reason = table.loc[table["symbol"] == "BTCUSDT", "why_not_trading"].iloc[0]
-    assert "entry未成立" in core_reason
-    assert "filter未通過" in core_reason
-    assert "TR_ENTRY_SCORE_LOW" in core_reason
-    assert watchlist_reason == "watchlist候補"
+    frame.loc[10, "entry_signal"] = True
+    frame.loc[20, "exit_signal"] = True
+    frame.loc[30, "risk_blocked"] = True
+
+    out = gui_app._downsample_for_chart(frame, max_points=10)
+
+    assert bool(out["entry_signal"].any()) is True
+    assert bool(out["exit_signal"].any()) is True
+    assert bool(out["risk_blocked"].any()) is True

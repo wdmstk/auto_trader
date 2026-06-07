@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from auto_trader.position.manager import PositionConfig, PositionManager
-from auto_trader.position.models import FillEvent
+from auto_trader.position.models import FillEvent, build_route_key
 
 
 def _ts() -> datetime:
@@ -98,3 +98,38 @@ def test_invalid_fill_triggers_emergency_stop() -> None:
                 filled_at=_ts(),
             )
         )
+
+
+def test_multiple_routes_same_symbol_are_stored_separately() -> None:
+    pm = PositionManager(PositionConfig())
+    pm.apply_fill(
+        FillEvent(
+            symbol="XRPUSDT",
+            side="buy",
+            qty=1.0,
+            price=100.0,
+            filled_at=_ts(),
+            strategy="trend",
+            timeframe="15m",
+        )
+    )
+    pm.apply_fill(
+        FillEvent(
+            symbol="XRPUSDT",
+            side="buy",
+            qty=2.0,
+            price=100.0,
+            filled_at=_ts(),
+            strategy="range",
+            timeframe="15m",
+        )
+    )
+
+    trend_position = pm.get(build_route_key(strategy="trend", symbol="XRPUSDT", timeframe="15m"))
+    range_position = pm.get(build_route_key(strategy="range", symbol="XRPUSDT", timeframe="15m"))
+    assert trend_position is not None
+    assert range_position is not None
+    assert trend_position.qty == 1.0
+    assert range_position.qty == 2.0
+    snap = pm.exposure_snapshot(mark_prices={"XRPUSDT": 100.0}, equity=1000.0)
+    assert snap["XRPUSDT_exposure_pct"] == 30.0

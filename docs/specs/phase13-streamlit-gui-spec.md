@@ -15,6 +15,7 @@
 ## 出力（I/O契約）
 - ダッシュボードUI
   - `PnL`, `Regime`, `Exposure`, `Risk`, `API`
+  - `Decision summary`（現在状態 / 直近異常 / 次の推奨アクション）
 - 操作イベントログ
   - `action, requested_at, applied_at, result`
 - Runtime制御状態
@@ -38,6 +39,12 @@
 - ローソク足 + regime overlay + entry/exit overlay。
 - ML score と risk block 状態を同時表示。
 
+4. Operator focus
+- `Overview` は状況要約とアクション優先度を最優先とする。
+- `Trading` は route / 状態 / block reason を優先し、重複表を最小化する。
+- `Trading` は同一 symbol の複数 route を別行で表示し、primary/shadow を識別できること。
+- `Logs` は証跡閲覧を主目的とし、他タブと情報を重複させない。
+
 ## 失敗モードと対策
 - stale表示: 更新時刻を明示し閾値超過で警告。
 - 操作反映失敗: 再送導線 + 失敗理由表示。
@@ -48,3 +55,6 @@
 - 操作イベントが runtime handler に伝播し `control_state.json` が更新されること。
 - stale状態を警告できること。
 - HIGH_VOL/EMERGENCYが視覚的に識別可能であること。
+- `Overview` に decision summary が表示されること。
+- `Trading` が route / 状態 / block reason に絞られていること。
+- worker state が route key 単位でも正しく読めること。

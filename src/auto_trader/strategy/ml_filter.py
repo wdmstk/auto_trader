@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -36,9 +37,11 @@ def apply_signal_ml_filter(
         suffixes=("", "_feature"),
     )
     scored = apply_model_artifacts(dataset=merged, artifacts=artifacts)
+    scored["ml_score_source"] = "ml_score"
     keep_cols = list(signals_df.columns)
     extra_cols = [
         "ml_score",
+        "ml_score_source",
         "ml_threshold",
         "ml_pass_filter",
         "ml_model_version",
@@ -47,3 +50,26 @@ def apply_signal_ml_filter(
         "ml_train_end",
     ]
     return scored[keep_cols + extra_cols].copy()
+
+
+def resolve_ml_artifact_path(artifact_path: str | Path | None = None) -> Path | None:
+    if artifact_path is not None:
+        path = Path(artifact_path)
+        if path.exists():
+            return path
+
+    env_path = os.getenv("ML_ARTIFACT_PATH", "").strip()
+    if env_path:
+        path = Path(env_path)
+        if path.exists():
+            return path
+
+    default_path = Path("data/ml/artifacts/latest")
+    if default_path.exists():
+        return default_path
+
+    default_meta = default_path / "metadata.json"
+    if default_meta.exists():
+        return default_path
+
+    return None

@@ -15,6 +15,10 @@
 - [x] runtime/control state 書き込みへ durability 基盤適用
 - [x] notify state 書き込みへ durability 基盤適用
 - [x] runtime/control・notify の復旧/lock テスト追加
+- [x] symbol precision 正規化（`tickSize/stepSize/minQty`）実装
+- [x] order event に正規化後の `qty/limit_price` を残す
+- [x] precision reject 回帰テスト追加
+- [x] `minQty` 未満を自動増量せず送信前に reject
 
 ## Done定義
 - [x] 429相当で待機再試行される
@@ -24,3 +28,4 @@
 - [x] 破損ファイルから復旧できる
 - [x] ユニットテストが通る
 - [x] runtime/control・notify でも破損復旧できる
+- [x] `-1111 Precision is over the maximum defined for this asset.` を事前丸めで回避できる

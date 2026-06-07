@@ -78,23 +78,27 @@
 - [x] watcher 生存継続
 
 ## 5. Open Items
-- [x] 未解決項目なし
+- [ ] route-centric worker変更後の運用証跡を再取得する
   - 残件:
+    - 2026-06-07のroute/position/worker変更後に8h longrunとFutures Testnetを再実行する
+    - 品質ゲート: `ruff` / `mypy` / full 191件 / smoke 18件はpass
     - range/trendの継続最適化（週次再評価）
       - runbook: `docs/implementation/weekly-revalidation-operations.md`
-      - command: `./scripts/weekly_strategy_revalidation.sh`
+      - command: `./scripts/weekly_strategy_revalidation_with_core.sh`
       - 暫定運用symbol:
         - `trend(limit)`: `ETHUSDT,XRPUSDT`
         - `range(market)`: `XRPUSDT`
     - 通知運用投入（運用開始後）
 
 ## 判定
-- [x] Go-Live Ready（通知保留条件付き）
+- [ ] Go-Live Ready（通知保留条件付き）
+- [x] Conditional Go（route-centric変更後の運用再検証待ち）
 - 条件:
-  - 8h longrun 完了
-  - Runtime Metrics しきい値を連続運転で満たす
-- 判定者: auto
-- 判定日: 2026-06-02
+  - route-centric変更後の8h longrun完了
+  - Futures Testnetで複数routeのposition/order整合を確認
+  - Runtime Metricsしきい値を連続運転で満たす
+- 判定者: Codex
+- 判定日: 2026-06-07
 
 最新判定の正本:
 - 本チェックリスト末尾の `Auto Decision Notes` と `判定日` を正本とする。
@@ -106,14 +110,14 @@
 
 <!-- AUTO_DECISION_NOTES_START -->
 ### Auto Decision Notes
-- go_live_ready: true
+- go_live_ready: false
 - health_status: pass
 - weekly_status: pass
 - longrun_rows: 16
-- unmet_reasons: none
+- unmet_reasons: post-change 8h longrun and Futures Testnet evidence required
 <!-- AUTO_DECISION_NOTES_END -->
 
 <!-- AUTO_OPEN_ITEMS_START -->
 ### Auto Open Items
-- [x] 未達理由なし
+- [ ] route-centric変更後の8h longrunとFutures Testnet証跡を再取得する
 <!-- AUTO_OPEN_ITEMS_END -->
