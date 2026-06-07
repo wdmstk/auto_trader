@@ -26,6 +26,9 @@ class PositionStore:
         rows = [
             {
                 "symbol": p.symbol,
+                "strategy": p.strategy,
+                "timeframe": p.timeframe,
+                "route_key": p.route_key,
                 "side": p.side,
                 "qty": p.qty,
                 "avg_entry": p.avg_entry,
@@ -49,6 +52,9 @@ class PositionStore:
             out.append(
                 PositionState(
                     symbol=str(row.symbol),
+                    strategy=str(getattr(row, "strategy", "legacy")),
+                    timeframe=str(getattr(row, "timeframe", "15m")),
+                    route_key=str(getattr(row, "route_key", "")),
                     side=str(row.side),  # type: ignore[arg-type]
                     qty=float(cast(Any, row.qty)),
                     avg_entry=float(cast(Any, row.avg_entry)),
@@ -76,6 +82,9 @@ def _read_parquet_with_recovery(path: Path) -> pd.DataFrame:
     return pd.DataFrame(
         columns=[
             "symbol",
+            "strategy",
+            "timeframe",
+            "route_key",
             "side",
             "qty",
             "avg_entry",

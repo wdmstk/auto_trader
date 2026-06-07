@@ -34,6 +34,18 @@ def test_run_risk_pipeline_outputs_file(tmp_path: Path) -> None:
     assert len(out) == 5
 
 
+def test_run_risk_pipeline_handles_empty_input_schema(tmp_path: Path) -> None:
+    in_path = tmp_path / "risk_inputs.parquet"
+    out_path = tmp_path / "risk_eval.parquet"
+    pd.DataFrame().to_parquet(in_path, index=False)
+
+    out = run_risk_pipeline(input_path=in_path, output_path=out_path)
+    assert out_path.exists()
+    assert out.empty
+    assert "timestamp" in out.columns
+    assert "risk_blocked" in out.columns
+
+
 def test_run_risk_pipeline_blocks_on_correlated_exposure(tmp_path: Path) -> None:
     base = datetime(2026, 1, 1, tzinfo=UTC)
     rows = [

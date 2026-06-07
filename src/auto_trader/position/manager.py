@@ -25,7 +25,7 @@ class PositionManager:
         if _invalid_fill(fill):
             self._emergency_stopped = True
             raise ValueError("invalid fill detected; emergency stop engaged")
-        pos = self._positions.get(fill.symbol)
+        pos = self._positions.get(fill.route_key)
         if pos is None:
             created = PositionState(
                 symbol=fill.symbol,
@@ -35,21 +35,24 @@ class PositionManager:
                 unrealized_pnl_pct=0.0,
                 add_count=1 if fill.is_add else 0,
                 updated_at=fill.filled_at,
+                strategy=fill.strategy,
+                timeframe=fill.timeframe,
+                route_key=fill.route_key,
             )
-            self._positions[fill.symbol] = created
+            self._positions[fill.route_key] = created
             return created
 
         updated = self._update_existing_position(pos, fill)
-        self._positions[fill.symbol] = updated
+        self._positions[fill.route_key] = updated
         return updated
 
     def update_mark_price(
         self,
-        symbol: str,
+        route_key: str,
         mark_price: float,
         ts: datetime | None = None,
     ) -> PositionState | None:
-        pos = self._positions.get(symbol)
+        pos = self._positions.get(route_key)
         if pos is None or pos.qty <= 0.0:
             return pos
         pnl = _calc_unrealized_pnl_pct(pos.side, pos.avg_entry, mark_price)
@@ -61,18 +64,21 @@ class PositionManager:
             unrealized_pnl_pct=pnl,
             add_count=pos.add_count,
             updated_at=ts or now_utc(),
+            strategy=pos.strategy,
+            timeframe=pos.timeframe,
+            route_key=pos.route_key,
         )
-        self._positions[symbol] = updated
+        self._positions[route_key] = updated
         return updated
 
-    def get(self, symbol: str) -> PositionState | None:
-        return self._positions.get(symbol)
+    def get(self, route_key: str) -> PositionState | None:
+        return self._positions.get(route_key)
 
     def all_positions(self) -> list[PositionState]:
         return list(self._positions.values())
 
     def replace_positions(self, positions: list[PositionState]) -> None:
-        self._positions = {pos.symbol: pos for pos in positions}
+        self._positions = {pos.route_key: pos for pos in positions}
 
     def emergency_stopped(self) -> bool:
         return self._emergency_stopped
@@ -90,10 +96,13 @@ class PositionManager:
             raise ValueError("equity must be positive")
         symbol_exposure: dict[str, float] = {}
         total_notional = 0.0
-        for symbol, pos in self._positions.items():
+        for pos in self._positions.values():
+            symbol = pos.symbol
             price = mark_prices.get(symbol, pos.avg_entry)
             notional = abs(pos.qty * price)
-            symbol_exposure[f"{symbol}_exposure_pct"] = (notional / equity) * 100.0
+            symbol_exposure[f"{symbol}_exposure_pct"] = (
+                symbol_exposure.get(f"{symbol}_exposure_pct", 0.0) + (notional / equity) * 100.0
+            )
             total_notional += notional
         symbol_exposure["portfolio_exposure_pct"] = (total_notional / equity) * 100.0
         return symbol_exposure
@@ -128,6 +137,9 @@ class PositionManager:
                 unrealized_pnl_pct=pos.unrealized_pnl_pct,
                 add_count=new_add,
                 updated_at=fill.filled_at,
+                strategy=pos.strategy,
+                timeframe=pos.timeframe,
+                route_key=pos.route_key,
             )
 
         # opposite direction -> reduce/close; no side flip in this phase
@@ -141,6 +153,9 @@ class PositionManager:
             unrealized_pnl_pct=0.0 if new_qty == 0 else pos.unrealized_pnl_pct,
             add_count=new_add,
             updated_at=fill.filled_at,
+            strategy=pos.strategy,
+            timeframe=pos.timeframe,
+            route_key=pos.route_key,
         )
 
 

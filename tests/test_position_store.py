@@ -27,6 +27,7 @@ def test_position_store_saves_parquet(tmp_path: Path) -> None:
     df = pd.read_parquet(out)
     assert len(df) == 1
     assert df.iloc[0]["symbol"] == "ETHUSDT"
+    assert df.iloc[0]["route_key"] == "legacy:ETHUSDT:15m"
 
 
 def test_position_store_recovers_from_backup_when_primary_is_corrupted(tmp_path: Path) -> None:
@@ -56,6 +57,28 @@ def test_position_store_recovers_from_backup_when_primary_is_corrupted(tmp_path:
     loaded = store.load()
     assert len(loaded) == 1
     assert loaded[0].symbol == "BTCUSDT"
+
+
+def test_position_store_loads_legacy_schema_without_route_columns(tmp_path: Path) -> None:
+    legacy = pd.DataFrame(
+        [
+            {
+                "symbol": "BTCUSDT",
+                "side": "buy",
+                "qty": 1.0,
+                "avg_entry": 100.0,
+                "unrealized_pnl_pct": 0.0,
+                "add_count": 0,
+                "updated_at": datetime(2026, 1, 1, tzinfo=UTC),
+            }
+        ]
+    )
+    store = PositionStore(tmp_path)
+    legacy.to_parquet(store.path(), index=False)
+
+    loaded = store.load()
+
+    assert loaded[0].route_key == "legacy:BTCUSDT:15m"
 
 
 def test_position_store_fails_when_lock_is_held(tmp_path: Path) -> None:
