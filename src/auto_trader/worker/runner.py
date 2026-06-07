@@ -17,11 +17,11 @@ from auto_trader.exchange.models import OrderRequest
 from auto_trader.exchange.rest_client import BinanceRestTransport, RestClientConfig
 from auto_trader.features.engine import FeatureConfig, compute_features
 from auto_trader.position.manager import PositionConfig, PositionManager
-from auto_trader.position.models import FillEvent, PositionState
+from auto_trader.position.models import FillEvent, PositionState, build_route_key
 from auto_trader.position.store import PositionStore
 from auto_trader.regime.classifier import RegimeConfig, classify_regime
 from auto_trader.stateio import FileLock, read_json_with_recovery
-from auto_trader.strategy.ml_filter import apply_signal_ml_filter
+from auto_trader.strategy.ml_filter import apply_signal_ml_filter, resolve_ml_artifact_path
 from auto_trader.strategy.range_strategy import RangeStrategyConfig, generate_range_signals
 from auto_trader.strategy.session_gate import apply_session_gate
 from auto_trader.strategy.trend_strategy import TrendStrategyConfig, generate_trend_signals
@@ -36,10 +36,43 @@ OrderMode = Literal["market", "limit"]
 
 
 @dataclass(frozen=True)
+class TradeRoute:
+    symbol: str
+    strategy: Literal["trend", "range"]
+    timeframe: str
+    expected_regime: str
+    candidate_status: str = "core"
+
+    def route_key(self) -> str:
+        return build_route_key(
+            strategy=self.strategy,
+            symbol=self.symbol,
+            timeframe=self.timeframe,
+        )
+
+    def state_key(self) -> str:
+        return self.route_key()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "symbol": self.symbol,
+            "strategy": self.strategy,
+            "timeframe": self.timeframe,
+            "expected_regime": self.expected_regime,
+            "candidate_status": self.candidate_status,
+            "route_key": self.route_key(),
+        }
+
+
+@dataclass(frozen=True)
 class WorkerConfig:
     symbols: tuple[str, ...]
     trend_symbols: tuple[str, ...]
     range_symbols: tuple[str, ...]
+    weekly_revalidation_report_path: str = (
+        "data/validation/weekly_revalidation/weekly_revalidation_report.json"
+    )
+    auto_sync_weekly_symbols: bool = True
     trend_order_mode: OrderMode = "limit"
     range_order_mode: OrderMode = "market"
     allowed_hours: str | None = None
@@ -85,6 +118,31 @@ class LiveTradingWorker:
             )
         )
         self.sleeper = sleeper
+        self._base_symbols = tuple(config.symbols)
+        self._active_trend_symbols = tuple(config.trend_symbols)
+        self._active_range_symbols = tuple(config.range_symbols)
+        self._active_routes: dict[str, TradeRoute] = {}
+        for symbol in self._active_trend_symbols:
+            route = TradeRoute(
+                symbol=symbol,
+                strategy="trend",
+                timeframe=config.strategy_timeframe,
+                expected_regime="TREND",
+                candidate_status="legacy",
+            )
+            self._active_routes[route.route_key()] = route
+        for symbol in self._active_range_symbols:
+            route = TradeRoute(
+                symbol=symbol,
+                strategy="range",
+                timeframe=config.strategy_timeframe,
+                expected_regime="RANGE",
+                candidate_status="legacy",
+            )
+            self._active_routes.setdefault(route.route_key(), route)
+        self._active_symbols = self._merge_symbols(
+            self._base_symbols, self._active_trend_symbols, self._active_range_symbols
+        )
         self.position_store = PositionStore(config.positions_dir)
         self.position_manager = PositionManager(config.position_config)
         self.position_manager.replace_positions(self.position_store.load())
@@ -102,14 +160,24 @@ class LiveTradingWorker:
 
     def run_once(self) -> dict[str, object]:
         runtime_state = self._read_runtime_state()
+        symbol_sync = self._refresh_symbols_from_weekly_report()
         cycle_started_at = _now_iso()
         orders: list[dict[str, object]] = []
         symbols: dict[str, dict[str, object]] = {}
+        routes: dict[str, dict[str, object]] = {}
         summary: dict[str, object] = {
             "cycle_started_at": cycle_started_at,
             "orders": orders,
             "symbols": symbols,
+            "routes": routes,
             "runtime": runtime_state,
+            "symbol_sync": symbol_sync,
+            "trade_symbols": {
+                "symbols": list(self._active_symbols),
+                "trend_symbols": list(self._active_trend_symbols),
+                "range_symbols": list(self._active_range_symbols),
+                "trade_routes": [route.to_dict() for route in self._active_routes.values()],
+            },
         }
         mark_prices: dict[str, float] = {}
         try:
@@ -136,61 +204,67 @@ class LiveTradingWorker:
             self._persist_cycle(summary, cycle_started_at)
             return summary
 
-        for symbol in self.config.symbols:
-            symbol_summary: dict[str, object] = {"status": "skipped"}
-            frame_15m = closed_by_symbol.get(symbol)
-            if frame_15m is None or frame_15m.empty:
-                symbol_summary["status"] = "missing_data"
-                symbols[symbol] = symbol_summary
-                continue
-            latest_bar_ts = str(pd.to_datetime(frame_15m["timestamp"].iloc[-1], utc=True))
-            mark_price = float(frame_15m["close"].iloc[-1])
-            mark_prices[symbol] = mark_price
-            route = self._route_for_symbol(symbol)
-            if route is None:
-                symbol_summary["status"] = "not_enabled"
-                symbols[symbol] = symbol_summary
+        for route_key, route in self._active_routes.items():
+            route_summary: dict[str, object] = {"status": "skipped", "route": route.to_dict()}
+            raw_frame = closed_by_symbol.get(route.symbol)
+            if raw_frame is None or raw_frame.empty:
+                route_summary["status"] = "missing_data"
+                routes[route_key] = route_summary
                 continue
 
-            state_key = f"{route}:{symbol}"
+            frame = self._closed_market_frame(raw_frame, route.timeframe)
+            if frame.empty:
+                route_summary["status"] = "missing_data"
+                routes[route_key] = route_summary
+                continue
+            latest_bar_ts = str(pd.to_datetime(frame["timestamp"].iloc[-1], utc=True))
+            mark_price = float(raw_frame["close"].iloc[-1])
+            mark_prices[route.symbol] = mark_price
+
+            state_key = route.state_key()
             already_processed = (
                 self.worker_state.last_processed_bars.get(state_key) == latest_bar_ts
             )
-            signal_frame = self._build_signal_frame(symbol=symbol, frame_15m=frame_15m, route=route)
+            signal_frame = self._build_signal_frame(
+                symbol=route.symbol,
+                frame_15m=frame,
+                route=route.strategy,
+                timeframe=route.timeframe,
+            )
             if signal_frame is None or signal_frame.empty:
                 self.worker_state.last_processed_bars[state_key] = latest_bar_ts
-                symbol_summary["status"] = "no_signal"
-                symbols[symbol] = symbol_summary
+                route_summary["status"] = "no_signal"
+                routes[route_key] = route_summary
                 continue
 
             latest = cast(dict[str, object], signal_frame.iloc[-1].to_dict())
-            symbol_summary["signal"] = {
+            route_summary["signal"] = {
                 "timestamp": str(latest.get("timestamp", "")),
                 "regime": str(latest.get("regime", "")),
+                "expected_regime": route.expected_regime,
+                "timeframe": route.timeframe,
                 "entry_signal": bool(latest.get("entry_signal", False)),
                 "exit_signal": bool(latest.get("exit_signal", False)),
                 "add_signal": bool(latest.get("add_signal", False)),
                 "pass_filter": bool(latest.get("pass_filter", False)),
                 "reason_codes": latest.get("signal_reason_codes", []),
             }
-
-            pos = self.position_manager.get(symbol)
+            pos = self.position_manager.get(route_key)
             risk_blocked = self.position_manager.risk_blocked(
                 mark_prices=mark_prices,
                 equity=self.config.equity,
-                symbol=symbol,
+                symbol=route.symbol,
             )
-            symbol_summary["risk_blocked"] = risk_blocked
+            route_summary["risk_blocked"] = risk_blocked
             self.worker_state.last_processed_bars[state_key] = latest_bar_ts
             if already_processed:
-                symbol_summary["status"] = "already_processed"
-                symbol_summary["trade"] = {
+                route_summary["status"] = "already_processed"
+                route_summary["trade"] = {
                     "order_submitted": False,
                     "status": "already_processed",
                 }
             else:
                 action_result = self._maybe_trade(
-                    symbol=symbol,
                     route=route,
                     latest_row=latest,
                     position=pos,
@@ -198,21 +272,39 @@ class LiveTradingWorker:
                     risk_blocked=risk_blocked,
                     allow_runtime_gate=False,
                 )
-                symbol_summary["trade"] = action_result
+                route_summary["trade"] = action_result
                 if action_result.get("order_submitted"):
                     orders.append(action_result)
-            symbols[symbol] = symbol_summary
+            routes[route_key] = route_summary
+
+        for route in self._active_routes.values():
+            symbol_summary: dict[str, object] = symbols.setdefault(
+                route.symbol,
+                {"status": "ready", "active_route_count": 0, "routes": []},
+            )
+            symbol_routes = symbol_summary.get("routes")
+            if isinstance(symbol_routes, list):
+                route_result = routes.get(route.route_key(), {})
+                if isinstance(route_result, dict):
+                    symbol_routes.append(route_result)
+            active_route_count = symbol_summary.get("active_route_count", 0)
+            symbol_summary["active_route_count"] = (
+                int(active_route_count) if isinstance(active_route_count, int | str) else 0
+            ) + 1
+            if route.route_key() in routes:
+                route_result = routes[route.route_key()]
+                symbol_summary["status"] = str(route_result.get("status", symbol_summary["status"]))
 
         self._persist_cycle(summary, cycle_started_at)
         return summary
 
     def _persist_cycle(self, summary: dict[str, object], cycle_started_at: str) -> None:
         self.worker_state.last_cycle_at = cycle_started_at
-        symbols_obj = summary.get("symbols", {})
-        if isinstance(symbols_obj, dict):
+        results_obj = summary.get("routes", summary.get("symbols", {}))
+        if isinstance(results_obj, dict):
             self.worker_state.last_results = {
                 str(symbol): cast(dict[str, object], result)
-                for symbol, result in symbols_obj.items()
+                for symbol, result in results_obj.items()
                 if isinstance(result, dict)
             }
         else:
@@ -239,7 +331,9 @@ class LiveTradingWorker:
                 signal_ts=datetime.now(UTC),
                 regime="HIGH_VOL",
                 pass_filter=True,
-                strategy="emergency",
+                strategy=pos.strategy,
+                timeframe=pos.timeframe,
+                route_key=pos.route_key,
                 allow_runtime_gate=True,
                 action="emergency_close",
                 price=price,
@@ -252,8 +346,7 @@ class LiveTradingWorker:
     def _maybe_trade(
         self,
         *,
-        symbol: str,
-        route: Literal["trend", "range"],
+        route: TradeRoute,
         latest_row: dict[str, object],
         position: PositionState | None,
         mark_price: float,
@@ -270,11 +363,13 @@ class LiveTradingWorker:
         reason_codes_value = latest_row.get("signal_reason_codes", [])
         reason_codes = reason_codes_value if isinstance(reason_codes_value, list) else []
         order_mode = (
-            self.config.trend_order_mode if route == "trend" else self.config.range_order_mode
+            self.config.trend_order_mode
+            if route.strategy == "trend"
+            else self.config.range_order_mode
         )
-        if route == "trend" and symbol not in self.config.trend_symbols:
+        if route.strategy == "trend" and route.symbol not in self._active_trend_symbols:
             return {"order_submitted": False, "status": "disabled"}
-        if route == "range" and symbol not in self.config.range_symbols:
+        if route.strategy == "range" and route.symbol not in self._active_range_symbols:
             return {"order_submitted": False, "status": "disabled"}
 
         if position is not None and exit_signal:
@@ -282,7 +377,7 @@ class LiveTradingWorker:
             if qty <= 0:
                 return {"order_submitted": False, "status": "no_position"}
             return self._submit_order(
-                symbol=symbol,
+                symbol=route.symbol,
                 side="sell" if position.side == "buy" else "buy",
                 qty=qty,
                 order_type=order_mode,
@@ -292,7 +387,9 @@ class LiveTradingWorker:
                 signal_ts=signal_ts,
                 regime=regime,
                 pass_filter=pass_filter,
-                strategy=route,
+                strategy=route.strategy,
+                timeframe=route.timeframe,
+                route_key=route.route_key(),
                 allow_runtime_gate=allow_runtime_gate,
                 action="exit",
                 price=mark_price,
@@ -308,7 +405,7 @@ class LiveTradingWorker:
             if qty <= 0:
                 return {"order_submitted": False, "status": "qty_zero"}
             return self._submit_order(
-                symbol=symbol,
+                symbol=route.symbol,
                 side="buy",
                 qty=qty,
                 order_type=order_mode,
@@ -316,7 +413,9 @@ class LiveTradingWorker:
                 signal_ts=signal_ts,
                 regime=regime,
                 pass_filter=pass_filter,
-                strategy=route,
+                strategy=route.strategy,
+                timeframe=route.timeframe,
+                route_key=route.route_key(),
                 allow_runtime_gate=allow_runtime_gate,
                 action="entry",
                 price=mark_price,
@@ -329,7 +428,7 @@ class LiveTradingWorker:
             if qty <= 0:
                 return {"order_submitted": False, "status": "qty_zero"}
             return self._submit_order(
-                symbol=symbol,
+                symbol=route.symbol,
                 side="buy",
                 qty=qty,
                 order_type=order_mode,
@@ -337,7 +436,9 @@ class LiveTradingWorker:
                 signal_ts=signal_ts,
                 regime=regime,
                 pass_filter=pass_filter,
-                strategy=route,
+                strategy=route.strategy,
+                timeframe=route.timeframe,
+                route_key=route.route_key(),
                 allow_runtime_gate=allow_runtime_gate,
                 action="add",
                 price=mark_price,
@@ -359,28 +460,49 @@ class LiveTradingWorker:
         regime: str,
         pass_filter: bool,
         strategy: str,
+        timeframe: str,
+        route_key: str,
         allow_runtime_gate: bool,
         action: str,
         price: float,
         is_add: bool,
         reason_codes: object | None = None,
     ) -> dict[str, object]:
+        normalized_qty = float(qty)
+        normalized_limit_price = limit_price
+        if hasattr(self.gateway.transport, "normalize_order_request"):
+            normalized = self.gateway.transport.normalize_order_request(
+                OrderRequest(
+                    symbol=symbol,
+                    side=side,
+                    qty=float(qty),
+                    signal_ts=signal_ts,
+                    regime=regime,
+                    pass_filter=bool(pass_filter),
+                    client_order_id="preview",
+                    order_type=order_type,
+                    limit_price=limit_price,
+                )
+            )
+            normalized_qty = float(normalized.qty)
+            normalized_limit_price = normalized.limit_price
         cid = build_client_order_id(
             symbol=symbol,
             side=side,
             signal_ts=signal_ts,
             strategy=strategy,
+            nonce=timeframe,
         )
         req = OrderRequest(
             symbol=symbol,
             side=side,
-            qty=float(qty),
+            qty=normalized_qty,
             signal_ts=signal_ts,
             regime=regime,
             pass_filter=bool(pass_filter),
             client_order_id=cid,
             order_type=order_type,
-            limit_price=limit_price,
+            limit_price=normalized_limit_price,
         )
         event = self.gateway.submit(
             req,
@@ -391,6 +513,8 @@ class LiveTradingWorker:
             "ts": _now_iso(),
             "symbol": symbol,
             "strategy": strategy,
+            "timeframe": timeframe,
+            "route_key": route_key,
             "action": action,
             "order_type": order_type,
             "order_id": event.order_id,
@@ -425,12 +549,16 @@ class LiveTradingWorker:
                 ),
                 filled_at=event.ack_at or datetime.now(UTC),
                 is_add=is_add,
+                strategy=strategy,
+                timeframe=timeframe,
+                route_key=route_key,
             )
             state = self.position_manager.apply_fill(fill)
             self.position_store.save(self.position_manager.all_positions())
             result["position_qty"] = state.qty
             result["position_avg_entry"] = state.avg_entry
             result["position_side"] = state.side
+            result["position_route_key"] = state.route_key
         return result
 
     def _append_order_event(self, payload: dict[str, object]) -> None:
@@ -458,22 +586,20 @@ class LiveTradingWorker:
         qty = (self.config.equity * ratio) / mark_price
         return round(max(qty, 0.001), 6)
 
-    def _route_for_symbol(self, symbol: str) -> Literal["trend", "range"] | None:
-        if symbol in self.config.trend_symbols:
-            return "trend"
-        if symbol in self.config.range_symbols:
-            return "range"
-        return None
-
     def _build_signal_frame(
-        self, *, symbol: str, frame_15m: pd.DataFrame, route: Literal["trend", "range"]
+        self,
+        *,
+        symbol: str,
+        frame_15m: pd.DataFrame,
+        route: Literal["trend", "range"],
+        timeframe: str,
     ) -> pd.DataFrame | None:
         required = {"timestamp", "open", "high", "low", "close", "volume"}
         if frame_15m.empty or not required.issubset(frame_15m.columns):
             return None
         base = frame_15m.copy().reset_index(drop=True)
         base["symbol"] = symbol
-        base["timeframe"] = self.config.strategy_timeframe
+        base["timeframe"] = timeframe
         features = compute_features(base, config=self.config.feature_config)
         regime = classify_regime(features, config=self.config.regime_config)
         if route == "range":
@@ -492,19 +618,20 @@ class LiveTradingWorker:
         if self.config.allowed_hours:
             signals = apply_session_gate(signals, allowed_hours=self.config.allowed_hours)
 
-        if self.config.ml_artifact_path:
+        ml_artifact_path = resolve_ml_artifact_path(self.config.ml_artifact_path)
+        if ml_artifact_path:
             try:
                 signals = apply_signal_ml_filter(
                     features_df=features,
                     regime_df=regime,
                     signals_df=signals,
-                    artifact_path=self.config.ml_artifact_path,
+                    artifact_path=ml_artifact_path,
                 )
             except Exception as exc:
                 self.worker_state.last_error = f"ml_filter_error:{exc.__class__.__name__}"
                 return None
         closed_cutoff = pd.to_datetime(base["timestamp"].iloc[-1], utc=True).floor(
-            _pandas_timeframe_rule(self.config.strategy_timeframe)
+            _pandas_timeframe_rule(timeframe)
         )
         return cast(
             pd.DataFrame,
@@ -515,7 +642,7 @@ class LiveTradingWorker:
 
     def _load_closed_market_frames(self) -> dict[str, pd.DataFrame]:
         closed_frames: dict[str, pd.DataFrame] = {}
-        for symbol in self.config.symbols:
+        for symbol in self._active_symbols:
             raw = self.market_client.fetch_klines(
                 symbol,
                 interval=self.config.market_interval,
@@ -524,18 +651,24 @@ class LiveTradingWorker:
             if raw.empty:
                 continue
             raw["timestamp"] = pd.to_datetime(raw["timestamp"], utc=True)
-            raw = raw.sort_values("timestamp")
-            cutoff = pd.to_datetime(raw["timestamp"].iloc[-1], utc=True).floor(
-                _pandas_timeframe_rule(self.config.strategy_timeframe)
-            )
-            resampled = resample_ohlcv(raw, self.config.strategy_timeframe)
-            resampled["timestamp"] = pd.to_datetime(resampled["timestamp"], utc=True)
-            closed = resampled[resampled["timestamp"] <= cutoff].copy().reset_index(drop=True)
-            if not closed.empty:
-                closed["symbol"] = symbol
-                closed["timeframe"] = self.config.strategy_timeframe
-            closed_frames[symbol] = closed
+            closed_frames[symbol] = raw.sort_values("timestamp").reset_index(drop=True)
         return closed_frames
+
+    def _closed_market_frame(self, raw_frame: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+        if raw_frame.empty:
+            return pd.DataFrame()
+        frame = raw_frame.copy()
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
+        frame = frame.sort_values("timestamp")
+        cutoff = pd.to_datetime(frame["timestamp"].iloc[-1], utc=True).floor(
+            _pandas_timeframe_rule(timeframe)
+        )
+        resampled = resample_ohlcv(frame, timeframe)
+        resampled["timestamp"] = pd.to_datetime(resampled["timestamp"], utc=True)
+        closed = resampled[resampled["timestamp"] <= cutoff].copy().reset_index(drop=True)
+        if not closed.empty:
+            closed["timeframe"] = timeframe
+        return cast(pd.DataFrame, closed)
 
     def _read_runtime_state(self) -> dict[str, object]:
         payload = read_json_with_recovery(self.config.runtime_state_path)
@@ -576,6 +709,209 @@ class LiveTradingWorker:
                 stale_signal_ttl_sec=self.config.stale_signal_ttl_sec,
             ),
         )
+
+    def _refresh_symbols_from_weekly_report(self) -> dict[str, object]:
+        snapshot: dict[str, object] = {
+            "enabled": bool(self.config.auto_sync_weekly_symbols),
+            "status": "disabled" if not self.config.auto_sync_weekly_symbols else "idle",
+            "report_path": self.config.weekly_revalidation_report_path,
+            "trend_symbols": list(self._active_trend_symbols),
+            "range_symbols": list(self._active_range_symbols),
+            "trade_routes": [route.to_dict() for route in self._active_routes.values()],
+            "symbols": list(self._active_symbols),
+        }
+        if not self.config.auto_sync_weekly_symbols:
+            return snapshot
+
+        report = read_json_with_recovery(self.config.weekly_revalidation_report_path)
+        if not report:
+            snapshot["status"] = "missing_or_invalid"
+            return snapshot
+
+        routes = self._routes_from_weekly_report(report)
+        if routes is None:
+            snapshot["status"] = "missing_or_invalid"
+            return snapshot
+
+        self._active_routes = {route.route_key(): route for route in routes}
+        self._active_trend_symbols = tuple(
+            route.symbol for route in routes if route.strategy == "trend"
+        )
+        self._active_range_symbols = tuple(
+            route.symbol for route in routes if route.strategy == "range"
+        )
+        self._active_symbols = self._merge_symbols(
+            self._base_symbols, self._active_trend_symbols, self._active_range_symbols
+        )
+        snapshot.update(
+            {
+                "status": "updated",
+                "trend_symbols": list(self._active_trend_symbols),
+                "range_symbols": list(self._active_range_symbols),
+                "trade_routes": [route.to_dict() for route in self._active_routes.values()],
+                "symbols": list(self._active_symbols),
+            }
+        )
+        return snapshot
+
+    def _routes_from_weekly_report(
+        self, payload: dict[str, object]
+    ) -> tuple[TradeRoute, ...] | None:
+        selection = payload.get("selection", {})
+        if isinstance(selection, dict):
+            trade_routes = self._normalize_trade_routes(selection.get("trade_routes"))
+            if trade_routes is not None:
+                return trade_routes
+
+            has_selection_keys = (
+                "trend_enabled_symbols" in selection or "range_enabled_symbols" in selection
+            )
+            if has_selection_keys:
+                timeframe = str(selection.get("timeframe", self.config.strategy_timeframe)).strip()
+                trend_symbols = self._normalize_symbols(selection.get("trend_enabled_symbols"))
+                range_symbols = self._normalize_symbols(selection.get("range_enabled_symbols"))
+                routes = self._legacy_routes_from_symbols(
+                    trend_symbols=trend_symbols,
+                    range_symbols=range_symbols,
+                    timeframe=timeframe or self.config.strategy_timeframe,
+                )
+                if routes is not None:
+                    return routes
+
+        candidates = payload.get("candidates", {})
+        if isinstance(candidates, dict):
+            routes = self._routes_from_candidates(candidates)
+            if routes is not None:
+                return routes
+
+        return None
+
+    def _routes_from_candidates(self, payload: dict[str, object]) -> tuple[TradeRoute, ...] | None:
+        routes: list[TradeRoute] = []
+        for row in self._candidate_rows(payload):
+            if str(row.get("candidate_status", "")) != "core":
+                continue
+            route = self._route_from_row(row)
+            if route is None:
+                continue
+            routes.append(route)
+        return tuple(routes) if routes else None
+
+    def _candidate_rows(self, payload: dict[str, object]) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        raw_rows = payload.get("rows", [])
+        if isinstance(raw_rows, list):
+            rows.extend(row for row in raw_rows if isinstance(row, dict))
+        timeframe_reports = payload.get("timeframe_reports", [])
+        if isinstance(timeframe_reports, list):
+            for report in timeframe_reports:
+                if not isinstance(report, dict):
+                    continue
+                nested_rows = report.get("rows", [])
+                if isinstance(nested_rows, list):
+                    rows.extend(row for row in nested_rows if isinstance(row, dict))
+        return rows
+
+    def _normalize_trade_routes(self, value: object) -> tuple[TradeRoute, ...] | None:
+        if not isinstance(value, list):
+            return None
+        routes: list[TradeRoute] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            route = self._route_from_row(item)
+            if route is None:
+                continue
+            routes.append(route)
+        return tuple(routes) if routes else None
+
+    def _legacy_routes_from_symbols(
+        self,
+        *,
+        trend_symbols: tuple[str, ...] | None,
+        range_symbols: tuple[str, ...] | None,
+        timeframe: str,
+    ) -> tuple[TradeRoute, ...] | None:
+        routes: list[TradeRoute] = []
+        for symbol in trend_symbols or ():
+            routes.append(
+                TradeRoute(
+                    symbol=symbol,
+                    strategy="trend",
+                    timeframe=timeframe,
+                    expected_regime="TREND",
+                    candidate_status="legacy",
+                )
+            )
+        for symbol in range_symbols or ():
+            routes.append(
+                TradeRoute(
+                    symbol=symbol,
+                    strategy="range",
+                    timeframe=timeframe,
+                    expected_regime="RANGE",
+                    candidate_status="legacy",
+                )
+            )
+        return tuple(routes) if routes else None
+
+    def _route_from_row(
+        self,
+        row: dict[str, object],
+        *,
+        default_timeframe: str | None = None,
+    ) -> TradeRoute | None:
+        symbol = str(row.get("symbol", "")).strip()
+        strategy = str(row.get("strategy", "")).strip()
+        if not symbol or strategy not in {"trend", "range"}:
+            return None
+        timeframe = (
+            str(row.get("timeframe", "")).strip()
+            or default_timeframe
+            or self.config.strategy_timeframe
+        )
+        expected_regime = str(row.get("expected_regime", "")).strip()
+        if not expected_regime:
+            expected_regime = "TREND" if strategy == "trend" else "RANGE"
+        return TradeRoute(
+            symbol=symbol,
+            strategy=cast(Literal["trend", "range"], strategy),
+            timeframe=timeframe,
+            expected_regime=expected_regime,
+            candidate_status=str(row.get("candidate_status", "core")),
+        )
+
+    def _normalize_symbols(self, value: object) -> tuple[str, ...] | None:
+        if value is None:
+            return None
+        return _csv_symbols(value)
+
+    def _merge_symbols(self, *groups: tuple[str, ...]) -> tuple[str, ...]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for group in groups:
+            for symbol in group:
+                if symbol and symbol not in seen:
+                    seen.add(symbol)
+                    merged.append(symbol)
+        return tuple(merged)
+
+
+def _csv_symbols(value: object) -> tuple[str, ...]:
+    if isinstance(value, list | tuple):
+        source = value
+    elif isinstance(value, str):
+        source = [item.strip() for item in value.split(",") if item.strip()]
+    else:
+        source = []
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in source:
+        symbol = str(item).strip()
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            ordered.append(symbol)
+    return tuple(ordered)
 
 
 def _now_iso() -> str:

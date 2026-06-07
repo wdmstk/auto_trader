@@ -38,6 +38,10 @@ systemctl --user status auto-trader-runtime.service
 systemctl --user status auto-trader-worker.service
 ```
 
+補足:
+- `systemd` で起動する場合は、`~/.config/systemd/user/` の unit に `EnvironmentFile=/home/komug/projects/auto_trader/.env` を入れるか、
+  `systemctl --user import-environment` 相当で `BINANCE_FUTURES_TESTNET_API_KEY` / `BINANCE_FUTURES_TESTNET_API_SECRET` を渡す。
+
 ## 3. 単発注文（疎通確認）
 ```bash
 python -m auto_trader.exchange \
@@ -70,6 +74,7 @@ python -m auto_trader.exchange \
 ## テストネット自動売買の確認項目チェックリスト
 - シグナルが出たときに、意図した注文が 1 回だけ出る
 - `range` は `market`、`trend` は `limit` など、注文種別が銘柄ごとの方針に一致する
+- 同一 symbol に `range` / `trend` の両 route がある場合、GUI / worker / order event で route key が一致している
 - `pass_filter` / `risk_blocked` / `runtime gate` が想定どおりに効いている
 - `partial` / `filled` / `canceled` / `expired` がログと画面の両方で追える
 - 約定後に `position`、`cash`、`PnL` が正しく更新される
@@ -91,9 +96,10 @@ python -m auto_trader.exchange \
 2. GUI を開き、`BTCUSDT` などの小ロット対象を 1 つだけ表示する。
 3. `runtime gate` を `START` にして、GUI 上で新規発注が許可されていることを確認する。
 4. `range` なら `market`、`trend` なら `limit` の設定が GUI 上でも一致しているか確認する。
-5. 小ロットで 1 回だけ注文を流し、GUI 上で `NEW` → `FILLED` / `PARTIAL` / `CANCELED` を追う。
-6. `partial` が出た場合は、残数量がキャンセルされるか、ログと画面を突き合わせる。
-7. 約定後に `position`、`cash`、`PnL` が更新されることを確認する。
+5. 同一 symbol の複数 route を使う場合、position 表示と emergency close が route 単位で崩れていないか確認する。
+6. 小ロットで 1 回だけ注文を流し、GUI 上で `NEW` → `FILLED` / `PARTIAL` / `CANCELED` を追う。
+7. `partial` が出た場合は、残数量がキャンセルされるか、ログと画面を突き合わせる。
+8. 約定後に `position`、`cash`、`PnL` が更新されることを確認する。
 8. `STOP` に切り替え、GUI 上で新規注文が止まることを確認する。
 9. 画面のスクリーンショットと `order_id` を `docs/implementation/longrun-validation-record-2026-06-01.md` に残す。
 

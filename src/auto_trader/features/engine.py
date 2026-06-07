@@ -53,8 +53,9 @@ def compute_features(
         g2["trend_efficiency"] = _trend_efficiency(g2["close"], cfg.trend_eff_window)
 
         # RANGE features
-        candle_range = (g2["high"] - g2["low"]).replace(0.0, pd.NA)
-        lower_wick = (g2[["open", "close"]].min(axis=1) - g2["low"]).clip(lower=0)
+        candle_range = (g2["high"] - g2["low"]).astype("float64")
+        candle_range = candle_range.mask(candle_range == 0.0)
+        lower_wick = (g2[["open", "close"]].min(axis=1) - g2["low"]).clip(lower=0).astype("float64")
         g2["wick_ratio"] = (lower_wick / candle_range).fillna(0.0)
         bb_mid = g2["close"].rolling(cfg.bb_window).mean()
         bb_std = g2["close"].rolling(cfg.bb_window).std(ddof=0)
