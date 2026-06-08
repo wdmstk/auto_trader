@@ -1,6 +1,6 @@
 [Unit]
-Description=Auto Trader Notification Watcher
-After=network.target
+Description=Auto Trader Notification Watcher (User)
+After=default.target
 
 [Service]
 Type=simple
@@ -9,7 +9,6 @@ EnvironmentFile=/home/komug/projects/auto_trader/ops/env/notify.env
 ExecStart=/home/komug/projects/auto_trader/.venv/bin/python -m auto_trader.notify --from-env --watch --interval-sec 5 --output-dir data/ops
 Restart=always
 RestartSec=3
-User=komug
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

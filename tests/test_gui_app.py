@@ -10,6 +10,7 @@ import pandas as pd
 
 import auto_trader.gui.app as gui_app
 from auto_trader.gui.app import (
+    _candidate_trade_routes_frame,
     _load_candidate_report,
     _load_weekly_candidate_report,
     _operator_summary,
@@ -181,6 +182,30 @@ def test_worker_trade_routes_frame_uses_route_metadata() -> None:
     assert frame.iloc[0]["timeframe"] == "30m"
     assert frame.iloc[0]["expected_regime"] == "RANGE"
     assert bool(frame.iloc[0]["entry_signal"]) is True
+
+
+def test_candidate_trade_routes_frame_uses_weekly_selection_routes() -> None:
+    candidate_report = {
+        "selection": {
+            "trade_routes": [
+                {
+                    "symbol": "BNBUSDT",
+                    "strategy": "range",
+                    "timeframe": "30m",
+                    "expected_regime": "RANGE",
+                    "candidate_status": "core",
+                }
+            ]
+        }
+    }
+
+    frame = _candidate_trade_routes_frame(candidate_report)
+
+    assert not frame.empty
+    assert frame.iloc[0]["symbol"] == "BNBUSDT"
+    assert frame.iloc[0]["strategy"] == "range"
+    assert frame.iloc[0]["timeframe"] == "30m"
+    assert frame.iloc[0]["status"] == "configured"
 
 
 def test_active_worker_symbols_normalizes_route_keys() -> None:

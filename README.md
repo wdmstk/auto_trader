@@ -175,11 +175,18 @@ python -m auto_trader.notify \
   --warning-to-webhook
 
 # 環境変数から読込 + 疎通試験
+cp ops/env/notify.env.example ops/env/notify.env
+$EDITOR ops/env/notify.env
+set -a
+. ops/env/notify.env
+set +a
 python -m auto_trader.notify --from-env --test-alert
 
 # 常駐監視
 python -m auto_trader.notify --from-env --watch --interval-sec 5 --output-dir data/ops
 ```
+
+`systemctl --user` で常駐させる場合は `ops/systemd/auto-trader-notify.user.service.example` を使います。`systemd` の system service 用テンプレートとは `WantedBy` が異なります。
 
 ## E2Eスモーク（Phase 17）
 

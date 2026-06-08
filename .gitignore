@@ -16,3 +16,4 @@ tree.txt
 # Local env files
 .env
 .env.*
+ops/env/notify.env

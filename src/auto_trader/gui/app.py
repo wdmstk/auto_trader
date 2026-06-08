@@ -19,6 +19,7 @@ try:
 except Exception:  # pragma: no cover - UI fallback
     alt = None
 
+from auto_trader.analysis.trade_routes import resolve_live_trade_routes
 from auto_trader.gui.overlay import build_overlay_frame, build_regime_segments
 from auto_trader.gui.state import ControlEvent, append_control_event, emergency_badge, is_stale
 from auto_trader.stateio import atomic_write_json, read_json_with_recovery
@@ -1980,6 +1981,45 @@ def _worker_trade_routes_frame(worker_state: WorkerState) -> pd.DataFrame:
     return frame.sort_values(["symbol"]).reset_index(drop=True)
 
 
+def _candidate_trade_routes_frame(candidate_report: Mapping[str, object]) -> pd.DataFrame:
+    resolved = resolve_live_trade_routes(
+        cast(dict[str, Any], dict(candidate_report)), default_timeframe="15m"
+    )
+    raw_routes = resolved.get("trade_routes", [])
+    if not isinstance(raw_routes, list):
+        return pd.DataFrame()
+
+    rows: list[dict[str, object]] = []
+    for item in raw_routes:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol", "")).strip()
+        strategy = str(item.get("strategy", "")).strip()
+        timeframe = str(item.get("timeframe", "")).strip()
+        if not symbol or not strategy:
+            continue
+        rows.append(
+            {
+                "symbol": symbol,
+                "strategy": strategy,
+                "timeframe": timeframe,
+                "expected_regime": str(item.get("expected_regime", "")).strip(),
+                "candidate_status": str(item.get("candidate_status", "")).strip(),
+                "status": "configured",
+                "trade_status": "",
+                "signal_regime": "",
+                "entry_signal": False,
+                "exit_signal": False,
+                "risk_blocked": False,
+            }
+        )
+    if not rows:
+        return pd.DataFrame()
+    return (
+        pd.DataFrame(rows).sort_values(["strategy", "symbol", "timeframe"]).reset_index(drop=True)
+    )
+
+
 def _worker_status_reason(row: Mapping[str, object]) -> str:
     status = str(row.get("status", ""))
     trade_status = str(row.get("trade_status", ""))
@@ -2643,6 +2683,8 @@ def _render_trading_tab(
 
     st.subheader("Live trade routes")
     route_frame = _worker_trade_routes_frame(worker_state)
+    if route_frame.empty:
+        route_frame = _candidate_trade_routes_frame(candidate_report)
     if route_frame.empty:
         st.info("No live trade routes yet.")
     else:
