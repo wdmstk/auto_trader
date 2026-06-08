@@ -9,11 +9,20 @@
 - [x] 運用Runbook更新（確認項目/障害切り分け）
 
 ## Done定義
-- [ ] 実環境で test alert が送信成功する
+- [x] 実環境で test alert が送信成功する
 - [x] watch モードが連続稼働する
-- [ ] service 再起動時に自動復旧する
+- [x] service 再起動時に自動復旧する
 - [x] 監査ログから失敗原因を追跡できる
 - [x] ユニット/統合テストが通る
+
+## 最新証跡
+- 2026-06-08: Slack `TEST_ALERT` を実環境へ送信成功
+- 2026-06-08: `systemctl --user status auto-trader-notify.service` で `active (running)` を確認
+- 2026-06-08: `kill -9` 後に `Scheduled restart job` -> `Started auto-trader-notify.service` を確認
+- 2026-06-08: user service 化に伴い `ops/systemd/auto-trader-notify.user.service.example` を追加
+
+## 未完了
+- 追加の運用証跡を採る場合は `docs/implementation/notify-operations.md` の `自動復旧確認` を使用する
 
 ## レビュー観点
 1. 秘密情報がコード/ログへ漏れないこと
