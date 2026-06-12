@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
+OUT_DIR="${OUT_DIR:-data/validation/weekly_revalidation}"
 CORE_FEEDBACK_ENV="${WEEKLY_CORE_FEEDBACK_ENV:-data/validation/symbol_candidate_exploration/weekly_core_feedback.env}"
 BASELINE_OVERRIDE_ENV="${WEEKLY_BASELINE_OVERRIDE_ENV:-}"
 
@@ -37,7 +38,14 @@ set +e
 main_status=$?
 set -e
 
+OUT_DIR="$OUT_DIR" \
+REPORT_PATH="$OUT_DIR/candidate_report.json" \
+OUT_PATH="$OUT_DIR/result_list.md" \
 ./scripts/weekly_revalidation_results_list.sh || true
+
+OUT_DIR="$OUT_DIR" \
+REPORT_PATH="$OUT_DIR/weekly_revalidation_report.json" \
+OUT_PATH="$OUT_DIR/range_probe_result_list.md" \
 ./scripts/weekly_revalidation_probe_results_list.sh || true
 
 exit "$main_status"

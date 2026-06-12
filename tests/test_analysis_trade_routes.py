@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
 from auto_trader.analysis.trade_routes import (
     build_trade_route_selection,
     resolve_live_trade_routes,
+    validate_trade_route_selection,
 )
 
 
@@ -72,6 +75,24 @@ def test_build_trade_route_selection_is_fail_closed_without_statistical_report()
     assert build_trade_route_selection(report)["trade_routes"] == []
 
 
+def test_validate_trade_route_selection_rejects_missing_statistical_status() -> None:
+    selection = {
+        "timeframe": "15m",
+        "trade_routes": [
+            {
+                "symbol": "ETHUSDT",
+                "strategy": "trend",
+                "timeframe": "15m",
+                "expected_regime": "TREND",
+                "candidate_status": "core",
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="statistical_status is required"):
+        validate_trade_route_selection(selection)
+
+
 def test_resolve_live_trade_routes_prefers_selection_trade_routes() -> None:
     report = {
         "selection": {
@@ -83,6 +104,13 @@ def test_resolve_live_trade_routes_prefers_selection_trade_routes() -> None:
                     "timeframe": "1h",
                     "expected_regime": "TREND",
                     "candidate_status": "core",
+                    "selection_source": "autotune",
+                    "selected_stage": "trend_next_step",
+                    "config_label": "cooldown0_exit0.08",
+                    "params": {
+                        "trend_reentry_cooldown_bars": 0,
+                        "trend_efficiency_exit_threshold": 0.08,
+                    },
                 },
                 {
                     "symbol": "XRPUSDT",
@@ -103,6 +131,10 @@ def test_resolve_live_trade_routes_prefers_selection_trade_routes() -> None:
     assert out["symbol_timeframes"] == {"ETHUSDT": "1h", "XRPUSDT": "30m"}
     assert out["trade_routes"][0]["strategy"] == "trend"
     assert out["trade_routes"][1]["strategy"] == "range"
+    assert out["trade_routes"][0]["selection_source"] == "autotune"
+    assert out["trade_routes"][0]["selected_stage"] == "trend_next_step"
+    assert out["trade_routes"][0]["config_label"] == "cooldown0_exit0.08"
+    assert out["trade_routes"][0]["params"]["trend_efficiency_exit_threshold"] == 0.08
 
 
 def test_resolve_live_trade_routes_keeps_multiple_routes_per_symbol() -> None:
@@ -154,3 +186,151 @@ def test_resolve_live_trade_routes_falls_back_to_enabled_symbols() -> None:
         "XRPUSDT",
         "SOLUSDT",
     ]
+
+
+def test_build_trade_route_selection_preserves_seed_manifest_params() -> None:
+    report = {
+        "statistical_qualification": {
+            "status": "pass",
+            "qualification_report_path": "qualification.json",
+            "passed_route_keys": ["trend:BNBUSDT:1h"],
+        },
+        "candidates": {
+            "rows": [
+                {
+                    "symbol": "BNBUSDT",
+                    "timeframe": "1h",
+                    "strategy": "trend",
+                    "candidate_status": "core",
+                    "candidate_score": 50.0,
+                    "pf_mean": 1.34,
+                    "expectancy_bps_mean": 18.23,
+                    "period_pnl_mean": 7.85,
+                    "max_dd_mean": 0.003,
+                    "closed_trades_mean": 10.75,
+                    "statistical_status": "pass",
+                }
+            ]
+        },
+    }
+    seed_manifest = {
+        "selection": {
+            "trade_routes": [
+                {
+                    "symbol": "BNBUSDT",
+                    "strategy": "trend",
+                    "timeframe": "1h",
+                    "expected_regime": "TREND",
+                    "candidate_status": "core",
+                    "selection_source": "autotune",
+                    "selected_stage": "trend_next_step",
+                    "config_label": "cooldown0_exit0.02",
+                    "params": {
+                        "trend_reentry_cooldown_bars": 0,
+                        "trend_efficiency_exit_threshold": 0.02,
+                    },
+                }
+            ]
+        }
+    }
+
+    out = build_trade_route_selection(report, default_timeframe="15m", seed_manifest=seed_manifest)
+
+    assert out["trade_routes"][0]["selected_stage"] == "trend_next_step"
+    assert out["trade_routes"][0]["selection_source"] == "autotune"
+    assert out["trade_routes"][0]["params"]["trend_reentry_cooldown_bars"] == 0
+    assert out["trade_routes"][0]["statistical_status"] == "pass"
+
+
+def test_build_trade_route_selection_keeps_seed_core_route_when_statistical_fails() -> None:
+    report = {
+        "statistical_qualification": {
+            "status": "fail",
+            "qualification_report_path": "qualification.json",
+            "passed_route_keys": [],
+        },
+        "candidates": {
+            "rows": [
+                {
+                    "symbol": "BNBUSDT",
+                    "timeframe": "1h",
+                    "strategy": "trend",
+                    "candidate_status": "core",
+                    "candidate_score": 50.0,
+                    "pf_mean": 1.21,
+                    "expectancy_bps_mean": 7.43,
+                    "period_pnl_mean": 0.82,
+                    "max_dd_mean": 0.0036,
+                    "closed_trades_mean": 11.75,
+                }
+            ]
+        },
+    }
+    seed_manifest = {
+        "selection": {
+            "trade_routes": [
+                {
+                    "symbol": "BNBUSDT",
+                    "strategy": "trend",
+                    "timeframe": "1h",
+                    "expected_regime": "TREND",
+                    "candidate_status": "core",
+                    "selection_source": "autotune",
+                    "selected_stage": "trend_next_step",
+                }
+            ]
+        }
+    }
+
+    out = build_trade_route_selection(
+        report,
+        default_timeframe="15m",
+        seed_manifest=seed_manifest,
+        statistical_gate_mode="soft",
+    )
+
+    assert len(out["trade_routes"]) == 1
+    assert out["trade_routes"][0]["symbol"] == "BNBUSDT"
+    assert out["trade_routes"][0]["statistical_status"] == "fail"
+
+
+def test_build_trade_route_selection_drops_seed_core_route_in_hard_mode() -> None:
+    report = {
+        "statistical_qualification": {
+            "status": "fail",
+            "qualification_report_path": "qualification.json",
+            "passed_route_keys": [],
+        },
+        "candidates": {
+            "rows": [
+                {
+                    "symbol": "BNBUSDT",
+                    "timeframe": "1h",
+                    "strategy": "trend",
+                    "candidate_status": "core",
+                }
+            ]
+        },
+    }
+    seed_manifest = {
+        "selection": {
+            "trade_routes": [
+                {
+                    "symbol": "BNBUSDT",
+                    "strategy": "trend",
+                    "timeframe": "1h",
+                    "expected_regime": "TREND",
+                    "candidate_status": "core",
+                }
+            ]
+        }
+    }
+
+    out = build_trade_route_selection(
+        report,
+        default_timeframe="15m",
+        seed_manifest=seed_manifest,
+        statistical_gate_mode="hard",
+    )
+
+    assert out["trade_routes"] == []

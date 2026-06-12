@@ -112,3 +112,17 @@ def test_range_enabled_symbols_blocks_non_target() -> None:
     assert bool(out["entry_signal"].any()) is False
     codes = cast(list[str], out.loc[1, "signal_reason_codes"])
     assert "RG_BLOCK_SYMBOL_DISABLED" in codes
+
+
+def test_range_max_hold_bars_forces_exit() -> None:
+    f, r, k = _build_inputs()
+    out = generate_range_signals(
+        features_df=f,
+        regime_df=r,
+        risk_df=k,
+        config=RangeStrategyConfig(max_hold_bars=1),
+    )
+    assert bool(out.loc[1, "entry_signal"]) is True
+    assert bool(out.loc[3, "exit_signal"]) is True
+    codes = cast(list[str], out.loc[3, "signal_reason_codes"])
+    assert "RG_EXIT_MAX_HOLD" in codes

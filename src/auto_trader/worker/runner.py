@@ -15,6 +15,7 @@ from auto_trader.exchange.gateway import GatewayConfig, OrderGateway
 from auto_trader.exchange.idempotency import build_client_order_id
 from auto_trader.exchange.models import OrderRequest
 from auto_trader.exchange.rest_client import BinanceRestTransport, RestClientConfig
+from auto_trader.exchange.ws_client import BinanceWsExecutionClient, ExecutionStreamEvent
 from auto_trader.features.engine import FeatureConfig, compute_features
 from auto_trader.position.manager import PositionConfig, PositionManager
 from auto_trader.position.models import FillEvent, PositionState, build_route_key
@@ -69,11 +70,13 @@ class WorkerConfig:
     symbols: tuple[str, ...]
     trend_symbols: tuple[str, ...]
     range_symbols: tuple[str, ...]
+    route_selection_path: str = ""
+    auto_sync_route_selection: bool = True
     weekly_revalidation_report_path: str = (
         "data/validation/weekly_revalidation/weekly_revalidation_report.json"
     )
     auto_sync_weekly_symbols: bool = True
-    trend_order_mode: OrderMode = "limit"
+    trend_order_mode: OrderMode = "market"
     range_order_mode: OrderMode = "market"
     allowed_hours: str | None = None
     market_base_url: str = "https://fapi.binance.com"
@@ -90,6 +93,8 @@ class WorkerConfig:
     positions_dir: str = "data/positions"
     worker_state_path: str = "data/runtime/worker_state.json"
     order_events_path: str = "data/exchange/order_events.jsonl"
+    execution_events_path: str = "data/exchange/execution_events.jsonl"
+    execution_cursor_path: str = "data/exchange/execution_cursor.json"
     ml_artifact_path: str | None = None
     max_iterations: int | None = None
     max_symbol_exposure_pct: float = 25.0
@@ -147,6 +152,7 @@ class LiveTradingWorker:
         self.position_manager = PositionManager(config.position_config)
         self.position_manager.replace_positions(self.position_store.load())
         self.worker_state = self._load_worker_state()
+        self.execution_client = BinanceWsExecutionClient()
         self.gateway = self._build_gateway(transport=transport)
 
     def run_watch(self) -> int:
@@ -160,7 +166,7 @@ class LiveTradingWorker:
 
     def run_once(self) -> dict[str, object]:
         runtime_state = self._read_runtime_state()
-        symbol_sync = self._refresh_symbols_from_weekly_report()
+        symbol_sync = self._refresh_symbols_from_route_selection()
         cycle_started_at = _now_iso()
         orders: list[dict[str, object]] = []
         symbols: dict[str, dict[str, object]] = {}
@@ -172,6 +178,7 @@ class LiveTradingWorker:
             "routes": routes,
             "runtime": runtime_state,
             "symbol_sync": symbol_sync,
+            "execution_sync": self.reconcile_execution_events_once(),
             "trade_symbols": {
                 "symbols": list(self._active_symbols),
                 "trend_symbols": list(self._active_trend_symbols),
@@ -338,6 +345,7 @@ class LiveTradingWorker:
                 action="emergency_close",
                 price=price,
                 is_add=False,
+                pre_position=pos,
             )
             submitted["reason"] = reason
             orders.append(submitted)
@@ -395,6 +403,7 @@ class LiveTradingWorker:
                 price=mark_price,
                 is_add=False,
                 reason_codes=reason_codes,
+                pre_position=position,
             )
 
         if risk_blocked:
@@ -421,6 +430,7 @@ class LiveTradingWorker:
                 price=mark_price,
                 is_add=False,
                 reason_codes=reason_codes,
+                pre_position=None,
             )
 
         if position is not None and add_signal and pass_filter:
@@ -444,6 +454,7 @@ class LiveTradingWorker:
                 price=mark_price,
                 is_add=True,
                 reason_codes=reason_codes,
+                pre_position=position,
             )
 
         return {"order_submitted": False, "status": "no_action"}
@@ -467,6 +478,7 @@ class LiveTradingWorker:
         price: float,
         is_add: bool,
         reason_codes: object | None = None,
+        pre_position: PositionState | None = None,
     ) -> dict[str, object]:
         normalized_qty = float(qty)
         normalized_limit_price = limit_price
@@ -512,6 +524,7 @@ class LiveTradingWorker:
         log_row = {
             "ts": _now_iso(),
             "symbol": symbol,
+            "side": side,
             "strategy": strategy,
             "timeframe": timeframe,
             "route_key": route_key,
@@ -525,11 +538,21 @@ class LiveTradingWorker:
             "requested_at": event.requested_at.isoformat(),
             "sent_at": event.sent_at.isoformat() if event.sent_at else "",
             "ack_at": event.ack_at.isoformat() if event.ack_at else "",
+            "latency_ms": event.latency_ms,
             "limit_price": event.limit_price,
             "price": float(price),
             "signal_ts": signal_ts.isoformat(),
             "regime": regime,
             "reason_codes": reason_codes if reason_codes is not None else [],
+            "pre_position_exists": pre_position is not None and pre_position.qty > 0.0,
+            "pre_position_qty": float(pre_position.qty) if pre_position is not None else 0.0,
+            "pre_position_avg_entry": (
+                float(pre_position.avg_entry) if pre_position is not None else 0.0
+            ),
+            "pre_position_side": pre_position.side if pre_position is not None else "",
+            "pre_position_add_count": int(pre_position.add_count)
+            if pre_position is not None
+            else 0,
         }
         self._append_order_event(log_row)
 
@@ -570,6 +593,154 @@ class LiveTradingWorker:
                 f.write(json.dumps(payload, ensure_ascii=True) + "\n")
                 f.flush()
                 os.fsync(f.fileno())
+
+    def reconcile_execution_events_once(self) -> dict[str, object]:
+        events_path = Path(self.config.execution_events_path)
+        cursor_path = Path(self.config.execution_cursor_path)
+        if not events_path.exists():
+            return {"processed": 0, "applied": 0, "invalid": 0, "ignored": 0}
+
+        lines = events_path.read_text(encoding="utf-8").splitlines()
+        start_index = _read_line_cursor(cursor_path)
+        if start_index >= len(lines):
+            return {"processed": 0, "applied": 0, "invalid": 0, "ignored": 0}
+
+        processed = 0
+        applied = 0
+        invalid = 0
+        ignored = 0
+        for line in lines[start_index:]:
+            processed += 1
+            event = self.execution_client.parse_message(line)
+            if event is None:
+                invalid += 1
+                continue
+            if event.status not in {"filled", "canceled", "expired"}:
+                ignored += 1
+                continue
+            if self._apply_execution_event(event):
+                applied += 1
+            else:
+                ignored += 1
+
+        _write_line_cursor(cursor_path, len(lines))
+        return {
+            "processed": processed,
+            "applied": applied,
+            "invalid": invalid,
+            "ignored": ignored,
+        }
+
+    def _apply_execution_event(self, event: ExecutionStreamEvent) -> bool:
+        order_row = self._find_order_event_context(
+            order_id=event.order_id,
+            client_order_id=event.client_order_id,
+        )
+        if order_row is None:
+            return False
+
+        route_key = str(order_row.get("route_key", "")).strip()
+        if not route_key:
+            return False
+
+        reconciled = self._reconciled_position_from_execution(order_row, event)
+        if reconciled is None or reconciled.qty <= 0.0:
+            self.position_manager.remove_position(route_key)
+            reconciled_qty = 0.0
+        else:
+            self.position_manager.set_position(reconciled)
+            reconciled_qty = float(reconciled.qty)
+        self.position_store.save(self.position_manager.all_positions())
+
+        sync_row = {
+            "ts": _now_iso(),
+            "symbol": str(order_row.get("symbol", "")),
+            "side": str(order_row.get("side", "")),
+            "strategy": str(order_row.get("strategy", "")),
+            "timeframe": str(order_row.get("timeframe", "")),
+            "route_key": route_key,
+            "action": str(order_row.get("action", "")),
+            "order_type": str(order_row.get("order_type", "market")),
+            "order_id": event.order_id,
+            "client_order_id": event.client_order_id,
+            "status": event.status,
+            "reason": "execution_report_sync",
+            "qty": _coerce_float(order_row.get("qty", 0.0) or 0.0),
+            "requested_at": str(order_row.get("requested_at", "")),
+            "sent_at": str(order_row.get("sent_at", "")),
+            "ack_at": str(order_row.get("ack_at", "")),
+            "latency_ms": order_row.get("latency_ms"),
+            "limit_price": order_row.get("limit_price"),
+            "price": _coerce_float(order_row.get("price", 0.0) or 0.0),
+            "signal_ts": str(order_row.get("signal_ts", "")),
+            "regime": str(order_row.get("regime", "")),
+            "reason_codes": order_row.get("reason_codes", []),
+            "sync_source": "execution_report",
+            "execution_event_ts": event.event_ts.isoformat(),
+            "execution_filled_qty": float(event.filled_qty),
+            "reconciled_position_qty": reconciled_qty,
+        }
+        self._append_order_event(sync_row)
+        return True
+
+    def _find_order_event_context(
+        self,
+        *,
+        order_id: str,
+        client_order_id: str,
+    ) -> dict[str, object] | None:
+        path = Path(self.config.order_events_path)
+        if not path.exists():
+            return None
+        for line in reversed(path.read_text(encoding="utf-8").splitlines()):
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if str(payload.get("sync_source", "")) == "execution_report":
+                continue
+            payload_order_id = str(payload.get("order_id", ""))
+            payload_client_order_id = str(payload.get("client_order_id", ""))
+            if order_id and payload_order_id == order_id:
+                return payload
+            if client_order_id and payload_client_order_id == client_order_id:
+                return payload
+        return None
+
+    def _reconciled_position_from_execution(
+        self,
+        order_row: dict[str, object],
+        event: ExecutionStreamEvent,
+    ) -> PositionState | None:
+        original_qty = max(0.0, _coerce_float(order_row.get("qty", 0.0) or 0.0))
+        filled_qty = min(max(float(event.filled_qty), 0.0), original_qty)
+        pre_position = _position_from_order_row(order_row)
+        if filled_qty <= 0.0:
+            return pre_position
+
+        route_key = str(order_row.get("route_key", "")).strip()
+        side = str(order_row.get("side", "")).strip().lower()
+        if side not in {"buy", "sell"}:
+            return pre_position
+
+        pm = PositionManager(self.position_manager.config)
+        if pre_position is not None and pre_position.qty > 0.0:
+            pm.replace_positions([pre_position])
+        return pm.apply_fill(
+            FillEvent(
+                symbol=str(order_row.get("symbol", "")),
+                side=cast(Literal["buy", "sell"], side),
+                qty=filled_qty,
+                price=_fill_price_from_order_row(order_row),
+                filled_at=event.event_ts,
+                is_add=str(order_row.get("action", "")).strip().lower() == "add",
+                strategy=str(order_row.get("strategy", "")).strip() or "legacy",
+                timeframe=str(order_row.get("timeframe", "")).strip() or "15m",
+                route_key=route_key,
+            )
+        )
 
     def _limit_price(self, order_mode: OrderMode, mark_price: float, side: str) -> float | None:
         if order_mode != "limit":
@@ -711,25 +882,36 @@ class LiveTradingWorker:
             ),
         )
 
-    def _refresh_symbols_from_weekly_report(self) -> dict[str, object]:
+    def _configured_route_selection_path(self) -> str:
+        path = str(self.config.route_selection_path).strip()
+        if path:
+            return path
+        return str(self.config.weekly_revalidation_report_path).strip()
+
+    def _route_selection_sync_enabled(self) -> bool:
+        return bool(self.config.auto_sync_route_selection and self.config.auto_sync_weekly_symbols)
+
+    def _refresh_symbols_from_route_selection(self) -> dict[str, object]:
+        selection_path = self._configured_route_selection_path()
         snapshot: dict[str, object] = {
-            "enabled": bool(self.config.auto_sync_weekly_symbols),
-            "status": "disabled" if not self.config.auto_sync_weekly_symbols else "idle",
-            "report_path": self.config.weekly_revalidation_report_path,
+            "enabled": bool(self._route_selection_sync_enabled()),
+            "status": "disabled" if not self._route_selection_sync_enabled() else "idle",
+            "selection_path": selection_path,
+            "report_path": selection_path,
             "trend_symbols": list(self._active_trend_symbols),
             "range_symbols": list(self._active_range_symbols),
             "trade_routes": [route.to_dict() for route in self._active_routes.values()],
             "symbols": list(self._active_symbols),
         }
-        if not self.config.auto_sync_weekly_symbols:
+        if not self._route_selection_sync_enabled():
             return snapshot
 
-        report = read_json_with_recovery(self.config.weekly_revalidation_report_path)
+        report = read_json_with_recovery(selection_path)
         if not report:
             snapshot["status"] = "missing_or_invalid"
             return snapshot
 
-        routes = self._routes_from_weekly_report(report)
+        routes = self._routes_from_selection_payload(report)
         if routes is None:
             snapshot["status"] = "missing_or_invalid"
             return snapshot
@@ -755,18 +937,20 @@ class LiveTradingWorker:
         )
         return snapshot
 
-    def _routes_from_weekly_report(
+    def _routes_from_selection_payload(
         self, payload: dict[str, object]
     ) -> tuple[TradeRoute, ...] | None:
-        statistical = payload.get("statistical_qualification", {})
-        if not isinstance(statistical, dict) or str(statistical.get("status", "")) != "pass":
-            return ()
         selection = payload.get("selection", {})
         if isinstance(selection, dict):
             trade_routes = self._normalize_trade_routes(selection.get("trade_routes"))
             if trade_routes is not None:
                 return trade_routes
 
+        statistical = payload.get("statistical_qualification", {})
+        if not isinstance(statistical, dict) or str(statistical.get("status", "")) != "pass":
+            return ()
+
+        if isinstance(selection, dict):
             has_selection_keys = (
                 "trend_enabled_symbols" in selection or "range_enabled_symbols" in selection
             )
@@ -822,8 +1006,6 @@ class LiveTradingWorker:
         routes: list[TradeRoute] = []
         for item in value:
             if not isinstance(item, dict):
-                continue
-            if str(item.get("statistical_status", "")) != "pass":
                 continue
             route = self._route_from_row(item)
             if route is None:
@@ -922,6 +1104,73 @@ def _csv_symbols(value: object) -> tuple[str, ...]:
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _coerce_float(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_int(value: object, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _read_line_cursor(path: Path) -> int:
+    payload = read_json_with_recovery(path)
+    return max(_coerce_int(payload.get("last_processed_line", 0)), 0)
+
+
+def _write_line_cursor(path: Path, line_no: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "last_processed_line": max(int(line_no), 0),
+        "updated_at": _now_iso(),
+    }
+    with FileLock(path.with_suffix(f"{path.suffix}.lock"), timeout_sec=1.0):
+        path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+
+
+def _position_from_order_row(row: dict[str, object]) -> PositionState | None:
+    if not bool(row.get("pre_position_exists", False)):
+        return None
+    qty = _coerce_float(row.get("pre_position_qty", 0.0) or 0.0)
+    side = str(row.get("pre_position_side", "")).strip().lower()
+    route_key = str(row.get("route_key", "")).strip()
+    if qty <= 0.0 or side not in {"buy", "sell"} or not route_key:
+        return None
+    return PositionState(
+        symbol=str(row.get("symbol", "")),
+        strategy=str(row.get("strategy", "")).strip() or "legacy",
+        timeframe=str(row.get("timeframe", "")).strip() or "15m",
+        route_key=route_key,
+        side=cast(Literal["buy", "sell"], side),
+        qty=qty,
+        avg_entry=_coerce_float(row.get("pre_position_avg_entry", 0.0) or 0.0),
+        unrealized_pnl_pct=0.0,
+        add_count=_coerce_int(row.get("pre_position_add_count", 0) or 0),
+        updated_at=datetime.now(UTC),
+    )
+
+
+def _fill_price_from_order_row(row: dict[str, object]) -> float:
+    order_type = str(row.get("order_type", "market")).strip().lower()
+    limit_price = row.get("limit_price")
+    if order_type == "limit" and isinstance(limit_price, int | float) and float(limit_price) > 0.0:
+        return float(limit_price)
+    return _coerce_float(row.get("price", 0.0) or 0.0)
 
 
 def _pandas_timeframe_rule(timeframe: str) -> str:

@@ -10,10 +10,13 @@ import pandas as pd
 
 import auto_trader.gui.app as gui_app
 from auto_trader.gui.app import (
+    _candidate_frame,
     _candidate_trade_routes_frame,
     _load_candidate_report,
     _load_weekly_candidate_report,
     _operator_summary,
+    _route_selection_path,
+    _weekly_revalidation_report_path,
     _worker_trade_routes_frame,
 )
 from auto_trader.worker.state import WorkerState
@@ -111,6 +114,155 @@ def test_load_weekly_candidate_report_uses_weekly_candidates(tmp_path: Path) -> 
     )
     assert "range_probe_candidates" in out
     assert out["decision"]["status"] == "warn"
+
+
+def test_load_candidate_report_uses_route_selection_manifest_when_rows_missing(
+    tmp_path: Path,
+) -> None:
+    route_path = tmp_path / "autotune_full_route_manifest.json"
+    route_path.write_text(
+        json.dumps(
+            {
+                "source": "autotune_full_manifest",
+                "selection": {
+                    "trade_routes": [
+                        {
+                            "symbol": "SOLUSDT",
+                            "strategy": "range",
+                            "timeframe": "30m",
+                            "expected_regime": "RANGE",
+                            "candidate_status": "core",
+                            "pf_mean": 1.26,
+                            "expectancy_bps_mean": 4.9,
+                            "period_pnl_mean": 2.34,
+                            "max_dd_mean": 0.001,
+                            "closed_trades_mean": 36.0,
+                            "statistical_status": "pass",
+                            "selection_source": "autotune",
+                            "selected_stage": "hold",
+                            "config_label": "range_hold16",
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    out = _load_candidate_report(
+        tmp_path / "candidate_report.json",
+        tmp_path / "weekly_revalidation_report.json",
+        route_path,
+    )
+
+    frame = _candidate_frame(out)
+    assert not frame.empty
+    assert frame.iloc[0]["symbol"] == "SOLUSDT"
+    assert frame.iloc[0]["strategy"] == "range"
+    assert frame.iloc[0]["candidate_status"] == "core"
+    assert float(frame.iloc[0]["pf_mean"]) == 1.26
+    assert out["core_symbols"] == ["SOLUSDT"]
+
+
+def test_load_weekly_candidate_report_falls_back_to_route_selection_manifest(
+    tmp_path: Path,
+) -> None:
+    route_path = tmp_path / "autotune_full_route_manifest.json"
+    route_path.write_text(
+        json.dumps(
+            {
+                "source": "autotune_full_manifest",
+                "selection": {
+                    "trade_routes": [
+                        {
+                            "symbol": "ETHUSDT",
+                            "strategy": "trend",
+                            "timeframe": "1h",
+                            "expected_regime": "TREND",
+                            "candidate_status": "core",
+                            "pf_mean": 2.48,
+                            "expectancy_bps_mean": 11.8,
+                            "period_pnl_mean": 1.0,
+                            "max_dd_mean": 0.011,
+                            "closed_trades_mean": 10.75,
+                            "statistical_status": "pass",
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    out = _load_weekly_candidate_report(
+        tmp_path / "missing_weekly_revalidation_report.json",
+        route_path,
+    )
+
+    frame = _candidate_frame(out)
+    assert not frame.empty
+    assert frame.iloc[0]["symbol"] == "ETHUSDT"
+    assert float(frame.iloc[0]["expectancy_bps_mean"]) == 11.8
+    assert out["core_symbols"] == ["ETHUSDT"]
+
+
+def test_weekly_revalidation_report_path_prefers_runtime_env(tmp_path: Path, monkeypatch) -> None:
+    data_dir = tmp_path / "data"
+    env_dir = data_dir / "validation" / "weekly_autotune"
+    env_dir.mkdir(parents=True)
+    weekly_path = (
+        data_dir
+        / "validation"
+        / "weekly_autotune"
+        / "weekly_revalidation"
+        / "weekly_revalidation_report.json"
+    )
+    env_path = env_dir / "route_selection_runtime.env"
+    env_path.write_text(
+        f"WEEKLY_REVALIDATION_REPORT_PATH={weekly_path}\n" f"ROUTE_SELECTION_PATH={weekly_path}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gui_app, "DATA_DIR", data_dir)
+
+    assert _weekly_revalidation_report_path() == weekly_path
+    assert _route_selection_path() == weekly_path
+
+
+def test_load_weekly_candidate_report_uses_runtime_env_default_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    data_dir = tmp_path / "data"
+    env_dir = data_dir / "validation" / "weekly_autotune"
+    weekly_dir = env_dir / "weekly_revalidation"
+    env_dir.mkdir(parents=True)
+    weekly_dir.mkdir(parents=True)
+    weekly_path = weekly_dir / "weekly_revalidation_report.json"
+    (env_dir / "route_selection_runtime.env").write_text(
+        f"WEEKLY_REVALIDATION_REPORT_PATH={weekly_path}\n",
+        encoding="utf-8",
+    )
+    weekly_path.write_text(
+        json.dumps(
+            {
+                "candidates": {
+                    "rows": [
+                        {
+                            "symbol": "SOLUSDT",
+                            "strategy": "range",
+                            "candidate_status": "core",
+                            "pf_mean": 1.26,
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gui_app, "DATA_DIR", data_dir)
+
+    out = _load_weekly_candidate_report()
+
+    assert any(row.get("symbol") == "SOLUSDT" for row in out["rows"] if isinstance(row, dict))
 
 
 def test_operator_summary_prefers_weekly_decision_reasons() -> None:

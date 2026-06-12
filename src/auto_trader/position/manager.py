@@ -80,6 +80,12 @@ class PositionManager:
     def replace_positions(self, positions: list[PositionState]) -> None:
         self._positions = {pos.route_key: pos for pos in positions}
 
+    def set_position(self, position: PositionState) -> None:
+        self._positions[position.route_key] = position
+
+    def remove_position(self, route_key: str) -> None:
+        self._positions.pop(route_key, None)
+
     def emergency_stopped(self) -> bool:
         return self._emergency_stopped
 

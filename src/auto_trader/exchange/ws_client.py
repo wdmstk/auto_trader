@@ -9,6 +9,7 @@ from typing import Any, cast
 @dataclass(frozen=True)
 class ExecutionStreamEvent:
     order_id: str
+    client_order_id: str
     symbol: str
     side: str
     status: str
@@ -28,12 +29,20 @@ class BinanceWsExecutionClient:
         if not isinstance(payload, dict):
             return None
 
-        order_id = str(payload.get("i", ""))
-        symbol = str(payload.get("s", ""))
-        side = str(payload.get("S", "")).lower()
-        status = str(payload.get("X", "")).lower()
-        qty = _to_float(payload.get("z", 0.0))
+        order_payload = payload
         event_ms = _to_int(payload.get("E", 0))
+        if str(payload.get("e", "")).upper() == "ORDER_TRADE_UPDATE":
+            nested = payload.get("o", {})
+            if not isinstance(nested, dict):
+                return None
+            order_payload = nested
+
+        order_id = str(order_payload.get("i", ""))
+        client_order_id = str(order_payload.get("c", ""))
+        symbol = str(order_payload.get("s", ""))
+        side = str(order_payload.get("S", "")).lower()
+        status = str(order_payload.get("X", "")).lower()
+        qty = _to_float(order_payload.get("z", 0.0))
         if not order_id or not symbol:
             return None
         if event_ms > 0:
@@ -42,6 +51,7 @@ class BinanceWsExecutionClient:
             event_ts = datetime.now(UTC)
         return ExecutionStreamEvent(
             order_id=order_id,
+            client_order_id=client_order_id,
             symbol=symbol,
             side=side,
             status=status,

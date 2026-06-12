@@ -33,6 +33,24 @@ python -m auto_trader.runtime
 python -m auto_trader.runtime --watch --interval-sec 2
 ```
 
+### runtime workspace を初期化する場合
+local に stale な `worker_state` / `positions` / `order_events` / `runtime_metrics` が残っていて、
+testnet 側はノーポジ前提でやり直したい場合は次を使う。
+
+```bash
+./scripts/reset_runtime_workspace.sh
+```
+
+この reset は次を行う。
+
+- `data/runtime/control_state.json` を `Trading OFF` に戻す
+- `data/runtime/worker_state.json` を空に戻す
+- `data/exchange/gateway_state.json` / `order_events.jsonl` を初期化する
+- `data/positions/positions.parquet` / `data/risk/*.parquet` を空に戻す
+- `data/validation/runtime_metrics.jsonl` と watch log を空にする
+
+`weekly_autotune` や `route_selection_runtime.env` は消さない。
+
 ## systemd サンプル
 `/etc/systemd/system/auto-trader-runtime.service`
 
@@ -68,48 +86,16 @@ sudo journalctl -u auto-trader-runtime.service -f
 ### user service で試す場合（推奨）
 root 権限なしで試すなら `~/.config/systemd/user/` を使う。
 
-```ini
-# ~/.config/systemd/user/auto-trader-runtime.service
-[Unit]
-Description=Auto Trader Runtime Control Watcher
+repo 管理の unit 例:
 
-[Service]
-Type=simple
-WorkingDirectory=/home/komug/projects/auto_trader
-Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=/home/komug/projects/auto_trader/.env
-ExecStart=/home/komug/projects/auto_trader/.venv/bin/python -m auto_trader.runtime --watch --interval-sec 2
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
+- [auto-trader-runtime.user.service.example](/home/komug/projects/auto_trader/ops/systemd/auto-trader-runtime.user.service.example:1)
+- [auto-trader-worker.user.service.example](/home/komug/projects/auto_trader/ops/systemd/auto-trader-worker.user.service.example:1)
 
-[Install]
-WantedBy=default.target
-```
+配置:
 
-```ini
-# ~/.config/systemd/user/auto-trader-worker.service
-[Unit]
-Description=Auto Trader Live Trading Worker
-After=auto-trader-runtime.service
-Requires=auto-trader-runtime.service
-
-[Service]
-Type=simple
-WorkingDirectory=/home/komug/projects/auto_trader
-Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=/home/komug/projects/auto_trader/.env
-Environment=WEEKLY_REVALIDATION_REPORT_PATH=data/validation/weekly_revalidation/weekly_revalidation_report.json
-Environment=AUTO_SYNC_WEEKLY_SYMBOLS=1
-ExecStart=/home/komug/projects/auto_trader/.venv/bin/python -m auto_trader.worker --watch --interval-sec 2
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=default.target
+```bash
+cp ops/systemd/auto-trader-runtime.user.service.example ~/.config/systemd/user/auto-trader-runtime.service
+cp ops/systemd/auto-trader-worker.user.service.example ~/.config/systemd/user/auto-trader-worker.service
 ```
 
 反映:
@@ -123,6 +109,19 @@ systemctl --user status auto-trader-worker.service
 
 `worker` は `testnet-futures-live` の認証情報を読むため、`EnvironmentFile` か `source .env` のどちらかで
 `BINANCE_FUTURES_TESTNET_API_KEY` / `BINANCE_FUTURES_TESTNET_API_SECRET` を必ず渡す。
+
+安全運用の初期値として、live worker は `TREND_ORDER_MODE=market` / `RANGE_ORDER_MODE=market` を推奨する。
+現状の `LIMIT` は `IOC` 固定で、取引所側の `expired/canceled/partial` を local position へ完全反映していないため、
+
+`ROUTE_SELECTION_PATH` は worker が live route を読み込む正本 path で、`weekly_revalidation_report.json`
+や `autotune_full_route_manifest.json` のような `selection.trade_routes` 互換 JSON を指定できる。
+正式運用で `./scripts/weekly_autotune_pipeline.sh` を使う場合は、pipeline 完了後に
+`ROUTE_SELECTION_PATH` が `weekly_revalidation_report.json` へ自動で切り替わる。
+その current 値は `data/validation/weekly_autotune/route_selection_runtime.env` に出力される。
+既存の `WEEKLY_REVALIDATION_REPORT_PATH` は後方互換として残している。
+本番系の自動売買では診断用途に留める。
+2026-06-09 時点では、OHLCV 修復後の週次再評価でも `limit` 優位の根拠は薄く、
+cost-grid は route 選定より execution 前提比較の色が強いため、運用既定は `market` 優先とする。
 
 `AUTO_SYNC_WEEKLY_SYMBOLS=0` にすると、worker は起動時に渡した `TREND_ENABLED_SYMBOLS` / `RANGE_ENABLED_SYMBOLS` を固定で使い、週次レポートの live 反映を止められる。
 
@@ -161,6 +160,42 @@ systemctl --user enable --now auto-trader-monitor.service
 systemctl --user status auto-trader-monitor.service
 journalctl --user -u auto-trader-monitor.service -f
 ```
+
+### execution stream collector を常駐化する場合
+`order_events` と `positions` を取引所の終端状態へ寄せるには、user data stream collector を常駐化する。
+
+```ini
+# ~/.config/systemd/user/auto-trader-execution-stream.service
+[Unit]
+Description=Auto Trader Execution Stream Collector
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/komug/projects/auto_trader
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/home/komug/projects/auto_trader/.env
+ExecStart=/home/komug/projects/auto_trader/.venv/bin/python -m auto_trader.exchange.user_stream --output-path data/exchange/execution_events.jsonl
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now auto-trader-execution-stream.service
+systemctl --user status auto-trader-execution-stream.service
+journalctl --user -u auto-trader-execution-stream.service -f
+```
+
+確認ポイント:
+- `data/exchange/execution_events.jsonl` が更新されること
+- worker summary の `execution_sync.applied` が 0 のまま張り付かないこと
+- `order_events.jsonl` に `sync_source=execution_report` 行が追記されること
 
 ### risk を timer で定期更新する場合
 `risk_eval.parquet` は常駐プロセスよりも timer の定期実行が扱いやすい。
@@ -250,13 +285,14 @@ journalctl --user -u auto-trader-risk-refresh.service -f
 ### 週次
 - `./scripts/weekly_strategy_revalidation.sh`
   - `timeframe_comparison`
-  - `backtest_cost_grid`
   - drift / symbol gating 連携
   - 戦略の健全性確認用の本線
+  - 既定では `RUN_COST_GRID=0` で動かし、重い cost-grid は含めない
   - 詳細な `range` / `trend` の推奨モードは `docs/implementation/weekly-revalidation-operations.md` を参照する
 - `./scripts/backtest_cost_grid.sh`
-  - 単発 backtest の TAT が 5 分以上、または複数 symbol / timeframe / parameter を振る検証は週次に集約する
+  - 単発 backtest の TAT が 5 分以上、または複数 symbol / timeframe / parameter を振る診断に使う
   - `market` / `limit` やコスト感度をまとめて比較したいときに使う
+  - 本線に含める場合は `RUN_COST_GRID=1 ./scripts/weekly_strategy_revalidation.sh`
 - `./scripts/weekly_strategy_revalidation_with_core.sh`
   - `weekly_core_feedback.env` を自動で読み込み、週次定期実行に core 候補を反映する入口
   - `result_list.md` と `range_probe_result_list.md` を補助生成する
@@ -269,6 +305,9 @@ journalctl --user -u auto-trader-risk-refresh.service -f
   - 自動反映を止める場合は `AUTO_SYNC_WEEKLY_SYMBOLS=0` を設定する
 
 ### 必要時
+- `./scripts/ohlcv_coverage_check.sh`
+  - `data/parquet/*_1m.parquet` の coverage / gap を点検したいとき
+  - 週次再評価の前に、OHLCV の期間不足や大きな欠損がないかを確認する
 - `./scripts/timeframe_comparison.sh`
   - 足種や候補比較を個別に見直したいとき
 - `./scripts/backtest_cost_grid.sh`
@@ -283,7 +322,6 @@ journalctl --user -u auto-trader-risk-refresh.service -f
 ### 自動化済みの検証
 - `./scripts/weekly_strategy_revalidation.sh`
   - `timeframe_comparison`
-  - `backtest_cost_grid`
 - `./scripts/prepare_long_window_visual_data.sh`
   - `walkforward_visual_check`
 - `./scripts/runtime_control_validation_suite.sh`
@@ -298,6 +336,25 @@ journalctl --user -u auto-trader-risk-refresh.service -f
 - 監査・拡張検証: `runtime_control_validation_suite.sh`
   - `weekly_strategy_revalidation` に加え、`parallel_walkforward` / `chaos_test` もまとめて回す上位ラッパー
   - 必要なら user systemd timer か cron で回す
+
+#### OHLCV coverage 点検
+週次再評価の前提として、`data/parquet/*_1m.parquet` の期間と gap を確認する。
+
+```bash
+./scripts/ohlcv_coverage_check.sh
+cat data/validation/ohlcv_coverage_1m.md
+cat data/validation/ohlcv_gaps_1m.md
+```
+
+- `Span Days` が短い場合:
+  - `FROM_TS` を過去に伸ばして `./scripts/multi_symbol_data_pipeline.sh` を再実行する
+- `Gaps > Warn` が多い場合:
+  - `ohlcv_gaps_1m.md` で gap 区間を確認し、同じ期間を再取得して coverage を再確認する
+- TAT 比較をしたい場合:
+  - `./scripts/multi_symbol_data_pipeline_benchmark.sh`
+  - `data/validation/multi_symbol_data_pipeline_benchmark.json` に逐次/並列の秒数と speedup を保存する
+- 目安:
+  - 統計検証を意識するなら 30 日超の OOS を取れるだけの連続した 1m 履歴を確保する
 
 #### user service で定期実行する例（監査用）
 `runtime_control_validation_suite.sh` を定期実行したい場合のみ使う。

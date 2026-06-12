@@ -130,3 +130,29 @@ def test_recommend_symbol_candidates_exposes_shadow_routes() -> None:
     assert out["route_counts"] == {"core": 1, "probe": 0, "watchlist": 1}
     assert out["symbol_counts"] == {"core": 1, "probe": 0, "watchlist": 0}
     assert out["shadow_routes_by_symbol"]["SOLUSDT"][0]["strategy"] == "trend"
+
+
+def test_recommend_symbol_candidates_respects_custom_thresholds() -> None:
+    summary = {
+        "rows": [
+            {
+                "symbol": "ETHUSDT",
+                "timeframe": "15m",
+                "strategy": "trend",
+                "pf_mean": 1.12,
+                "expectancy_bps_mean": 1.5,
+                "period_pnl_mean": 0.2,
+                "max_dd_mean": 0.01,
+                "closed_trades_mean": 12.0,
+            }
+        ]
+    }
+
+    default_out = recommend_symbol_candidates(summary, thresholds=CandidateThresholds())
+    custom_out = recommend_symbol_candidates(
+        summary,
+        thresholds=CandidateThresholds(core_min_pf=1.1),
+    )
+
+    assert default_out["rows"][0]["candidate_status"] == "probe"
+    assert custom_out["rows"][0]["candidate_status"] == "core"

@@ -9,6 +9,8 @@ def build_trade_route_selection(
     report: str | Path | dict[str, Any],
     *,
     default_timeframe: str = "15m",
+    seed_manifest: str | Path | dict[str, Any] | None = None,
+    statistical_gate_mode: str = "hard",
 ) -> dict[str, Any]:
     payload = _load_obj(report)
     primary = payload.get("candidates", payload)
@@ -20,40 +22,37 @@ def build_trade_route_selection(
     statistical_status = str(statistical.get("status", "missing"))
 
     rows = _candidate_rows(primary) + _candidate_rows(probe)
-    core_rows = [
-        row
-        for row in rows
-        if str(row.get("candidate_status", "")) == "core"
-        and statistical_status == "pass"
-        and _row_route_key(row) in passed_route_keys
-    ]
-    ordered = sorted(core_rows, key=_route_sort_key, reverse=True)
-
-    selected: list[dict[str, Any]] = []
-    for row in ordered:
-        symbol = str(row.get("symbol", "")).strip()
-        if not symbol:
-            continue
-        strategy = str(row.get("strategy", "")).strip()
-        if strategy not in {"trend", "range"}:
-            continue
-        timeframe = str(row.get("timeframe", "")).strip() or default_timeframe
-        selected.append(
-            {
-                "symbol": symbol,
-                "strategy": strategy,
-                "timeframe": timeframe,
-                "expected_regime": "TREND" if strategy == "trend" else "RANGE",
-                "candidate_status": str(row.get("candidate_status", "")),
-                "pf_mean": _num(row.get("pf_mean", 0.0)),
-                "expectancy_bps_mean": _num(row.get("expectancy_bps_mean", 0.0)),
-                "period_pnl_mean": _num(row.get("period_pnl_mean", 0.0)),
-                "max_dd_mean": _num(row.get("max_dd_mean", 0.0)),
-                "closed_trades_mean": _num(row.get("closed_trades_mean", 0.0)),
-                "candidate_score": _num(row.get("candidate_score", 0.0)),
-                "statistical_status": "pass",
-                "qualification_report_path": str(statistical.get("qualification_report_path", "")),
-            }
+    selected: list[dict[str, Any]]
+    if seed_manifest is not None:
+        selected = _select_seed_routes(
+            rows,
+            seed_manifest=seed_manifest,
+            default_timeframe=default_timeframe,
+            statistical_status=statistical_status,
+            passed_route_keys=passed_route_keys,
+            qualification_report_path=str(statistical.get("qualification_report_path", "")),
+            statistical_gate_mode=statistical_gate_mode,
+        )
+    else:
+        core_rows = [
+            row
+            for row in rows
+            if str(row.get("candidate_status", "")) == "core"
+            and statistical_status == "pass"
+            and _row_route_key(row) in passed_route_keys
+        ]
+        ordered = sorted(core_rows, key=_route_sort_key, reverse=True)
+        selected_routes = [
+            _selection_route_from_row(
+                row,
+                qualification_report_path=str(statistical.get("qualification_report_path", "")),
+                default_timeframe=default_timeframe,
+            )
+            for row in ordered
+        ]
+        selected = cast(
+            list[dict[str, Any]],
+            [route for route in selected_routes if route is not None],
         )
 
     trend_symbols = [route["symbol"] for route in selected if route["strategy"] == "trend"]
@@ -68,7 +67,123 @@ def build_trade_route_selection(
         "trend_enabled_symbols": _csv_symbols(trend_symbols),
         "range_enabled_symbols": _csv_symbols(range_symbols),
         "symbol_timeframes": symbol_timeframes,
+        "statistical_gate_mode": statistical_gate_mode,
     }
+
+
+def _select_seed_routes(
+    rows: list[dict[str, Any]],
+    *,
+    seed_manifest: str | Path | dict[str, Any],
+    default_timeframe: str,
+    statistical_status: str,
+    passed_route_keys: set[str],
+    qualification_report_path: str,
+    statistical_gate_mode: str,
+) -> list[dict[str, Any]]:
+    gate_mode = str(statistical_gate_mode).strip().lower() or "hard"
+    if statistical_status == "missing":
+        return []
+    seed_payload = _load_obj(seed_manifest)
+    seed_selection = seed_payload.get("selection", {}) if isinstance(seed_payload, dict) else {}
+    seed_routes = seed_selection.get("trade_routes", []) if isinstance(seed_selection, dict) else []
+    if not isinstance(seed_routes, list) or not seed_routes:
+        seeded = resolve_live_trade_routes(seed_manifest, default_timeframe=default_timeframe)
+        seed_routes = seeded.get("trade_routes", [])
+    row_by_key = {
+        _row_route_key(row): row
+        for row in rows
+        if isinstance(row, dict) and all(_route_fields(row))
+    }
+    selected: list[dict[str, Any]] = []
+    for raw_route in seed_routes:
+        if not isinstance(raw_route, dict):
+            continue
+        route = _route_from_row(raw_route, default_timeframe=default_timeframe)
+        if route is None:
+            continue
+        route_key = _row_route_key(route)
+        row = row_by_key.get(route_key)
+        if row is None:
+            continue
+        statistical_route_status = (
+            "pass" if statistical_status == "pass" and route_key in passed_route_keys else "fail"
+        )
+        candidate_status = str(row.get("candidate_status", route.get("candidate_status", "")))
+        if candidate_status != "core":
+            continue
+        if gate_mode == "hard" and statistical_route_status != "pass":
+            continue
+        enriched = dict(raw_route)
+        enriched.update(
+            {
+                "symbol": str(route["symbol"]),
+                "strategy": str(route["strategy"]),
+                "timeframe": str(route["timeframe"]),
+                "expected_regime": str(route["expected_regime"]),
+                "candidate_status": candidate_status,
+                "pf_mean": _num(row.get("pf_mean", 0.0)),
+                "expectancy_bps_mean": _num(row.get("expectancy_bps_mean", 0.0)),
+                "period_pnl_mean": _num(row.get("period_pnl_mean", 0.0)),
+                "max_dd_mean": _num(row.get("max_dd_mean", 0.0)),
+                "closed_trades_mean": _num(row.get("closed_trades_mean", 0.0)),
+                "candidate_score": _num(row.get("candidate_score", 0.0)),
+                "statistical_status": statistical_route_status,
+                "qualification_report_path": qualification_report_path,
+            }
+        )
+        selected.append(enriched)
+    return selected
+
+
+def _selection_route_from_row(
+    row: dict[str, Any],
+    *,
+    qualification_report_path: str,
+    default_timeframe: str,
+) -> dict[str, Any] | None:
+    route = _route_from_row(row, default_timeframe=default_timeframe)
+    if route is None:
+        return None
+    route.update(
+        {
+            "pf_mean": _num(row.get("pf_mean", 0.0)),
+            "expectancy_bps_mean": _num(row.get("expectancy_bps_mean", 0.0)),
+            "period_pnl_mean": _num(row.get("period_pnl_mean", 0.0)),
+            "max_dd_mean": _num(row.get("max_dd_mean", 0.0)),
+            "closed_trades_mean": _num(row.get("closed_trades_mean", 0.0)),
+            "candidate_score": _num(row.get("candidate_score", 0.0)),
+            "statistical_status": "pass",
+            "qualification_report_path": qualification_report_path,
+        }
+    )
+    return route
+
+
+def _route_fields(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(row.get("symbol", "")).strip().upper(),
+        str(row.get("timeframe", "")).strip(),
+        str(row.get("strategy", "")).strip(),
+    )
+
+
+def validate_trade_route_selection(selection: object) -> None:
+    if not isinstance(selection, dict):
+        raise ValueError("selection must be an object")
+    trade_routes = selection.get("trade_routes", [])
+    if not isinstance(trade_routes, list):
+        raise ValueError("selection.trade_routes must be a list")
+    for index, route in enumerate(trade_routes):
+        if not isinstance(route, dict):
+            raise ValueError(f"selection.trade_routes[{index}] must be an object")
+        statistical_status = str(route.get("statistical_status", "")).strip()
+        if not statistical_status:
+            raise ValueError(f"selection.trade_routes[{index}].statistical_status is required")
+        if statistical_status not in {"pass", "fail"}:
+            raise ValueError(
+                f"selection.trade_routes[{index}].statistical_status must be pass/fail"
+            )
 
 
 def resolve_live_trade_routes(
@@ -186,7 +301,11 @@ def _normalize_trade_routes(
     for item in value:
         if not isinstance(item, dict):
             continue
-        route = _route_from_row(item, default_timeframe=default_timeframe)
+        route = _route_from_row(
+            item,
+            default_timeframe=default_timeframe,
+            preserve_metadata=True,
+        )
         if route is None:
             continue
         routes.append(route)
@@ -232,7 +351,12 @@ def _legacy_routes_from_symbols(
     return tuple(routes) if routes else None
 
 
-def _route_from_row(row: dict[str, Any], *, default_timeframe: str) -> dict[str, Any] | None:
+def _route_from_row(
+    row: dict[str, Any],
+    *,
+    default_timeframe: str,
+    preserve_metadata: bool = False,
+) -> dict[str, Any] | None:
     symbol = str(row.get("symbol", "")).strip().upper()
     strategy = str(row.get("strategy", "")).strip()
     if not symbol or strategy not in {"trend", "range"}:
@@ -241,13 +365,29 @@ def _route_from_row(row: dict[str, Any], *, default_timeframe: str) -> dict[str,
     expected_regime = str(row.get("expected_regime", "")).strip() or (
         "TREND" if strategy == "trend" else "RANGE"
     )
-    return {
+    route: dict[str, Any] = {
         "symbol": symbol,
         "strategy": strategy,
         "timeframe": timeframe,
         "expected_regime": expected_regime,
         "candidate_status": str(row.get("candidate_status", "core")),
     }
+    if preserve_metadata:
+        for key in (
+            "selection_source",
+            "selected_stage",
+            "config_label",
+            "statistical_status",
+            "qualification_report_path",
+        ):
+            if key in row:
+                value = row.get(key)
+                if value is not None:
+                    route[key] = value
+        params = row.get("params")
+        if isinstance(params, dict):
+            route["params"] = dict(params)
+    return route
 
 
 def _csv_symbols(values: Any) -> list[str]:

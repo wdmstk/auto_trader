@@ -4,8 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-REPORT_PATH="${REPORT_PATH:-data/validation/weekly_revalidation/candidate_report.json}"
-OUT_PATH="${OUT_PATH:-data/validation/weekly_revalidation/result_list.md}"
+OUT_DIR="${OUT_DIR:-data/validation/weekly_revalidation}"
+REPORT_PATH="${REPORT_PATH:-$OUT_DIR/candidate_report.json}"
+OUT_PATH="${OUT_PATH:-$OUT_DIR/result_list.md}"
 
 mkdir -p "$(dirname "$OUT_PATH")"
 

@@ -153,4 +153,78 @@ def test_weekly_revalidation_uses_selected_symbols_for_range(tmp_path: Path) -> 
     assert report["metrics"]["range"]["pf"] == 5.5
     assert report["metrics"]["range"]["exp_bps"] == 35.25
     assert report["limit_metrics"]["range"]["exp_bps"] == -3.0
+    assert report["overview"]["trend_performance"]["pf"] == 2.15
+    assert report["overview"]["range_performance"]["pf"] == 5.5
+    assert report["feature_drift"]["status"] == "pass"
     assert report["statistical_qualification"]["status"] == "pass"
+
+
+def test_weekly_revalidation_uses_route_selection_manifest_for_mixed_timeframes(
+    tmp_path: Path,
+) -> None:
+    market_summary = {
+        "rows": [
+            {
+                "symbol": "BNBUSDT",
+                "timeframe": "1h",
+                "strategy": "trend",
+                "pf_mean": 1.34,
+                "expectancy_bps_mean": 18.23,
+                "period_pnl_mean": 7.85,
+                "max_dd_mean": 0.003,
+            },
+            {
+                "symbol": "SOLUSDT",
+                "timeframe": "30m",
+                "strategy": "range",
+                "pf_mean": 1.22,
+                "expectancy_bps_mean": 6.1,
+                "period_pnl_mean": 1.8,
+                "max_dd_mean": 0.04,
+            },
+            {
+                "symbol": "BNBUSDT",
+                "timeframe": "15m",
+                "strategy": "trend",
+                "pf_mean": 0.1,
+                "expectancy_bps_mean": -50.0,
+                "period_pnl_mean": -10.0,
+                "max_dd_mean": 0.5,
+            },
+        ]
+    }
+    report = build_weekly_revalidation_report(
+        market_summary,
+        {"rows": []},
+        symbol_gating={"trend_enabled_symbols": [], "range_enabled_symbols": []},
+        candidate_report={"status": "pass"},
+        drift_report={"status": "pass"},
+        statistical_report={"status": "pass", "passed_route_keys": []},
+        route_selection={
+            "selection": {
+                "trade_routes": [
+                    {
+                        "symbol": "BNBUSDT",
+                        "strategy": "trend",
+                        "timeframe": "1h",
+                        "expected_regime": "TREND",
+                        "candidate_status": "core",
+                        "statistical_status": "pass",
+                    },
+                    {
+                        "symbol": "SOLUSDT",
+                        "strategy": "range",
+                        "timeframe": "30m",
+                        "expected_regime": "RANGE",
+                        "candidate_status": "core",
+                        "statistical_status": "pass",
+                    },
+                ]
+            }
+        },
+        timeframe="15m",
+    )
+
+    assert report["selection"]["route_selection_source"] == "manifest"
+    assert report["metrics"]["trend"]["pf"] == 1.34
+    assert report["metrics"]["range"]["pf"] == 1.22
