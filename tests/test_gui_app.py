@@ -14,6 +14,7 @@ from auto_trader.gui.app import (
     _candidate_trade_routes_frame,
     _load_candidate_report,
     _load_weekly_candidate_report,
+    _manifest_weekly_diff_rows,
     _operator_summary,
     _route_selection_path,
     _weekly_revalidation_report_path,
@@ -114,6 +115,36 @@ def test_load_weekly_candidate_report_uses_weekly_candidates(tmp_path: Path) -> 
     )
     assert "range_probe_candidates" in out
     assert out["decision"]["status"] == "warn"
+
+
+def test_manifest_weekly_diff_rows_from_weekly_report() -> None:
+    rows = _manifest_weekly_diff_rows(
+        {
+            "manifest_weekly_diff": {
+                "route_count": 1,
+                "rows": [
+                    {
+                        "route_key": "trend:BNBUSDT:1h",
+                        "selected_stage": "trend_next_step",
+                        "metric_match": True,
+                        "weekly_statistical_status": "fail",
+                        "source_trade_oos_days": 25.04,
+                        "weekly_trade_oos_days": 25.04,
+                        "weekly_fold_oos_days": 47.38,
+                        "fold_window_drift_days": 22.34,
+                        "closed_trades_mean": 8.25,
+                        "statistical_reasons": ["min_oos_days", "min_route_trades"],
+                    }
+                ],
+            }
+        }
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["route"] == "trend:BNBUSDT:1h"
+    assert rows[0]["metrics_match"] == "yes"
+    assert rows[0]["weekly_fold_oos_days"] == 47.38
+    assert rows[0]["statistical_reasons"] == "min_oos_days, min_route_trades"
 
 
 def test_load_candidate_report_uses_route_selection_manifest_when_rows_missing(
