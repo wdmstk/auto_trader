@@ -98,7 +98,7 @@ def _classify_group(g: pd.DataFrame, cfg: RegimeConfig) -> pd.DataFrame:
         ret_z >= cfg.high_vol_return_abs_zscore_threshold
     )
     trend_mask = (
-        (g["breakout_persistence"] >= 0.6)
+        (g["breakout_persistence"] >= (cfg.trend_breakout_persistence_min_bars / 5.0))
         & (g["momentum_persistence"] >= 0.5)
         & (adx_proxy >= cfg.trend_adx_threshold)
     )

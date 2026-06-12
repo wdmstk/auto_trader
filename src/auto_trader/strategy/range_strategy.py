@@ -17,6 +17,7 @@ class RangeStrategyConfig:
     require_reversal_candle: bool = True
     min_entry_score: float = 1.0
     reentry_cooldown_bars: int = 0
+    max_hold_bars: int = 0
     enabled_symbols: tuple[str, ...] = ()
 
 
@@ -54,6 +55,8 @@ def generate_range_signals(
     size_ratio: list[float] = []
 
     cooldown_left: dict[tuple[str, str], int] = {}
+    hold_bars: dict[tuple[str, str], int] = {}
+    in_position_state: dict[tuple[str, str], bool] = {}
     for i in range(n_rows):
         reasons: list[str] = []
         blocked = bool(risk_blocked_values[i])
@@ -61,6 +64,8 @@ def generate_range_signals(
         timeframe = str(timeframe_values[i])
         key = (symbol, timeframe)
         cd = int(cooldown_left.get(key, 0))
+        in_position = bool(in_position_state.get(key, False))
+        held_bars = int(hold_bars.get(key, 0))
         symbol_enabled = (not enabled_symbols) or (symbol in enabled_symbols)
 
         regime = str(regime_values[i])
@@ -87,6 +92,7 @@ def generate_range_signals(
         entry = (
             allow_entry_gate
             and symbol_enabled
+            and (not in_position)
             and (cd <= 0)
             and score_ok
             and rsi_ok
@@ -103,16 +109,25 @@ def generate_range_signals(
                     "RG_ENTRY_REVERSAL_CANDLE",
                 ]
             )
-        elif allow_entry_gate and symbol_enabled and (cd <= 0) and (not score_ok):
+        elif (
+            allow_entry_gate
+            and symbol_enabled
+            and (not in_position)
+            and (cd <= 0)
+            and (not score_ok)
+        ):
             reasons.append("RG_BLOCK_SCORE_LOW")
 
         exit_mr = abs(float(mr_values[i])) <= cfg.exit_mean_reversion_neutral_abs
         exit_regime = regime != "RANGE"
-        exit_sig = exit_mr or exit_regime
+        exit_max_hold = cfg.max_hold_bars > 0 and in_position and held_bars >= cfg.max_hold_bars
+        exit_sig = exit_mr or exit_regime or exit_max_hold
         if exit_mr:
             reasons.append("RG_EXIT_MEAN_REVERTED")
         if exit_regime:
             reasons.append("RG_EXIT_REGIME_CHANGED")
+        if exit_max_hold:
+            reasons.append("RG_EXIT_MAX_HOLD")
 
         if not reasons:
             reasons.append("RG_EXIT_REGIME_CHANGED")
@@ -121,6 +136,16 @@ def generate_range_signals(
             cooldown_left[key] = int(cfg.reentry_cooldown_bars)
         elif cd > 0:
             cooldown_left[key] = cd - 1
+
+        if entry:
+            in_position_state[key] = True
+            hold_bars[key] = 0
+        elif in_position and not exit_sig:
+            in_position_state[key] = True
+            hold_bars[key] = held_bars + 1
+        else:
+            in_position_state[key] = False
+            hold_bars[key] = 0
 
         entry_signal.append(bool(entry))
         exit_signal.append(bool(exit_sig))

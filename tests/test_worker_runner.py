@@ -137,6 +137,53 @@ def _write_weekly_route_report(path: Path) -> None:
     )
 
 
+def _write_weekly_route_report_without_statistical_status(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "statistical_qualification": {"status": "pass"},
+                "selection": {
+                    "trade_routes": [
+                        {
+                            "symbol": "BNBUSDT",
+                            "strategy": "range",
+                            "timeframe": "30m",
+                            "expected_regime": "RANGE",
+                            "candidate_status": "core",
+                        }
+                    ]
+                },
+            },
+            ensure_ascii=True,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_weekly_route_report_without_statistical_qualification(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "selection": {
+                    "trade_routes": [
+                        {
+                            "symbol": "BNBUSDT",
+                            "strategy": "range",
+                            "timeframe": "30m",
+                            "expected_regime": "RANGE",
+                            "candidate_status": "core",
+                        }
+                    ]
+                },
+            },
+            ensure_ascii=True,
+        ),
+        encoding="utf-8",
+    )
+
+
 def _write_weekly_multi_route_report(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -157,6 +204,39 @@ def _write_weekly_multi_route_report(path: Path) -> None:
                             "symbol": "XRPUSDT",
                             "strategy": "trend",
                             "timeframe": "15m",
+                            "expected_regime": "TREND",
+                            "candidate_status": "core",
+                            "statistical_status": "pass",
+                        },
+                    ]
+                },
+            },
+            ensure_ascii=True,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_autotune_manifest(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "source": "autotune_full_manifest",
+                "selection": {
+                    "trade_routes": [
+                        {
+                            "symbol": "SOLUSDT",
+                            "strategy": "range",
+                            "timeframe": "30m",
+                            "expected_regime": "RANGE",
+                            "candidate_status": "core",
+                            "statistical_status": "pass",
+                        },
+                        {
+                            "symbol": "ETHUSDT",
+                            "strategy": "trend",
+                            "timeframe": "1h",
                             "expected_regime": "TREND",
                             "candidate_status": "core",
                             "statistical_status": "pass",
@@ -370,6 +450,88 @@ def test_worker_refreshes_trade_routes_with_timeframe(tmp_path: Path, monkeypatc
     assert state["last_processed_bars"]["range:BNBUSDT:30m"] == str(pd.to_datetime(ts, utc=True))
 
 
+def test_worker_accepts_route_report_without_statistical_status(
+    tmp_path: Path, monkeypatch
+) -> None:
+    transport = DummyTransport()
+    worker = _worker(tmp_path, transport)
+    weekly_path = (
+        tmp_path / "validation" / "weekly_revalidation" / "weekly_revalidation_report.json"
+    )
+    _write_weekly_route_report_without_statistical_status(weekly_path)
+    _runtime_state(tmp_path / "runtime" / "control_state.json", trading_enabled=True)
+    ts = datetime.now(UTC).replace(microsecond=0)
+    frames = {symbol: _frame(ts) for symbol in ("ETHUSDT", "XRPUSDT", "BNBUSDT")}
+    monkeypatch.setattr(worker, "_load_closed_market_frames", lambda: frames)
+
+    monkeypatch.setattr(
+        worker,
+        "_build_signal_frame",
+        lambda *, symbol, frame_15m, route, timeframe: pd.DataFrame(
+            [
+                {
+                    "timestamp": ts,
+                    "regime": "RANGE" if timeframe == "30m" else "TREND",
+                    "entry_signal": symbol == "BNBUSDT" and route == "range" and timeframe == "30m",
+                    "exit_signal": False,
+                    "add_signal": False,
+                    "pass_filter": True,
+                    "signal_reason_codes": ["ENTRY_OK"] if symbol == "BNBUSDT" else [],
+                    "position_size_ratio": 0.1,
+                }
+            ]
+        ),
+    )
+
+    summary = worker.run_once()
+
+    route_key = build_route_key(strategy="range", symbol="BNBUSDT", timeframe="30m")
+    assert summary["symbol_sync"]["status"] == "updated"
+    assert route_key in summary["routes"]
+    assert summary["routes"][route_key]["trade"]["gateway_status"] == "ack"
+
+
+def test_worker_accepts_trade_routes_without_statistical_qualification(
+    tmp_path: Path, monkeypatch
+) -> None:
+    transport = DummyTransport()
+    worker = _worker(tmp_path, transport)
+    weekly_path = (
+        tmp_path / "validation" / "weekly_revalidation" / "weekly_revalidation_report.json"
+    )
+    _write_weekly_route_report_without_statistical_qualification(weekly_path)
+    _runtime_state(tmp_path / "runtime" / "control_state.json", trading_enabled=True)
+    ts = datetime.now(UTC).replace(microsecond=0)
+    frames = {symbol: _frame(ts) for symbol in ("ETHUSDT", "XRPUSDT", "BNBUSDT")}
+    monkeypatch.setattr(worker, "_load_closed_market_frames", lambda: frames)
+
+    monkeypatch.setattr(
+        worker,
+        "_build_signal_frame",
+        lambda *, symbol, frame_15m, route, timeframe: pd.DataFrame(
+            [
+                {
+                    "timestamp": ts,
+                    "regime": "RANGE" if timeframe == "30m" else "TREND",
+                    "entry_signal": symbol == "BNBUSDT" and route == "range" and timeframe == "30m",
+                    "exit_signal": False,
+                    "add_signal": False,
+                    "pass_filter": True,
+                    "signal_reason_codes": ["ENTRY_OK"] if symbol == "BNBUSDT" else [],
+                    "position_size_ratio": 0.1,
+                }
+            ]
+        ),
+    )
+
+    summary = worker.run_once()
+
+    route_key = build_route_key(strategy="range", symbol="BNBUSDT", timeframe="30m")
+    assert summary["symbol_sync"]["status"] == "updated"
+    assert route_key in summary["routes"]
+    assert summary["routes"][route_key]["trade"]["gateway_status"] == "ack"
+
+
 def test_worker_keeps_previous_symbols_when_weekly_report_is_broken(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -483,6 +645,69 @@ def test_worker_supports_multiple_routes_for_same_symbol(tmp_path: Path, monkeyp
     assert worker.position_manager.get(trend_key) is not None
 
 
+def test_worker_refreshes_routes_from_autotune_manifest_path(tmp_path: Path, monkeypatch) -> None:
+    transport = DummyTransport()
+    worker = _worker(tmp_path, transport)
+    manifest_path = (
+        tmp_path / "validation" / "core_route_autotune" / "autotune_full_route_manifest.json"
+    )
+    _write_autotune_manifest(manifest_path)
+    _write_weekly_report(
+        tmp_path / "validation" / "weekly_revalidation" / "weekly_revalidation_report.json",
+        trend=["ADAUSDT"],
+        range_=["BNBUSDT"],
+    )
+    worker.config = WorkerConfig(
+        **{
+            **worker.config.__dict__,
+            "route_selection_path": str(manifest_path),
+        }
+    )
+    _runtime_state(tmp_path / "runtime" / "control_state.json", trading_enabled=True)
+    ts = datetime.now(UTC).replace(microsecond=0)
+    monkeypatch.setattr(
+        worker,
+        "_load_closed_market_frames",
+        lambda: {"SOLUSDT": _frame(ts), "ETHUSDT": _frame(ts)},
+    )
+
+    def build_signal_frame(
+        *, symbol: str, frame_15m: pd.DataFrame, route: str, timeframe: str
+    ) -> pd.DataFrame:
+        is_entry = (symbol, route, timeframe) in {
+            ("SOLUSDT", "range", "30m"),
+            ("ETHUSDT", "trend", "1h"),
+        }
+        return pd.DataFrame(
+            [
+                {
+                    "timestamp": ts,
+                    "regime": "TREND" if route == "trend" else "RANGE",
+                    "entry_signal": is_entry,
+                    "exit_signal": False,
+                    "add_signal": False,
+                    "pass_filter": True,
+                    "signal_reason_codes": ["ENTRY_OK"] if is_entry else [],
+                    "position_size_ratio": 0.1,
+                }
+            ]
+        )
+
+    monkeypatch.setattr(worker, "_build_signal_frame", build_signal_frame)
+
+    summary = worker.run_once()
+
+    assert summary["symbol_sync"]["status"] == "updated"
+    assert summary["symbol_sync"]["selection_path"] == str(manifest_path)
+    assert summary["trade_symbols"]["range_symbols"] == ["SOLUSDT"]
+    assert summary["trade_symbols"]["trend_symbols"] == ["ETHUSDT"]
+    assert {route["timeframe"] for route in summary["trade_symbols"]["trade_routes"]} == {
+        "30m",
+        "1h",
+    }
+    assert transport.calls == 2
+
+
 def test_worker_logs_normalized_order_values(tmp_path: Path, monkeypatch) -> None:
     class PrecisionTransport(DummyTransport):
         def normalize_order_request(self, order):
@@ -533,3 +758,181 @@ def test_worker_logs_normalized_order_values(tmp_path: Path, monkeypatch) -> Non
     route_key = build_route_key(strategy="trend", symbol="ETHUSDT", timeframe="15m")
     assert summary["routes"][route_key]["trade"]["qty"] == 100.0
     assert summary["routes"][route_key]["trade"]["limit_price"] == 0.12
+
+
+def test_worker_order_events_include_side_and_latency(tmp_path: Path, monkeypatch) -> None:
+    transport = DummyTransport()
+    worker = _worker(tmp_path, transport)
+    _runtime_state(tmp_path / "runtime" / "control_state.json", trading_enabled=True)
+    ts = datetime.now(UTC).replace(microsecond=0)
+    monkeypatch.setattr(worker, "_load_closed_market_frames", lambda: {"ETHUSDT": _frame(ts)})
+
+    monkeypatch.setattr(
+        worker,
+        "_build_signal_frame",
+        lambda *, symbol, frame_15m, route, timeframe: pd.DataFrame(
+            [
+                {
+                    "timestamp": ts,
+                    "regime": "TREND",
+                    "entry_signal": True,
+                    "exit_signal": False,
+                    "add_signal": False,
+                    "pass_filter": True,
+                    "signal_reason_codes": ["ENTRY_OK"],
+                    "position_size_ratio": 0.1,
+                }
+            ]
+        ),
+    )
+
+    worker._active_routes = {
+        build_route_key(strategy="trend", symbol="ETHUSDT", timeframe="15m"): worker._active_routes[
+            build_route_key(strategy="trend", symbol="ETHUSDT", timeframe="15m")
+        ]
+    }
+    worker._active_symbols = ("ETHUSDT",)
+    worker._active_trend_symbols = ("ETHUSDT",)
+    worker._active_range_symbols = ()
+
+    worker.run_once()
+
+    rows = (tmp_path / "order_events.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(rows) == 1
+    payload = json.loads(rows[0])
+    assert payload["side"] == "buy"
+    assert isinstance(payload["latency_ms"], int)
+
+
+def test_worker_reconciles_expired_limit_entry_to_flat_position(tmp_path: Path) -> None:
+    transport = DummyTransport()
+    worker = _worker(tmp_path, transport)
+
+    result = worker._submit_order(
+        symbol="ETHUSDT",
+        side="buy",
+        qty=0.5,
+        order_type="limit",
+        limit_price=100.0,
+        signal_ts=datetime.now(UTC).replace(microsecond=0),
+        regime="TREND",
+        pass_filter=True,
+        strategy="trend",
+        timeframe="15m",
+        route_key=build_route_key(strategy="trend", symbol="ETHUSDT", timeframe="15m"),
+        allow_runtime_gate=True,
+        action="entry",
+        price=100.0,
+        is_add=False,
+        pre_position=None,
+    )
+
+    assert result["gateway_status"] == "ack"
+    assert (
+        worker.position_manager.get(
+            build_route_key(strategy="trend", symbol="ETHUSDT", timeframe="15m")
+        )
+        is not None
+    )
+
+    execution_events = tmp_path / "execution_events.jsonl"
+    execution_events.write_text(
+        (
+            '{"stream":"ethusdt@executionReport","data":{"E":1704067200000,'
+            f'"i":"{result["order_id"]}","c":"{result["client_order_id"]}",'
+            '"s":"ETHUSDT","S":"BUY","X":"EXPIRED","z":"0.0"}}\n'
+        ),
+        encoding="utf-8",
+    )
+    worker.config = WorkerConfig(
+        **{
+            **worker.config.__dict__,
+            "execution_events_path": str(execution_events),
+            "execution_cursor_path": str(tmp_path / "execution_cursor.json"),
+        }
+    )
+
+    sync = worker.reconcile_execution_events_once()
+
+    assert sync["applied"] == 1
+    assert (
+        worker.position_manager.get(
+            build_route_key(strategy="trend", symbol="ETHUSDT", timeframe="15m")
+        )
+        is None
+    )
+    rows = (tmp_path / "order_events.jsonl").read_text(encoding="utf-8").splitlines()
+    payload = json.loads(rows[-1])
+    assert payload["sync_source"] == "execution_report"
+    assert payload["status"] == "expired"
+    assert payload["reconciled_position_qty"] == 0.0
+
+
+def test_worker_reconciles_partial_exit_and_preserves_avg_entry(tmp_path: Path) -> None:
+    transport = DummyTransport()
+    worker = _worker(tmp_path, transport)
+    route_key = build_route_key(strategy="trend", symbol="ETHUSDT", timeframe="15m")
+    worker.position_manager.replace_positions(
+        [
+            PositionState(
+                symbol="ETHUSDT",
+                side="buy",
+                qty=1.0,
+                avg_entry=90.0,
+                unrealized_pnl_pct=0.0,
+                add_count=0,
+                updated_at=datetime.now(UTC),
+                strategy="trend",
+                timeframe="15m",
+                route_key=route_key,
+            )
+        ]
+    )
+
+    result = worker._submit_order(
+        symbol="ETHUSDT",
+        side="sell",
+        qty=1.0,
+        order_type="limit",
+        limit_price=110.0,
+        signal_ts=datetime.now(UTC).replace(microsecond=0),
+        regime="TREND",
+        pass_filter=True,
+        strategy="trend",
+        timeframe="15m",
+        route_key=route_key,
+        allow_runtime_gate=True,
+        action="exit",
+        price=110.0,
+        is_add=False,
+        pre_position=worker.position_manager.get(route_key),
+    )
+
+    assert result["gateway_status"] == "ack"
+    assert worker.position_manager.get(route_key) is not None
+    assert worker.position_manager.get(route_key).qty == 0.0
+
+    execution_events = tmp_path / "execution_events_partial.jsonl"
+    execution_events.write_text(
+        (
+            '{"stream":"ethusdt@executionReport","data":{"E":1704067200000,'
+            f'"i":"{result["order_id"]}","c":"{result["client_order_id"]}",'
+            '"s":"ETHUSDT","S":"SELL","X":"EXPIRED","z":"0.3"}}\n'
+        ),
+        encoding="utf-8",
+    )
+    worker.config = WorkerConfig(
+        **{
+            **worker.config.__dict__,
+            "execution_events_path": str(execution_events),
+            "execution_cursor_path": str(tmp_path / "execution_cursor_partial.json"),
+        }
+    )
+
+    sync = worker.reconcile_execution_events_once()
+
+    assert sync["applied"] == 1
+    position = worker.position_manager.get(route_key)
+    assert position is not None
+    assert abs(position.qty - 0.7) < 1e-9
+    assert abs(position.avg_entry - 90.0) < 1e-9

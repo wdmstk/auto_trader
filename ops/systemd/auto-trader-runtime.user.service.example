@@ -1,0 +1,17 @@
+[Unit]
+Description=Auto Trader Runtime Controller (User)
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/komug/projects/auto_trader
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/home/komug/projects/auto_trader/.env
+ExecStart=/home/komug/projects/auto_trader/.venv/bin/python -m auto_trader.runtime --watch --interval-sec 2
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+from auto_trader.analysis.trade_routes import resolve_live_trade_routes
+
 
 def build_weekly_revalidation_report(
     market_summary: str | Path | dict[str, Any],
@@ -13,7 +15,9 @@ def build_weekly_revalidation_report(
     candidate_report: str | Path | dict[str, Any] | None = None,
     drift_report: str | Path | dict[str, Any] | None = None,
     statistical_report: str | Path | dict[str, Any] | None = None,
+    route_selection: str | Path | dict[str, Any] | None = None,
     timeframe: str = "15m",
+    statistical_gate_mode: str = "hard",
 ) -> dict[str, Any]:
     market_rows = _load_rows(market_summary)
     limit_rows = _load_rows(limit_summary)
@@ -26,8 +30,25 @@ def build_weekly_revalidation_report(
         "trend": _csv_symbols(gating.get("trend_enabled_symbols", [])),
         "range": _csv_symbols(gating.get("range_enabled_symbols", [])),
     }
-    market = _summarize(market_rows, selected_symbols=selected_symbols, timeframe=timeframe)
-    limit = _summarize(limit_rows, selected_symbols=selected_symbols, timeframe=timeframe)
+    selected_routes = (
+        resolve_live_trade_routes(route_selection, default_timeframe=timeframe).get(
+            "trade_routes", []
+        )
+        if route_selection is not None
+        else []
+    )
+    market = _summarize(
+        market_rows,
+        selected_symbols=selected_symbols,
+        timeframe=timeframe,
+        selected_routes=selected_routes if isinstance(selected_routes, list) else [],
+    )
+    limit = _summarize(
+        limit_rows,
+        selected_symbols=selected_symbols,
+        timeframe=timeframe,
+        selected_routes=selected_routes if isinstance(selected_routes, list) else [],
+    )
 
     drift_status = str(drift.get("status", "unknown"))
     statistical_status = str(statistical.get("status", "missing")) if statistical else "missing"
@@ -49,6 +70,21 @@ def build_weekly_revalidation_report(
         "candidate_reason": _candidate_reason(candidate),
         "statistical_reason": _statistical_reason(statistical_status, statistical),
     }
+    candidate_summary = _candidate_summary(candidate)
+    drift_summary = {
+        "status": drift_status,
+        "drift_trade_block": bool(drift.get("drift_trade_block", False)),
+        "fail_feature_ratio": float(drift.get("fail_feature_ratio", 0.0) or 0.0),
+        "missing_feature_ratio": float(drift.get("missing_feature_ratio", 0.0) or 0.0),
+        "report_path": str(drift.get("report_path", "")),
+    }
+    overview = {
+        "trend_performance": market["metrics"].get("trend", {}),
+        "range_performance": market["metrics"].get("range", {}),
+        "candidate_summary": candidate_summary,
+        "decision_status": status,
+        "statistical_gate_mode": statistical_gate_mode,
+    }
 
     return {
         "schema_version": "1.2",
@@ -60,22 +96,23 @@ def build_weekly_revalidation_report(
         "limit_metrics": limit["metrics"],
         "checks": market["checks"],
         "limit_checks": limit["checks"],
+        "overview": overview,
         "selection": {
             "timeframe": timeframe,
             "trend_enabled_symbols": selected_symbols["trend"],
             "range_enabled_symbols": selected_symbols["range"],
             "symbol_gating": gating,
+            "route_selection_path": (
+                str(route_selection) if isinstance(route_selection, str | Path) else ""
+            ),
+            "route_selection_source": "manifest" if selected_routes else "symbol_gating",
+            "statistical_gate_mode": statistical_gate_mode,
         },
         "candidates": candidate,
-        "candidate_summary": _candidate_summary(candidate),
-        "symbol_summary": _candidate_summary(candidate).get("symbol_counts", {}),
-        "drift": {
-            "status": drift_status,
-            "drift_trade_block": bool(drift.get("drift_trade_block", False)),
-            "fail_feature_ratio": float(drift.get("fail_feature_ratio", 0.0) or 0.0),
-            "missing_feature_ratio": float(drift.get("missing_feature_ratio", 0.0) or 0.0),
-            "report_path": str(drift.get("report_path", "")),
-        },
+        "candidate_summary": candidate_summary,
+        "symbol_summary": candidate_summary.get("symbol_counts", {}),
+        "drift": drift_summary,
+        "feature_drift": drift_summary,
         "statistical_qualification": statistical,
     }
 
@@ -85,13 +122,18 @@ def _summarize(
     *,
     selected_symbols: dict[str, list[str]],
     timeframe: str,
+    selected_routes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    trend = _metrics(
-        rows, strategy="trend", selected_symbols=selected_symbols["trend"], timeframe=timeframe
-    )
-    range_ = _metrics(
-        rows, strategy="range", selected_symbols=selected_symbols["range"], timeframe=timeframe
-    )
+    if selected_routes:
+        trend = _route_metrics(rows, strategy="trend", selected_routes=selected_routes)
+        range_ = _route_metrics(rows, strategy="range", selected_routes=selected_routes)
+    else:
+        trend = _metrics(
+            rows, strategy="trend", selected_symbols=selected_symbols["trend"], timeframe=timeframe
+        )
+        range_ = _metrics(
+            rows, strategy="range", selected_symbols=selected_symbols["range"], timeframe=timeframe
+        )
 
     checks = {
         "trend_pf_ge_1_2": trend["pf"] >= 1.2,
@@ -132,6 +174,41 @@ def _metrics(
     selected = set(selected_symbols)
     filtered = [row for row in filtered if str(row.get("symbol", "")) in selected]
 
+    return {
+        "pf": _mean(filtered, "pf_mean"),
+        "exp_bps": _mean(filtered, "expectancy_bps_mean"),
+        "period_pnl": _mean(filtered, "period_pnl_mean"),
+        "dd": _mean(filtered, "max_dd_mean"),
+    }
+
+
+def _route_metrics(
+    rows: list[dict[str, Any]],
+    *,
+    strategy: str,
+    selected_routes: list[dict[str, Any]],
+) -> dict[str, float]:
+    route_keys = {
+        (
+            str(route.get("symbol", "")).strip().upper(),
+            str(route.get("timeframe", "")).strip(),
+            str(route.get("strategy", "")).strip(),
+        )
+        for route in selected_routes
+        if isinstance(route, dict) and str(route.get("strategy", "")).strip() == strategy
+    }
+    if not route_keys:
+        return {"pf": 0.0, "exp_bps": 0.0, "period_pnl": 0.0, "dd": 0.0}
+    filtered = [
+        row
+        for row in rows
+        if (
+            str(row.get("symbol", "")).strip().upper(),
+            str(row.get("timeframe", "")).strip(),
+            str(row.get("strategy", "")).strip(),
+        )
+        in route_keys
+    ]
     return {
         "pf": _mean(filtered, "pf_mean"),
         "exp_bps": _mean(filtered, "expectancy_bps_mean"),

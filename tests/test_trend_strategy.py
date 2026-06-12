@@ -113,3 +113,43 @@ def test_trend_enabled_symbols_blocks_non_target() -> None:
     assert bool(out["entry_signal"].any()) is False
     codes = cast(list[str], out.loc[0, "signal_reason_codes"])
     assert "TR_BLOCK_SYMBOL_DISABLED" in codes
+
+
+def test_trend_reason_codes_identify_failed_entry_components() -> None:
+    f, r, k, p = _build_inputs()
+    f.loc[0, "breakout_persistence"] = 0.1
+    f.loc[0, "momentum_persistence"] = 0.2
+    out = generate_trend_signals(features_df=f, regime_df=r, risk_df=k, pnl_df=p)
+    assert bool(out.loc[0, "entry_signal"]) is False
+    codes = cast(list[str], out.loc[0, "signal_reason_codes"])
+    assert "TR_BLOCK_BREAKOUT_PERSIST" in codes
+    assert "TR_BLOCK_MOMENTUM_PERSIST" in codes
+    assert "TR_BLOCK_SCORE_LOW" in codes
+
+
+def test_trend_custom_component_thresholds_allow_entry() -> None:
+    f, r, k, p = _build_inputs()
+    f.loc[0, "breakout_persistence"] = 0.55
+    out = generate_trend_signals(
+        features_df=f,
+        regime_df=r,
+        risk_df=k,
+        pnl_df=p,
+        config=TrendStrategyConfig(breakout_persistence_min=0.5),
+    )
+    assert bool(out.loc[0, "entry_signal"]) is True
+
+
+def test_trend_max_hold_bars_forces_exit() -> None:
+    f, r, k, p = _build_inputs()
+    out = generate_trend_signals(
+        features_df=f,
+        regime_df=r,
+        risk_df=k,
+        pnl_df=p,
+        config=TrendStrategyConfig(max_hold_bars=1),
+    )
+    assert bool(out.loc[0, "entry_signal"]) is True
+    assert bool(out.loc[2, "exit_signal"]) is True
+    codes = cast(list[str], out.loc[2, "signal_reason_codes"])
+    assert "TR_EXIT_MAX_HOLD" in codes

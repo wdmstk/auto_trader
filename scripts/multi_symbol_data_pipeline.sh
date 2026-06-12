@@ -27,18 +27,20 @@ RANGE_ENABLED_SYMBOLS="${RANGE_ENABLED_SYMBOLS:-}"
 TREND_MIN_ENTRY_SCORE="${TREND_MIN_ENTRY_SCORE:-1.0}"
 TREND_REENTRY_COOLDOWN_BARS="${TREND_REENTRY_COOLDOWN_BARS:-0}"
 TREND_ENABLED_SYMBOLS="${TREND_ENABLED_SYMBOLS:-}"
+PARALLEL="${PARALLEL:-1}"
 
 mkdir -p "$OUTPUT_DIR" data/parquet data/features data/regime data/signals
+mkdir -p "$(dirname "$SUMMARY_PATH")"
+: > "$SUMMARY_PATH"
 
 echo "== multi symbol data pipeline =="
 echo "symbols=$SYMBOLS timeframe=$TIMEFRAME from=$FROM_TS to=$TO_TS"
+echo "parallel=$PARALLEL"
 echo "summary=$SUMMARY_PATH"
 echo "range_cfg: rsi=[$RANGE_RSI_MIN,$RANGE_RSI_MAX] wick>=$RANGE_WICK_RATIO_MIN mr<=$RANGE_MEAN_REVERSION_DISTANCE_MAX require_reversal=$RANGE_REQUIRE_REVERSAL_CANDLE"
 echo "range_gate: min_score=$RANGE_MIN_ENTRY_SCORE cooldown=$RANGE_REENTRY_COOLDOWN_BARS enabled=[$RANGE_ENABLED_SYMBOLS]"
 echo "trend_gate: min_score=$TREND_MIN_ENTRY_SCORE cooldown=$TREND_REENTRY_COOLDOWN_BARS enabled=[$TREND_ENABLED_SYMBOLS]"
-
-success_count=0
-fail_count=0
+overall_started_epoch="$(date +%s)"
 
 run_symbol() {
   local symbol="$1"
@@ -97,23 +99,46 @@ run_symbol() {
     --trend-enabled-symbols "$TREND_ENABLED_SYMBOLS"
 }
 
-for symbol in ${SYMBOLS//,/ }; do
+run_symbol_job() {
+  local symbol="$1"
+  local started_at ended_at started_epoch ended_epoch elapsed_sec
   started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  started_epoch="$(date +%s)"
   echo "--- symbol=$symbol started_at=$started_at ---"
   if run_symbol "$symbol"; then
     ended_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-    success_count=$((success_count + 1))
-    echo "{\"symbol\":\"$symbol\",\"status\":\"ok\",\"started_at\":\"$started_at\",\"ended_at\":\"$ended_at\"}" >> "$SUMMARY_PATH"
-    echo "[OK] $symbol"
+    ended_epoch="$(date +%s)"
+    elapsed_sec=$((ended_epoch - started_epoch))
+    echo "{\"symbol\":\"$symbol\",\"status\":\"ok\",\"started_at\":\"$started_at\",\"ended_at\":\"$ended_at\",\"elapsed_sec\":$elapsed_sec}" >> "$SUMMARY_PATH"
+    echo "[OK] $symbol elapsed=${elapsed_sec}s"
   else
     ended_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-    fail_count=$((fail_count + 1))
-    echo "{\"symbol\":\"$symbol\",\"status\":\"failed\",\"started_at\":\"$started_at\",\"ended_at\":\"$ended_at\"}" >> "$SUMMARY_PATH"
-    echo "[NG] $symbol (continued)"
+    ended_epoch="$(date +%s)"
+    elapsed_sec=$((ended_epoch - started_epoch))
+    echo "{\"symbol\":\"$symbol\",\"status\":\"failed\",\"started_at\":\"$started_at\",\"ended_at\":\"$ended_at\",\"elapsed_sec\":$elapsed_sec}" >> "$SUMMARY_PATH"
+    echo "[NG] $symbol elapsed=${elapsed_sec}s (continued)"
+  fi
+}
+
+jobs_running=0
+for symbol in ${SYMBOLS//,/ }; do
+  run_symbol_job "$symbol" &
+  jobs_running=$((jobs_running + 1))
+  if (( jobs_running >= PARALLEL )); then
+    wait -n || true
+    jobs_running=$((jobs_running - 1))
   fi
 done
 
-echo "done: success=$success_count failed=$fail_count"
+wait || true
+
+success_count="$(grep -c '"status":"ok"' "$SUMMARY_PATH" || true)"
+fail_count="$(grep -c '"status":"failed"' "$SUMMARY_PATH" || true)"
+overall_ended_epoch="$(date +%s)"
+overall_elapsed_sec=$((overall_ended_epoch - overall_started_epoch))
+
+echo "{\"type\":\"summary\",\"parallel\":$PARALLEL,\"success_count\":$success_count,\"fail_count\":$fail_count,\"elapsed_sec\":$overall_elapsed_sec}" >> "$SUMMARY_PATH"
+echo "done: success=$success_count failed=$fail_count elapsed=${overall_elapsed_sec}s"
 if [[ "$STRICT" == "true" && "$fail_count" -gt 0 ]]; then
   exit 1
 fi

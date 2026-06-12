@@ -7,7 +7,12 @@ from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from auto_trader.data.ohlcv import OhlcvRecord, normalize_binance_klines, utc_to_ms
+from auto_trader.data.ohlcv import (
+    OhlcvRecord,
+    normalize_binance_klines,
+    timeframe_to_delta,
+    utc_to_ms,
+)
 
 
 class BinanceKlineClient:
@@ -113,15 +118,28 @@ def download_historical_ohlcv(
     all_rows: list[list[Any]] = []
     cursor = from_ts.astimezone(UTC)
     end = to_ts.astimezone(UTC)
+    step_ms = int(timeframe_to_delta(timeframe).total_seconds() * 1000)
     while cursor < end:
         chunk_end = min(cursor + chunk_span, end)
-        rows = client.fetch_with_retry(
-            symbol=symbol,
-            interval=timeframe,
-            start_time_ms=utc_to_ms(cursor),
-            end_time_ms=utc_to_ms(chunk_end),
-        )
-        all_rows.extend(rows)
+        page_start_ms = utc_to_ms(cursor)
+        chunk_end_ms = utc_to_ms(chunk_end)
+        while page_start_ms < chunk_end_ms:
+            rows = client.fetch_with_retry(
+                symbol=symbol,
+                interval=timeframe,
+                start_time_ms=page_start_ms,
+                end_time_ms=chunk_end_ms,
+            )
+            if not rows:
+                break
+            all_rows.extend(rows)
+            last_close_time_ms = int(rows[-1][6])
+            next_page_start_ms = last_close_time_ms + 1
+            if next_page_start_ms <= page_start_ms:
+                next_page_start_ms = page_start_ms + step_ms
+            if len(rows) < 1000:
+                break
+            page_start_ms = next_page_start_ms
         cursor = chunk_end
     return normalize_binance_klines(symbol=symbol, timeframe=timeframe, klines=all_rows)
 

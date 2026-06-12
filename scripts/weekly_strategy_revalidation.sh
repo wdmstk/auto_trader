@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
+PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
 OUT_DIR="${OUT_DIR:-data/validation/weekly_revalidation}"
 mkdir -p "$OUT_DIR"
 
@@ -29,6 +30,10 @@ export FEE_RATE="${FEE_RATE:-0.0002}"
 export SLIPPAGE_RATE="${SLIPPAGE_RATE:-0.0002}"
 export SPREAD_RATE="${SPREAD_RATE:-0.0001}"
 export DELAY_BARS="${DELAY_BARS:-1}"
+export WEEKLY_SCAN_PARALLEL="${WEEKLY_SCAN_PARALLEL:-4}"
+export WEEKLY_ROUTE_PARALLEL="${WEEKLY_ROUTE_PARALLEL:-4}"
+export WEEKLY_ROUTE_DATA_PARALLEL="${WEEKLY_ROUTE_DATA_PARALLEL:-1}"
+RUN_COST_GRID="${RUN_COST_GRID:-0}"
 export ALLOWED_HOURS="${ALLOWED_HOURS:-}"
 if [[ -z "${ML_ARTIFACT_PATH:-}" && -f "data/ml/artifacts/latest/metadata.json" ]]; then
   export ML_ARTIFACT_PATH="data/ml/artifacts/latest"
@@ -44,9 +49,19 @@ RANGE_PROBE_REPORT_PATH="$RANGE_PROBE_REPORT_DIR/candidate_report.json"
 STATISTICAL_DIR="${STATISTICAL_DIR:-data/validation/statistical_qualification}"
 STATISTICAL_REPORT_PATH="$STATISTICAL_DIR/qualification_report.json"
 STATISTICAL_MANIFEST_PATH="$STATISTICAL_DIR/frozen_manifest.json"
+ROUTE_SELECTION_PATH="${ROUTE_SELECTION_PATH:-}"
+STATISTICAL_GATE_MODE="${STATISTICAL_GATE_MODE:-soft}"
+MANIFEST_SUMMARY_PATH="$OUT_DIR/manifest_route_summary.json"
+MANIFEST_CANDIDATE_REPORT_PATH="$OUT_DIR/manifest_candidate_report.json"
+MANIFEST_DATA_ROOT="${MANIFEST_DATA_ROOT:-$OUT_DIR/manifest_route_run_data}"
 
 SUMMARY_PATH="$OUT_DIR/timeframe_comparison_summary.json"
-SUMMARY_PATH="$SUMMARY_PATH" CANDIDATE_REPORT_PATH="$CANDIDATE_REPORT_PATH" ./scripts/timeframe_comparison.sh
+echo "weekly_parallel: scan=$WEEKLY_SCAN_PARALLEL route=$WEEKLY_ROUTE_PARALLEL route_data=$WEEKLY_ROUTE_DATA_PARALLEL"
+echo "statistical_gate_mode=$STATISTICAL_GATE_MODE"
+SUMMARY_PATH="$SUMMARY_PATH" \
+CANDIDATE_REPORT_PATH="$CANDIDATE_REPORT_PATH" \
+PARALLEL="$WEEKLY_SCAN_PARALLEL" \
+./scripts/timeframe_comparison.sh
 
 PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
 python - "$SUMMARY_PATH" "$ALLOWLIST_JSON" "$ALLOWLIST_ENV" <<'EOF_PY'
@@ -71,11 +86,30 @@ set +a
 SUMMARY_PATH="$SUMMARY_PATH" \
 CANDIDATE_REPORT_PATH="$CANDIDATE_REPORT_PATH" \
 ML_ARTIFACT_PATH="${ML_ARTIFACT_PATH:-}" \
+PARALLEL="$WEEKLY_SCAN_PARALLEL" \
 ./scripts/timeframe_comparison.sh
+
+SELECTED_MARKET_SUMMARY_PATH="$SUMMARY_PATH"
+SELECTED_CANDIDATE_REPORT_PATH="$CANDIDATE_REPORT_PATH"
+SELECTED_ANALYSIS_DIR="data/analysis"
+
+if [[ -n "$ROUTE_SELECTION_PATH" && -f "$ROUTE_SELECTION_PATH" ]]; then
+  PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+  ROUTE_SELECTION_PATH="$ROUTE_SELECTION_PATH" \
+  OUT_DIR="$OUT_DIR" \
+  MANIFEST_SUMMARY_PATH="$MANIFEST_SUMMARY_PATH" \
+  MANIFEST_CANDIDATE_REPORT_PATH="$MANIFEST_CANDIDATE_REPORT_PATH" \
+  MANIFEST_DATA_ROOT="$MANIFEST_DATA_ROOT" \
+  BASE_DATA_ROOT="${BASE_DATA_ROOT:-data}" \
+  "$PYTHON_BIN" ./scripts/route_manifest_timeframe_comparison.py
+  SELECTED_MARKET_SUMMARY_PATH="$MANIFEST_SUMMARY_PATH"
+  SELECTED_CANDIDATE_REPORT_PATH="$MANIFEST_CANDIDATE_REPORT_PATH"
+  SELECTED_ANALYSIS_DIR="$MANIFEST_DATA_ROOT/analysis"
+fi
 
 mkdir -p "$STATISTICAL_DIR"
 PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
-python - "$SUMMARY_PATH" "$STATISTICAL_MANIFEST_PATH" "$STATISTICAL_REPORT_PATH" "$DELAY_BARS" <<'EOF_PY'
+python - "$SELECTED_MARKET_SUMMARY_PATH" "$SELECTED_ANALYSIS_DIR" "$STATISTICAL_MANIFEST_PATH" "$STATISTICAL_REPORT_PATH" "$DELAY_BARS" <<'EOF_PY'
 from __future__ import annotations
 
 import json
@@ -85,12 +119,12 @@ from auto_trader.analysis.statistical import build_statistical_qualification
 
 report = build_statistical_qualification(
     sys.argv[1],
-    analysis_dir="data/analysis",
-    manifest_path=sys.argv[2],
-    report_path=sys.argv[3],
-    execution_delay_bars=int(sys.argv[4]),
+    analysis_dir=sys.argv[2],
+    manifest_path=sys.argv[3],
+    report_path=sys.argv[4],
+    execution_delay_bars=int(sys.argv[5]),
 )
-print(json.dumps({"status": report["status"], "report_path": sys.argv[3]}, ensure_ascii=True))
+print(json.dumps({"status": report["status"], "report_path": sys.argv[4]}, ensure_ascii=True))
 EOF_PY
 
 LIMIT_SUMMARY_PATH="$OUT_DIR/timeframe_comparison_limit_summary.json"
@@ -98,6 +132,7 @@ SUMMARY_PATH="$LIMIT_SUMMARY_PATH" \
 CANDIDATE_REPORT_PATH="$OUT_DIR/candidate_report_limit.json" \
 ORDER_MODE=limit \
 ML_ARTIFACT_PATH="${ML_ARTIFACT_PATH:-}" \
+PARALLEL="$WEEKLY_SCAN_PARALLEL" \
 ./scripts/timeframe_comparison.sh
 
 PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
@@ -121,24 +156,27 @@ source "$ALLOWLIST_ENV"
 set +a
 
 OUT_SUMMARY="$OUT_DIR/cost_grid_summary.jsonl" \
-OUT_DIR="$OUT_DIR" \
-ORDER_MODES="${ORDER_MODES:-market,limit}" \
-FEE_RATES="${FEE_RATES:-0.0002,0.0003,0.0004}" \
-SLIPPAGE_RATES="${SLIPPAGE_RATES:-0.0002,0.0005}" \
-SPREAD_RATES="${SPREAD_RATES:-0.0001,0.0003}" \
-DELAY_BARS_LIST="${DELAY_BARS_LIST:-0,1,2}" \
-  LIMIT_BOOK_DEPTH_UNITS_LIST="${LIMIT_BOOK_DEPTH_UNITS_LIST:-0.0}" \
-  LIMIT_QUEUE_AHEAD_UNITS_LIST="${LIMIT_QUEUE_AHEAD_UNITS_LIST:-0.02}" \
-LIMIT_VOLUME_PARTICIPATION_RATE_LIST="${LIMIT_VOLUME_PARTICIPATION_RATE_LIST:-0.0}" \
-TIMEFRAMES="$TIMEFRAMES" \
-STRATEGIES="$STRATEGIES" \
-ML_ARTIFACT_PATH="${ML_ARTIFACT_PATH:-}" \
-./scripts/backtest_cost_grid.sh
-
 LIMIT_DEFAULTS_JSON="$OUT_DIR/limit_defaults.json"
 LIMIT_DEFAULTS_ENV="$OUT_DIR/limit_defaults.env"
-PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
-python - "$OUT_DIR/cost_grid_result.json" "$LIMIT_DEFAULTS_JSON" "$LIMIT_DEFAULTS_ENV" <<'EOF_PY'
+
+if [[ "$RUN_COST_GRID" == "1" ]]; then
+  OUT_SUMMARY="$OUT_DIR/cost_grid_summary.jsonl" \
+  OUT_DIR="$OUT_DIR" \
+  ORDER_MODES="${ORDER_MODES:-market,limit}" \
+  FEE_RATES="${FEE_RATES:-0.0002,0.0003,0.0004}" \
+  SLIPPAGE_RATES="${SLIPPAGE_RATES:-0.0002,0.0005}" \
+  SPREAD_RATES="${SPREAD_RATES:-0.0001,0.0003}" \
+  DELAY_BARS_LIST="${DELAY_BARS_LIST:-0,1,2}" \
+    LIMIT_BOOK_DEPTH_UNITS_LIST="${LIMIT_BOOK_DEPTH_UNITS_LIST:-0.0}" \
+    LIMIT_QUEUE_AHEAD_UNITS_LIST="${LIMIT_QUEUE_AHEAD_UNITS_LIST:-0.02}" \
+  LIMIT_VOLUME_PARTICIPATION_RATE_LIST="${LIMIT_VOLUME_PARTICIPATION_RATE_LIST:-0.0}" \
+  TIMEFRAMES="$TIMEFRAMES" \
+  STRATEGIES="$STRATEGIES" \
+  ML_ARTIFACT_PATH="${ML_ARTIFACT_PATH:-}" \
+  ./scripts/backtest_cost_grid.sh
+
+  PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+  python - "$OUT_DIR/cost_grid_result.json" "$LIMIT_DEFAULTS_JSON" "$LIMIT_DEFAULTS_ENV" <<'EOF_PY'
 from __future__ import annotations
 
 import json
@@ -174,9 +212,34 @@ print(json_out)
 print(env_out)
 EOF_PY
 
-set -a
-source "$LIMIT_DEFAULTS_ENV"
-set +a
+  set -a
+  source "$LIMIT_DEFAULTS_ENV"
+  set +a
+else
+  cat > "$LIMIT_DEFAULTS_ENV" <<EOF_ENV
+FEE_RATE=$FEE_RATE
+SLIPPAGE_RATE=$SLIPPAGE_RATE
+SPREAD_RATE=$SPREAD_RATE
+DELAY_BARS=$DELAY_BARS
+LIMIT_BOOK_DEPTH_UNITS=${LIMIT_BOOK_DEPTH_UNITS:-0.0}
+LIMIT_QUEUE_AHEAD_UNITS=${LIMIT_QUEUE_AHEAD_UNITS:-0.02}
+LIMIT_VOLUME_PARTICIPATION_RATE=${LIMIT_VOLUME_PARTICIPATION_RATE:-0.0}
+EOF_ENV
+  cat > "$LIMIT_DEFAULTS_JSON" <<EOF_JSON
+{
+  "best": {
+    "fee_rate": $FEE_RATE,
+    "slippage_rate": $SLIPPAGE_RATE,
+    "spread_rate": $SPREAD_RATE,
+    "delay_bars": $DELAY_BARS,
+    "limit_book_depth_units": ${LIMIT_BOOK_DEPTH_UNITS:-0.0},
+    "limit_queue_ahead_units": ${LIMIT_QUEUE_AHEAD_UNITS:-0.02},
+    "limit_volume_participation_rate": ${LIMIT_VOLUME_PARTICIPATION_RATE:-0.0}
+  },
+  "source": "skipped_cost_grid"
+}
+EOF_JSON
+fi
 
 if [[ -n "${RANGE_PROBE_SYMBOLS:-}" ]]; then
   SUMMARY_PATH="$RANGE_PROBE_REPORT_DIR/timeframe_comparison_summary.json" \
@@ -189,6 +252,7 @@ if [[ -n "${RANGE_PROBE_SYMBOLS:-}" ]]; then
   RANGE_REQUIRE_REVERSAL_CANDLE=false \
   RANGE_WICK_RATIO_MIN=0.2 \
   RANGE_REENTRY_COOLDOWN_BARS=2 \
+  PARALLEL="$WEEKLY_SCAN_PARALLEL" \
   ./scripts/timeframe_candidate_scan.sh
 fi
 
@@ -201,14 +265,16 @@ python -m auto_trader.drift \
   --write-baseline-if-missing true
 
 python - \
-  "$OUT_DIR/timeframe_comparison_summary.json" \
+  "$SELECTED_MARKET_SUMMARY_PATH" \
   "$OUT_DIR/timeframe_comparison_limit_summary.json" \
   "$OUT_DIR/symbol_gating_recommendation.json" \
-  "$CANDIDATE_REPORT_PATH" \
+  "$SELECTED_CANDIDATE_REPORT_PATH" \
   "$RANGE_PROBE_REPORT_PATH" \
   "$OUT_DIR/weekly_revalidation_report.json" \
   "$DRIFT_REPORT_PATH" \
-  "$STATISTICAL_REPORT_PATH" <<'EOF_PY'
+  "$STATISTICAL_REPORT_PATH" \
+  "$ROUTE_SELECTION_PATH" \
+  "$STATISTICAL_GATE_MODE" <<'EOF_PY'
 from __future__ import annotations
 
 import sys
@@ -222,11 +288,16 @@ probe_candidate_path = Path(sys.argv[5])
 dst = Path(sys.argv[6])
 drift_path = Path(sys.argv[7])
 statistical_path = Path(sys.argv[8])
+route_selection_path = Path(sys.argv[9]) if len(sys.argv) > 9 and sys.argv[9] else None
+statistical_gate_mode = sys.argv[10] if len(sys.argv) > 10 else "soft"
 
 import json
 
 from auto_trader.analysis.revalidation import build_weekly_revalidation_report
-from auto_trader.analysis.trade_routes import build_trade_route_selection
+from auto_trader.analysis.trade_routes import (
+    build_trade_route_selection,
+    validate_trade_route_selection,
+)
 
 report = build_weekly_revalidation_report(
     market_summary,
@@ -235,18 +306,26 @@ report = build_weekly_revalidation_report(
     candidate_report=candidate_path,
     drift_report=drift_path,
     statistical_report=statistical_path,
+    route_selection=route_selection_path if route_selection_path and route_selection_path.exists() else None,
     timeframe="15m",
+    statistical_gate_mode=statistical_gate_mode,
 )
 if probe_candidate_path.exists():
     try:
         report["range_probe_candidates"] = json.loads(probe_candidate_path.read_text(encoding="utf-8"))
     except Exception:
         report["range_probe_candidates"] = {"status": "warn", "path": str(probe_candidate_path)}
-route_selection = build_trade_route_selection(report, default_timeframe="15m")
+route_selection = build_trade_route_selection(
+    report,
+    default_timeframe="15m",
+    seed_manifest=route_selection_path if route_selection_path and route_selection_path.exists() else None,
+    statistical_gate_mode=statistical_gate_mode,
+)
 selection = report.get("selection", {})
 if not isinstance(selection, dict):
     selection = {}
 selection.update(route_selection)
+validate_trade_route_selection(selection)
 report["selection"] = selection
 report["summary_paths"] = {
     "market": str(market_summary),

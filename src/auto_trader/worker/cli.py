@@ -18,6 +18,14 @@ def _env_bool(name: str, default: str = "0") -> bool:
     return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_first(*names: str, default: str = "") -> str:
+    for name in names:
+        value = os.getenv(name)
+        if value is not None:
+            return value
+    return default
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Live trading worker for testnet.")
     p.add_argument("--watch", action="store_true")
@@ -31,13 +39,37 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--range-symbols", default=os.getenv("RANGE_ENABLED_SYMBOLS", "XRPUSDT"))
     p.add_argument(
+        "--route-selection-path",
+        default=_env_first(
+            "ROUTE_SELECTION_PATH",
+            "WEEKLY_REVALIDATION_REPORT_PATH",
+            default="data/validation/weekly_revalidation/weekly_revalidation_report.json",
+        ),
+    )
+    p.add_argument(
         "--weekly-revalidation-report-path",
         default=os.getenv(
             "WEEKLY_REVALIDATION_REPORT_PATH",
             "data/validation/weekly_revalidation/weekly_revalidation_report.json",
         ),
     )
-    p.set_defaults(auto_sync_weekly_symbols=_env_bool("AUTO_SYNC_WEEKLY_SYMBOLS", "1"))
+    p.set_defaults(
+        auto_sync_route_selection=_env_bool(
+            "AUTO_SYNC_ROUTE_SELECTION",
+            "1" if _env_bool("AUTO_SYNC_WEEKLY_SYMBOLS", "1") else "0",
+        ),
+        auto_sync_weekly_symbols=_env_bool("AUTO_SYNC_WEEKLY_SYMBOLS", "1"),
+    )
+    p.add_argument(
+        "--auto-sync-route-selection",
+        dest="auto_sync_route_selection",
+        action="store_true",
+    )
+    p.add_argument(
+        "--no-auto-sync-route-selection",
+        dest="auto_sync_route_selection",
+        action="store_false",
+    )
     p.add_argument(
         "--auto-sync-weekly-symbols",
         dest="auto_sync_weekly_symbols",
@@ -51,7 +83,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--trend-order-mode",
         choices=["market", "limit"],
-        default=os.getenv("TREND_ORDER_MODE", "limit"),
+        default=os.getenv("TREND_ORDER_MODE", "market"),
     )
     p.add_argument(
         "--range-order-mode",
@@ -93,6 +125,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--order-events-path",
         default=os.getenv("ORDER_EVENTS_PATH", "data/exchange/order_events.jsonl"),
     )
+    p.add_argument(
+        "--execution-events-path",
+        default=os.getenv("EXECUTION_EVENTS_PATH", "data/exchange/execution_events.jsonl"),
+    )
+    p.add_argument(
+        "--execution-cursor-path",
+        default=os.getenv("EXECUTION_CURSOR_PATH", "data/exchange/execution_cursor.json"),
+    )
     p.add_argument("--ml-artifact-path", default=os.getenv("ML_ARTIFACT_PATH", ""))
     p.add_argument(
         "--max-symbol-exposure-pct",
@@ -113,6 +153,8 @@ def main() -> int:
         symbols=_csv_text(args.symbols),
         trend_symbols=_csv_text(args.trend_symbols),
         range_symbols=_csv_text(args.range_symbols),
+        route_selection_path=str(args.route_selection_path).strip(),
+        auto_sync_route_selection=bool(args.auto_sync_route_selection),
         weekly_revalidation_report_path=str(args.weekly_revalidation_report_path).strip(),
         auto_sync_weekly_symbols=bool(args.auto_sync_weekly_symbols),
         trend_order_mode=args.trend_order_mode,
@@ -136,6 +178,8 @@ def main() -> int:
         positions_dir=args.positions_dir,
         worker_state_path=args.worker_state_path,
         order_events_path=args.order_events_path,
+        execution_events_path=args.execution_events_path,
+        execution_cursor_path=args.execution_cursor_path,
         ml_artifact_path=str(args.ml_artifact_path).strip() or None,
         max_iterations=args.max_iterations,
         max_symbol_exposure_pct=args.max_symbol_exposure_pct,

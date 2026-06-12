@@ -23,6 +23,7 @@
 - [x] 実注文経路（exchange）へ order_type（market/limit）導線を追加
   - `LIMIT` は `IOC` 固定（未約定は cancel 扱い）
   - `market` 互換は既定値として維持
+  - live worker の既定運用は `trend=market`, `range=market` とする
 - [x] 約定モデルv2（板厚/queue近似）を backtest/analysis に追加
   - `limit_book_depth_units` / `limit_queue_ahead_units` / `limit_volume_participation_rate`
   - 既定値は `0`（互換維持、旧ロジックを踏襲）
@@ -37,6 +38,7 @@
 - [x] spec-review を作成済み
 
 ## 次PR候補（約定モデル強化）
+- [ ] execution report を position / order_events / GUI へ反映し、取引所の `expired/canceled/partial/filled` を local state と一致させる
 - [ ] queue_ahead の時間減衰（bar経過で先行数量を減衰）
 - [ ] GTC近似（最大Nバー持ち越し）モデルの追加
 - [ ] 銘柄別 depth/queue 初期値プロファイル化

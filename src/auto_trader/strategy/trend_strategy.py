@@ -17,6 +17,7 @@ class TrendStrategyConfig:
     max_add_count: int = 2
     min_entry_score: float = 1.0
     reentry_cooldown_bars: int = 0
+    max_hold_bars: int = 0
     enabled_symbols: tuple[str, ...] = ()
 
 
@@ -68,10 +69,13 @@ def generate_trend_signals(
         symbol = str(symbol_values[i])
         timeframe = str(timeframe_values[i])
         key = (symbol, timeframe)
-        st = state.setdefault(key, {"in_position": False, "add_count": 0, "cooldown": 0})
+        st = state.setdefault(
+            key, {"in_position": False, "add_count": 0, "cooldown": 0, "hold_bars": 0}
+        )
         in_position = bool(st["in_position"])
         current_add_count = int(st["add_count"])
         cooldown = int(st["cooldown"])
+        hold_bars = int(st["hold_bars"])
         symbol_enabled = (not enabled_symbols) or (symbol in enabled_symbols)
 
         if high_vol:
@@ -96,6 +100,7 @@ def generate_trend_signals(
         entry = (
             gate_ok
             and symbol_enabled
+            and (not in_position)
             and (cooldown <= 0)
             and score_ok
             and breakout_ok
@@ -113,18 +118,30 @@ def generate_trend_signals(
                     "TR_ENTRY_HIGHER_HIGH",
                 ]
             )
-        elif gate_ok and symbol_enabled and (cooldown <= 0) and (not score_ok):
-            reasons.append("TR_BLOCK_SCORE_LOW")
+        elif gate_ok and symbol_enabled and (not in_position) and (cooldown <= 0):
+            if not breakout_ok:
+                reasons.append("TR_BLOCK_BREAKOUT_PERSIST")
+            if not momentum_ok:
+                reasons.append("TR_BLOCK_MOMENTUM_PERSIST")
+            if not pullback_ok:
+                reasons.append("TR_BLOCK_PULLBACK_SHALLOW")
+            if not higher_high_ok:
+                reasons.append("TR_BLOCK_HIGHER_HIGH")
+            if not score_ok:
+                reasons.append("TR_BLOCK_SCORE_LOW")
 
         exit_by_regime = regime != "TREND"
         exit_by_trend_weaken = (
             float(trend_efficiency_values[i]) < cfg.trend_efficiency_exit_threshold
         )
-        exit = exit_by_regime or exit_by_trend_weaken or high_vol
+        exit_by_max_hold = cfg.max_hold_bars > 0 and in_position and hold_bars >= cfg.max_hold_bars
+        exit = exit_by_regime or exit_by_trend_weaken or exit_by_max_hold or high_vol
         if exit_by_regime:
             reasons.append("TR_EXIT_REGIME_CHANGED")
         if exit_by_trend_weaken:
             reasons.append("TR_EXIT_TREND_WEAKENED")
+        if exit_by_max_hold:
+            reasons.append("TR_EXIT_MAX_HOLD")
 
         # add signal (pyramid) only when already in position and in profit
         unrealized_pnl = float(unrealized_values[i])
@@ -153,6 +170,12 @@ def generate_trend_signals(
         st["in_position"] = in_position
         st["add_count"] = current_add_count
         st["cooldown"] = cooldown
+        if entry:
+            st["hold_bars"] = 0
+        elif in_position and not exit:
+            st["hold_bars"] = hold_bars + 1
+        else:
+            st["hold_bars"] = 0
 
         entry_signal.append(bool(entry))
         exit_signal.append(bool(exit))

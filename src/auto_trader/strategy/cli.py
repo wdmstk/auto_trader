@@ -31,9 +31,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--range-require-reversal-candle", default="true", choices=["true", "false"])
     p.add_argument("--range-min-entry-score", type=float, default=1.0)
     p.add_argument("--range-reentry-cooldown-bars", type=int, default=0)
+    p.add_argument("--range-max-hold-bars", type=int, default=0)
     p.add_argument("--range-enabled-symbols", default="")
     p.add_argument("--trend-min-entry-score", type=float, default=1.0)
+    p.add_argument("--trend-breakout-persistence-min", type=float, default=0.6)
+    p.add_argument("--trend-momentum-persistence-min", type=float, default=0.5)
+    p.add_argument("--trend-pullback-shallowness-min", type=float, default=0.5)
+    p.add_argument("--trend-higher-high-persistence-min", type=float, default=0.5)
+    p.add_argument("--trend-efficiency-exit-threshold", type=float, default=0.1)
     p.add_argument("--trend-reentry-cooldown-bars", type=int, default=0)
+    p.add_argument("--trend-max-hold-bars", type=int, default=0)
     p.add_argument("--trend-enabled-symbols", default="")
     return p
 
@@ -65,6 +72,7 @@ def main() -> int:
                 require_reversal_candle=require_reversal,
                 min_entry_score=args.range_min_entry_score,
                 reentry_cooldown_bars=args.range_reentry_cooldown_bars,
+                max_hold_bars=args.range_max_hold_bars,
                 enabled_symbols=range_enabled_symbols,
             ),
         )
@@ -85,7 +93,13 @@ def main() -> int:
             allowed_hours=str(args.allowed_hours).strip() or None,
             config=TrendStrategyConfig(
                 min_entry_score=args.trend_min_entry_score,
+                breakout_persistence_min=args.trend_breakout_persistence_min,
+                momentum_persistence_min=args.trend_momentum_persistence_min,
+                pullback_shallowness_min=args.trend_pullback_shallowness_min,
+                higher_high_persistence_min=args.trend_higher_high_persistence_min,
+                trend_efficiency_exit_threshold=args.trend_efficiency_exit_threshold,
                 reentry_cooldown_bars=args.trend_reentry_cooldown_bars,
+                max_hold_bars=args.trend_max_hold_bars,
                 enabled_symbols=trend_enabled_symbols,
             ),
         )

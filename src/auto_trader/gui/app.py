@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib
 import json
 import math
+import os
 import subprocess
 import sys
 from collections.abc import Callable, Mapping
@@ -1192,28 +1193,176 @@ def _load_runtime_metrics(path: Path) -> dict[str, object]:
     return _read_latest_jsonl_row(path)
 
 
+def _route_selection_path() -> Path:
+    raw = str(
+        os.getenv(
+            "ROUTE_SELECTION_PATH",
+            os.getenv("WEEKLY_REVALIDATION_REPORT_PATH", ""),
+        )
+    ).strip()
+    if not raw:
+        env_path = DATA_DIR / "validation" / "weekly_autotune" / "route_selection_runtime.env"
+        if env_path.exists():
+            try:
+                for line in env_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    if key.strip() in {"ROUTE_SELECTION_PATH", "WEEKLY_REVALIDATION_REPORT_PATH"}:
+                        candidate = value.strip()
+                        if candidate:
+                            raw = candidate
+                            break
+            except Exception:
+                raw = ""
+    return (
+        Path(raw)
+        if raw
+        else DATA_DIR / "validation" / "weekly_revalidation" / "weekly_revalidation_report.json"
+    )
+
+
+def _weekly_revalidation_report_path() -> Path:
+    raw = str(os.getenv("WEEKLY_REVALIDATION_REPORT_PATH", "")).strip()
+    if not raw:
+        env_path = DATA_DIR / "validation" / "weekly_autotune" / "route_selection_runtime.env"
+        if env_path.exists():
+            try:
+                for line in env_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    if key.strip() == "WEEKLY_REVALIDATION_REPORT_PATH":
+                        candidate = value.strip()
+                        if candidate:
+                            raw = candidate
+                            break
+            except Exception:
+                raw = ""
+    if raw:
+        return Path(raw)
+    preferred = (
+        DATA_DIR
+        / "validation"
+        / "weekly_autotune"
+        / "weekly_revalidation"
+        / "weekly_revalidation_report.json"
+    )
+    if preferred.exists():
+        return preferred
+    return DATA_DIR / "validation" / "weekly_revalidation" / "weekly_revalidation_report.json"
+
+
+def _candidate_payload_from_trade_routes(payload: Mapping[str, object]) -> dict[str, object]:
+    selection = payload.get("selection", {})
+    routes: object = None
+    if isinstance(selection, Mapping):
+        routes = selection.get("trade_routes")
+    if not isinstance(routes, list) or not routes:
+        resolved = resolve_live_trade_routes(
+            cast(dict[str, Any], dict(payload)), default_timeframe="15m"
+        )
+        routes = resolved.get("trade_routes", [])
+    if not isinstance(routes, list) or not routes:
+        return {}
+
+    rows: list[dict[str, object]] = []
+    best_by_symbol_strategy: list[dict[str, object]] = []
+    core_symbols: list[str] = []
+    probe_symbols: list[str] = []
+    watchlist_symbols: list[str] = []
+    status_counts: dict[str, int] = {}
+
+    for item in routes:
+        if not isinstance(item, dict):
+            continue
+        row = {
+            "symbol": str(item.get("symbol", "")).strip(),
+            "strategy": str(item.get("strategy", "")).strip(),
+            "timeframe": str(item.get("timeframe", "")).strip() or "15m",
+            "candidate_status": str(item.get("candidate_status", "core")).strip() or "core",
+            "pf_mean": _safe_float(item.get("pf_mean", 0.0)),
+            "expectancy_bps_mean": _safe_float(item.get("expectancy_bps_mean", 0.0)),
+            "period_pnl_mean": _safe_float(item.get("period_pnl_mean", 0.0)),
+            "max_dd_mean": _safe_float(item.get("max_dd_mean", 0.0)),
+            "closed_trades_mean": _safe_float(item.get("closed_trades_mean", 0.0)),
+            "candidate_score": _safe_float(item.get("candidate_score", 0.0)),
+            "expected_regime": str(item.get("expected_regime", "")).strip(),
+            "statistical_status": str(item.get("statistical_status", "")).strip(),
+            "selection_source": str(item.get("selection_source", "")).strip(),
+            "selected_stage": str(item.get("selected_stage", "")).strip(),
+            "config_label": str(item.get("config_label", "")).strip(),
+        }
+        if not row["symbol"] or not row["strategy"]:
+            continue
+        rows.append(row)
+        best_by_symbol_strategy.append(dict(row))
+        status = str(row["candidate_status"])
+        status_counts[status] = status_counts.get(status, 0) + 1
+        symbol = str(row["symbol"])
+        if status == "core":
+            core_symbols.append(symbol)
+        elif status == "probe":
+            probe_symbols.append(symbol)
+        elif status == "watchlist":
+            watchlist_symbols.append(symbol)
+
+    if not rows:
+        return {}
+
+    def unique(values: list[str]) -> list[str]:
+        return list(dict.fromkeys([str(v) for v in values if str(v).strip()]))
+
+    return {
+        "rows": rows,
+        "best_by_symbol_strategy": best_by_symbol_strategy,
+        "core_symbols": unique(core_symbols),
+        "probe_symbols": unique(probe_symbols),
+        "watchlist_symbols": unique(watchlist_symbols),
+        "candidate_summary": {"candidate_counts": status_counts},
+        "selection": payload.get("selection", {}),
+        "source": str(payload.get("source", "")),
+    }
+
+
+def _merge_trade_route_payload(target: dict[str, object], payload: Mapping[str, object]) -> None:
+    route_payload = _candidate_payload_from_trade_routes(payload)
+    if not route_payload:
+        return
+    _merge_candidate_payload(target, route_payload)
+    for key in ("candidate_summary", "selection", "source"):
+        if key in route_payload and key not in target:
+            target[key] = route_payload[key]
+
+
 def _load_candidate_report(
     path: Path = DATA_DIR / "validation" / "timeframe_candidates" / "candidate_report.json",
-    weekly_path: Path = DATA_DIR
-    / "validation"
-    / "weekly_revalidation"
-    / "weekly_revalidation_report.json",
+    weekly_path: Path | None = None,
+    route_selection_path: Path | None = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {}
     if path.exists():
         try:
-            import json
-
             raw_payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             raw_payload = {}
         payload = raw_payload if isinstance(raw_payload, dict) else {}
 
-    if weekly_path.exists():
+    selected_route_path = route_selection_path or _route_selection_path()
+    if selected_route_path.exists():
         try:
-            import json
+            route_payload = json.loads(selected_route_path.read_text(encoding="utf-8"))
+        except Exception:
+            route_payload = {}
+        if isinstance(route_payload, dict):
+            _merge_trade_route_payload(payload, route_payload)
 
-            weekly_payload = json.loads(weekly_path.read_text(encoding="utf-8"))
+    resolved_weekly_path = weekly_path or _weekly_revalidation_report_path()
+    if resolved_weekly_path.exists():
+        try:
+            weekly_payload = json.loads(resolved_weekly_path.read_text(encoding="utf-8"))
         except Exception:
             weekly_payload = {}
         if isinstance(weekly_payload, dict) and "range_probe_candidates" in weekly_payload:
@@ -1228,17 +1377,26 @@ def _load_candidate_report(
 
 
 def _load_weekly_candidate_report(
-    path: Path = DATA_DIR
-    / "validation"
-    / "weekly_revalidation"
-    / "weekly_revalidation_report.json",
+    path: Path | None = None,
+    route_selection_path: Path | None = None,
 ) -> dict[str, object]:
-    if not path.exists():
-        return {}
-    try:
-        import json
+    selected_route_path = route_selection_path or _route_selection_path()
+    route_payload: dict[str, object] = {}
+    if selected_route_path.exists():
+        try:
+            raw_route_payload = json.loads(selected_route_path.read_text(encoding="utf-8"))
+        except Exception:
+            raw_route_payload = {}
+        if isinstance(raw_route_payload, dict):
+            route_payload = _candidate_payload_from_trade_routes(raw_route_payload)
+            if route_payload and "selection" not in route_payload:
+                route_payload["selection"] = raw_route_payload.get("selection", {})
 
-        raw_payload = json.loads(path.read_text(encoding="utf-8"))
+    resolved_path = path or _weekly_revalidation_report_path()
+    if not resolved_path.exists():
+        return route_payload
+    try:
+        raw_payload = json.loads(resolved_path.read_text(encoding="utf-8"))
     except Exception:
         return {}
     if not isinstance(raw_payload, dict):
@@ -1257,6 +1415,11 @@ def _load_weekly_candidate_report(
     for key in ("candidate_summary", "decision", "selection", "market_status", "limit_status"):
         if key in raw_payload:
             payload[key] = raw_payload[key]
+    if route_payload:
+        _merge_candidate_payload(payload, route_payload)
+        for key in ("candidate_summary", "selection", "source"):
+            if key in route_payload and key not in payload:
+                payload[key] = route_payload[key]
     return payload if isinstance(payload, dict) else {}
 
 
@@ -2572,6 +2735,9 @@ def _render_overview_tab(
                 st.warning(f"Missing regime files for: {', '.join(missing)}")
 
     st.subheader("Data sources")
+    runtime_env_path = DATA_DIR / "validation" / "weekly_autotune" / "route_selection_runtime.env"
+    runtime_route_path = _route_selection_path()
+    weekly_report_path = _weekly_revalidation_report_path()
     source_rows = [
         _source_snapshot(
             name="runtime_state",
@@ -2607,19 +2773,18 @@ def _render_overview_tab(
             timestamp_column="timestamp" if "timestamp" in risk_input_df.columns else None,
         ),
         _source_snapshot(
-            name="weekly_candidate_report",
-            path=DATA_DIR
-            / "validation"
-            / "weekly_revalidation"
-            / "weekly_revalidation_report.json",
+            name="route_selection_runtime_env",
+            path=runtime_env_path,
             timestamp_column=None,
         ),
         _source_snapshot(
             name="weekly_revalidation_report",
-            path=DATA_DIR
-            / "validation"
-            / "weekly_revalidation"
-            / "weekly_revalidation_report.json",
+            path=weekly_report_path,
+            timestamp_column=None,
+        ),
+        _source_snapshot(
+            name="runtime_route_selection",
+            path=runtime_route_path,
             timestamp_column=None,
         ),
     ]
@@ -2659,7 +2824,10 @@ def _render_trading_tab(
 
     worker_frame = _worker_last_results_frame(worker_state)
     if worker_frame.empty:
-        st.info("No worker results yet")
+        st.info(
+            "No worker results yet. Waiting for the worker to complete and persist "
+            "at least one cycle."
+        )
     else:
         worker_frame["why_not_trading"] = worker_frame.apply(
             lambda row: _worker_status_reason(row.to_dict()), axis=1
@@ -2685,6 +2853,11 @@ def _render_trading_tab(
     route_frame = _worker_trade_routes_frame(worker_state)
     if route_frame.empty:
         route_frame = _candidate_trade_routes_frame(candidate_report)
+        if not route_frame.empty:
+            st.caption(
+                "Worker cycle results are not available yet. Showing configured "
+                "live routes from the current route-selection manifest."
+            )
     if route_frame.empty:
         st.info("No live trade routes yet.")
     else:
