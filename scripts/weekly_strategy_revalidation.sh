@@ -277,6 +277,7 @@ python - \
   "$STATISTICAL_GATE_MODE" <<'EOF_PY'
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -331,7 +332,16 @@ report["summary_paths"] = {
     "market": str(market_summary),
     "limit": str(limit_summary),
 }
-dst.write_text(json.dumps(report, ensure_ascii=True, indent=2), encoding="utf-8")
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.parent / f".{path.name}.tmp.{os.getpid()}"
+    tmp_path.write_text(text, encoding="utf-8")
+    os.replace(tmp_path, path)
+
+
+_atomic_write_text(dst, json.dumps(report, ensure_ascii=True, indent=2))
 print(dst)
 EOF_PY
 

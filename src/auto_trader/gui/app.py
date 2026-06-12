@@ -1412,7 +1412,17 @@ def _load_weekly_candidate_report(
         payload = dict(payload)
         payload["range_probe_candidates"] = range_probe
         _merge_candidate_payload(payload, range_probe)
-    for key in ("candidate_summary", "decision", "selection", "market_status", "limit_status"):
+    for key in (
+        "candidate_summary",
+        "decision",
+        "selection",
+        "market_status",
+        "limit_status",
+        "manifest_weekly_diff",
+        "overview",
+        "summary_paths",
+        "statistical_qualification",
+    ):
         if key in raw_payload:
             payload[key] = raw_payload[key]
     if route_payload:
@@ -1421,6 +1431,70 @@ def _load_weekly_candidate_report(
             if key in route_payload and key not in payload:
                 payload[key] = route_payload[key]
     return payload if isinstance(payload, dict) else {}
+
+
+def _manifest_weekly_diff_rows(
+    weekly_report: Mapping[str, object] | None,
+) -> list[dict[str, object]]:
+    if not isinstance(weekly_report, Mapping):
+        return []
+    diff = weekly_report.get("manifest_weekly_diff", {})
+    if not isinstance(diff, Mapping):
+        return []
+    rows = diff.get("rows", [])
+    if not isinstance(rows, list):
+        return []
+    out: list[dict[str, object]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        out.append(
+            {
+                "route": str(row.get("route_key", "")),
+                "stage": str(row.get("selected_stage", "")),
+                "metrics_match": "yes" if bool(row.get("metric_match", False)) else "no",
+                "weekly_statistical": str(row.get("weekly_statistical_status", "")),
+                "source_trade_oos_days": _safe_float(row.get("source_trade_oos_days", 0.0)),
+                "weekly_trade_oos_days": _safe_float(row.get("weekly_trade_oos_days", 0.0)),
+                "weekly_fold_oos_days": _safe_float(row.get("weekly_fold_oos_days", 0.0)),
+                "fold_window_drift_days": _safe_float(row.get("fold_window_drift_days", 0.0)),
+                "closed_trades_mean": _safe_float(row.get("closed_trades_mean", 0.0)),
+                "statistical_reasons": ", ".join(
+                    str(item) for item in row.get("statistical_reasons", []) if str(item).strip()
+                )
+                if isinstance(row.get("statistical_reasons", []), list)
+                else "",
+            }
+        )
+    return out
+
+
+def _render_manifest_weekly_diff_section(weekly_report: Mapping[str, object] | None) -> None:
+    manifest_diff_rows = _manifest_weekly_diff_rows(weekly_report)
+    if not manifest_diff_rows:
+        st.info("No manifest-vs-weekly diff summary is available.")
+        return
+    st.subheader("Manifest vs Weekly drift")
+    diff_summary: dict[str, object] = {}
+    if isinstance(weekly_report, Mapping):
+        raw_diff_summary = weekly_report.get("manifest_weekly_diff", {})
+        if isinstance(raw_diff_summary, dict):
+            diff_summary = raw_diff_summary
+        else:
+            diff_summary = {}
+    route_count = int(_safe_float(diff_summary.get("route_count", len(manifest_diff_rows))))
+    metric_match_count = int(_safe_float(diff_summary.get("metric_match_count", 0)))
+    metric_mismatch_count = int(_safe_float(diff_summary.get("metric_mismatch_count", 0)))
+    oos_window_drift_count = int(_safe_float(diff_summary.get("oos_window_drift_count", 0)))
+    summary_cols = st.columns(4)
+    summary_cols[0].metric("Routes", route_count)
+    summary_cols[1].metric(
+        "Metric match",
+        f"{metric_match_count}/{route_count or len(manifest_diff_rows)}",
+    )
+    summary_cols[2].metric("Metric mismatch", metric_mismatch_count)
+    summary_cols[3].metric("Fold OOS drift", oos_window_drift_count)
+    st.dataframe(pd.DataFrame(manifest_diff_rows), width="stretch", hide_index=True)
 
 
 def _merge_candidate_payload(target: dict[str, object], source: Mapping[str, object]) -> None:
@@ -2462,6 +2536,7 @@ def _render_overview_tab(
     position_df: pd.DataFrame,
     gateway_state: dict[str, object],
     candidate_report: dict[str, object],
+    weekly_report: Mapping[str, object] | None = None,
 ) -> None:
     _render_status_cards(
         runtime_state=runtime_state,
@@ -2673,6 +2748,7 @@ def _render_overview_tab(
 
     _render_strategy_table("trend", "Trend performance")
     _render_strategy_table("range", "Range performance")
+
     limit_frame = _limit_evidence_frame(candidate_report)
     st.subheader("Limit evidence")
     if limit_frame.empty:
@@ -3368,12 +3444,12 @@ def _render_analysis_tab(
         st.info("Walkforward visual check is disabled")
 
 
-def _render_logs_tab(*, runtime_metrics_path: Path) -> None:
-    st.subheader("Logs")
+def _render_live_logs_tab(*, runtime_metrics_path: Path) -> None:
+    st.subheader("Live Logs")
     metrics_path_text = st.text_input(
         "Metrics JSONL path",
         value=str(runtime_metrics_path),
-        key="logs_runtime_metrics_path",
+        key="live_logs_runtime_metrics_path",
     )
     latest_metrics = _read_latest_jsonl_row(Path(metrics_path_text))
     if not latest_metrics:
@@ -3437,6 +3513,12 @@ def _render_logs_tab(*, runtime_metrics_path: Path) -> None:
     )
 
 
+def _render_audit_tab(*, weekly_report: Mapping[str, object] | None) -> None:
+    st.subheader("Audit")
+    st.caption("Weekly route-validation and drift comparison. Manual refresh only.")
+    _render_manifest_weekly_diff_section(weekly_report)
+
+
 def _render_sidebar_controls() -> None:
     st.sidebar.subheader("Controls")
     st.sidebar.caption(
@@ -3495,7 +3577,7 @@ def _render_sidebar_controls() -> None:
 
 
 @_fragment(AUTO_REFRESH_SEC)
-def _render_console() -> None:
+def _render_live_monitor() -> None:
     runtime_state = _load_runtime_state()
     worker_state = _load_worker_state()
     gateway_state = read_json_with_recovery(DATA_DIR / "exchange" / "gateway_state.json")
@@ -3504,16 +3586,11 @@ def _render_console() -> None:
     risk_input_df = _read_optional(DATA_DIR / "risk" / "risk_input.parquet")
     position_df = _read_optional(DATA_DIR / "positions" / "positions.parquet")
     regime_snapshot = _load_regime_snapshot()
-    portfolio_df = _read_optional(DATA_DIR / "backtest" / "portfolio.parquet")
-    backtest_runs = _discover_backtest_runs()
-    ohlcv_df = _read_optional(DATA_DIR / "parquet" / "BTCUSDT_1m.parquet")
     runtime_metrics = _load_runtime_metrics(DEFAULT_RUNTIME_METRICS_PATH)
     candidate_report = _load_candidate_report()
     weekly_candidate_report = _load_weekly_candidate_report()
 
-    overview_tab, trading_tab, charts_tab, analysis_tab, logs_tab = st.tabs(
-        ["Overview", "Trading", "Charts", "Analysis", "Logs"]
-    )
+    overview_tab, trading_tab, live_logs_tab = st.tabs(["Overview", "Trading", "Live Logs"])
     with overview_tab:
         _render_overview_tab(
             runtime_state=runtime_state,
@@ -3525,6 +3602,7 @@ def _render_console() -> None:
             position_df=position_df,
             gateway_state=gateway_state,
             candidate_report=weekly_candidate_report or candidate_report,
+            weekly_report=weekly_candidate_report,
         )
     with trading_tab:
         _render_trading_tab(
@@ -3533,6 +3611,23 @@ def _render_console() -> None:
             risk_df=risk_df,
             candidate_report=weekly_candidate_report or candidate_report,
         )
+    with live_logs_tab:
+        _render_live_logs_tab(runtime_metrics_path=DEFAULT_RUNTIME_METRICS_PATH)
+
+
+def _render_analysis_workspace() -> None:
+    risk_df = _read_optional(DATA_DIR / "risk" / "risk_eval.parquet")
+    portfolio_df = _read_optional(DATA_DIR / "backtest" / "portfolio.parquet")
+    ohlcv_df = _read_optional(DATA_DIR / "parquet" / "BTCUSDT_1m.parquet")
+    backtest_runs = _discover_backtest_runs()
+    candidate_report = _load_candidate_report()
+    weekly_candidate_report = _load_weekly_candidate_report()
+
+    st.caption(
+        "This workspace does not auto-refresh. "
+        "Rerun manually after generating new analysis artifacts."
+    )
+    charts_tab, analysis_tab, audit_tab = st.tabs(["Charts", "Analysis", "Audit"])
     with charts_tab:
         _render_charts_tab(
             risk_df=risk_df,
@@ -3541,8 +3636,8 @@ def _render_console() -> None:
         )
     with analysis_tab:
         _render_analysis_tab(portfolio_df=portfolio_df, backtest_runs=backtest_runs)
-    with logs_tab:
-        _render_logs_tab(runtime_metrics_path=DEFAULT_RUNTIME_METRICS_PATH)
+    with audit_tab:
+        _render_audit_tab(weekly_report=weekly_candidate_report)
 
 
 def _legacy_main() -> None:
@@ -3758,9 +3853,16 @@ def main() -> None:
     st.set_page_config(page_title="Auto Trader Ops Console", layout="wide")
     _inject_ui_stability_styles()
     st.title("Auto Trader Operations Dashboard")
-    st.caption("Auto-refresh every 10 seconds. Live state is updated automatically.")
+    st.caption(
+        "Live Monitor auto-refreshes every 10 seconds. "
+        "Analysis Workspace refreshes only on manual rerun."
+    )
     _render_sidebar_controls()
-    _render_console()
+    live_tab, analysis_tab = st.tabs(["Live Monitor", "Analysis Workspace"])
+    with live_tab:
+        _render_live_monitor()
+    with analysis_tab:
+        _render_analysis_workspace()
 
 
 if __name__ == "__main__":
