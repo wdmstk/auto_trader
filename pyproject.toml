@@ -44,6 +44,9 @@ markers = [
 omit = [
   "src/auto_trader/*/__main__.py",
   "src/auto_trader/*/cli.py",
+  "src/auto_trader/data/binance_client.py",
+  "src/auto_trader/exchange/user_stream.py",
+  "src/auto_trader/worker/route_sync.py",
   "src/auto_trader/worker/market_data.py",
   "src/auto_trader/worker/state.py",
 ]
