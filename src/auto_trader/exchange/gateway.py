@@ -25,6 +25,9 @@ class GatewayConfig:
     reconnect_backoff_ms: int = 200
     stale_signal_ttl_sec: int = 15
     runtime_state_path: str | None = None
+    require_runtime_state: bool = False
+    allow_runtime_state_fail_open: bool = False
+    runtime_state_max_age_sec: int | None = None
     backoff_base_sec: float = 0.2
     max_backoff_sec: float = 5.0
     state_path: str | None = None
@@ -59,7 +62,7 @@ class OrderGateway:
     ) -> OrderEvent:
         requested_at = now_utc()
         if not allow_runtime_gate:
-            runtime_block_reason = _runtime_gate_reason(self.config.runtime_state_path)
+            runtime_block_reason = _runtime_gate_reason(self.config)
             if runtime_block_reason is not None:
                 return _event(
                     req=req,
@@ -84,7 +87,7 @@ class OrderGateway:
                 reason=ErrorCode.STALE_SIGNAL.value,
                 requested_at=requested_at,
             )
-        if (not allow_policy_gate) and (req.regime == "HIGH_VOL" or (not req.pass_filter)):
+        if (not allow_policy_gate) and (req.regime in {"HIGH_VOL", "SUSTAINED"} or (not req.pass_filter)):
             return _event(
                 req=req,
                 order_id="",
@@ -168,9 +171,7 @@ class OrderGateway:
             req=req,
             order_id=order_id,
             status="rejected",
-            reason=f"retry_exhausted:{last_error.value}"
-            if _retryable(last_error)
-            else (last_reason or last_error.value),
+            reason=f"retry_exhausted:{last_error.value}" if _retryable(last_error) else (last_reason or last_error.value),
             requested_at=requested_at,
             sent_at=sent_at,
         )
@@ -179,9 +180,7 @@ class OrderGateway:
         if fill_ratio <= 0.0:
             return event
         if fill_ratio < 1.0:
-            return OrderEvent(
-                **{**event.__dict__, "status": "partial_filled", "reason": "partial_fill_update"}
-            )
+            return OrderEvent(**{**event.__dict__, "status": "partial_filled", "reason": "partial_fill_update"})
         return OrderEvent(
             **{
                 **event.__dict__,
@@ -225,16 +224,30 @@ def _is_stale(signal_ts: datetime, now: datetime, ttl_sec: int) -> bool:
     return now - signal_ts > timedelta(seconds=ttl_sec)
 
 
-def _runtime_gate_reason(runtime_state_path: str | None) -> ErrorCode | None:
+def _runtime_gate_reason(config: GatewayConfig) -> ErrorCode | None:
+    runtime_state_path = config.runtime_state_path
     if not runtime_state_path:
+        if config.require_runtime_state and not config.allow_runtime_state_fail_open:
+            return ErrorCode.RUNTIME_STATE_MISSING
         return None
     path = Path(runtime_state_path)
     if not path.exists():
+        if config.require_runtime_state and not config.allow_runtime_state_fail_open:
+            return ErrorCode.RUNTIME_STATE_MISSING
         return None
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return ErrorCode.RUNTIME_STATE_INVALID
+    updated_at_raw = str(payload.get("updated_at", "")).strip()
+    if config.runtime_state_max_age_sec is not None:
+        try:
+            updated_at = datetime.fromisoformat(updated_at_raw.replace("Z", "+00:00"))
+        except Exception:
+            return ErrorCode.RUNTIME_STATE_INVALID
+        age_sec = (now_utc() - updated_at).total_seconds()
+        if age_sec > float(config.runtime_state_max_age_sec):
+            return ErrorCode.RUNTIME_STATE_STALE
     trading_enabled = bool(payload.get("trading_enabled", False))
     emergency_stop = bool(payload.get("emergency_stop", False))
     if emergency_stop:

@@ -32,6 +32,9 @@
 - 週次戦略再評価（定期実行は `./scripts/weekly_strategy_revalidation_with_core.sh`、手動本線は `./scripts/weekly_strategy_revalidation.sh`）: `docs/implementation/weekly-revalidation-operations.md`
 - ライブ監視コンソール: `src/auto_trader/gui/app.py` の `Overview / Trading / Analysis` タブ
 
+## 最新のプロジェクト横断レビュー
+- 2026-06-13: `docs/implementation/project-review-2026-06-13.md`
+
 ## Doc First ルール（必須）
 - 実装開始前に、対象PhaseのSpecを `docs/specs/` に追加または更新する。
 - Specに未記載のI/O契約はコードへ持ち込まない。

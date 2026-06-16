@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 
@@ -71,7 +72,7 @@ def test_run_risk_pipeline_blocks_on_correlated_exposure(tmp_path: Path) -> None
     )
     assert out_path.exists()
     assert bool(out.loc[0, "risk_blocked"]) is True
-    reasons = out.loc[0, "block_reason_codes"]
+    reasons = cast(list[str], out.loc[0, "block_reason_codes"])
     assert "RISK_CORRELATED_EXPOSURE" in reasons
 
 
@@ -122,9 +123,9 @@ def test_run_risk_pipeline_derives_correlated_exposure_when_missing(tmp_path: Pa
     )
     assert "correlated_exposure_pct" in out.columns
     # top2 exposure sum at same timestamp: 40 + 25 = 65
-    assert float(out.loc[0, "correlated_exposure_pct"]) == 65.0
+    assert cast(float, out.loc[0, "correlated_exposure_pct"]) == 65.0
     assert bool(out.loc[0, "risk_blocked"]) is True
-    reasons = out.loc[0, "block_reason_codes"]
+    reasons = cast(list[str], out.loc[0, "block_reason_codes"])
     assert "RISK_CORRELATED_EXPOSURE" in reasons
 
 
@@ -171,5 +172,5 @@ def test_run_risk_pipeline_derives_vol_weighted_metrics(tmp_path: Path) -> None:
     assert "risk_contribution_pct" in out.columns
     assert "size_scale" in out.columns
     assert bool(out.loc[0, "risk_blocked"]) is True
-    reasons = out.loc[0, "block_reason_codes"]
+    reasons = cast(list[str], out.loc[0, "block_reason_codes"])
     assert "RISK_VOL_WEIGHTED_EXPOSURE" in reasons

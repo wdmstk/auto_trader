@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -86,3 +88,17 @@ def test_position_store_fails_when_lock_is_held(tmp_path: Path) -> None:
     store.lock_path().write_text("locked", encoding="utf-8")
     with pytest.raises(StateLockTimeoutError):
         store.save([])
+
+
+def test_position_store_recovers_from_stale_lock_with_old_timestamp(tmp_path: Path) -> None:
+    store = PositionStore(tmp_path, lock_timeout_sec=0.05)
+    lock_path = store.lock_path()
+    lock_path.write_text(
+        json.dumps({"pid": os.getpid(), "created_at": 0.0}),
+        encoding="utf-8",
+    )
+
+    out = store.save([])
+
+    assert out.exists()
+    assert not lock_path.exists()

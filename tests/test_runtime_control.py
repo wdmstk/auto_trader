@@ -72,3 +72,20 @@ def test_runtime_control_write_fails_when_lock_is_held(tmp_path: Path) -> None:
     h._lock_path().write_text("locked", encoding="utf-8")
     with pytest.raises(StateLockTimeoutError):
         h.on_start()
+
+
+def test_runtime_control_recovers_from_stale_lock_with_dead_pid(tmp_path: Path) -> None:
+    state_path = tmp_path / "runtime" / "control_state.json"
+    h = FileStateControlHandler(state_path=state_path, lock_timeout_sec=0.05)
+    lock_path = h._lock_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(
+        json.dumps({"pid": 999999, "created_at": 0.0}),
+        encoding="utf-8",
+    )
+
+    h.on_start()
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["trading_enabled"] is True
+    assert not lock_path.exists()

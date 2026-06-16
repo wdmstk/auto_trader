@@ -70,7 +70,7 @@ def _order_gate_fail_reason(
     if not bool(runtime.get("trading_enabled", False)):
         return "runtime_trading_disabled"
     regime = str(latest_signal.get("regime", ""))
-    if regime == "HIGH_VOL":
+    if regime in {"HIGH_VOL", "SUSTAINED"}:
         return "high_vol_blocked"
     if not bool(latest_signal.get("pass_filter", False)):
         return "pass_filter_blocked"

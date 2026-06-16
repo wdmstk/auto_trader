@@ -111,7 +111,7 @@ def build_overlay_frame(
     base["risk_block_marker"] = base["close"].where(base["risk_blocked"])
 
     # Regime as numeric band for quick visual inspection.
-    mapping = {"RANGE": 1.0, "TREND": 2.0, "HIGH_VOL": 3.0}
+    mapping = {"RANGE": 1.0, "TREND": 2.0, "SPIKE": 3.0, "SUSTAINED": 4.0, "HIGH_VOL": 4.0}
     base["regime_band"] = base["regime"].map(mapping).fillna(0.0)
 
     out = base.sort_values("timestamp").reset_index(drop=True)

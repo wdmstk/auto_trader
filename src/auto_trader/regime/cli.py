@@ -17,8 +17,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trend-breakout-persistence-min-bars", type=int, default=3)
     parser.add_argument("--range-bb-width-percentile-max", type=float, default=40.0)
     parser.add_argument("--range-adx-max", type=float, default=20.0)
-    parser.add_argument("--min-regime-hold-bars", type=int, default=3)
-    parser.add_argument("--high-vol-cooldown-bars", type=int, default=5)
+    parser.add_argument("--high-vol-sustained-min-bars", type=int, default=3)
+    parser.add_argument("--min-regime-hold-bars", type=int, default=1)
+    parser.add_argument("--high-vol-cooldown-bars", type=int, default=1)
     return parser
 
 
@@ -29,6 +30,7 @@ def main() -> int:
         trend_breakout_persistence_min_bars=args.trend_breakout_persistence_min_bars,
         range_bb_width_percentile_max=args.range_bb_width_percentile_max,
         range_adx_max=args.range_adx_max,
+        high_vol_sustained_min_bars=args.high_vol_sustained_min_bars,
         min_regime_hold_bars=args.min_regime_hold_bars,
         high_vol_cooldown_bars=args.high_vol_cooldown_bars,
     )

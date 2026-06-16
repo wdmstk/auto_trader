@@ -62,12 +62,7 @@ def run_backtest(
     close_values = merged["close"].astype(float).to_numpy(copy=False)
     high_values = merged["high"].astype(float).to_numpy(copy=False)
     low_values = merged["low"].astype(float).to_numpy(copy=False)
-    volume_values = (
-        merged.get("volume", pd.Series(0.0, index=merged.index))
-        .fillna(0.0)
-        .astype(float)
-        .to_numpy(copy=False)
-    )
+    volume_values = merged.get("volume", pd.Series(0.0, index=merged.index)).fillna(0.0).astype(float).to_numpy(copy=False)
     entry_values = merged["entry_signal"].to_numpy(dtype=bool, copy=False)
     exit_values = merged["exit_signal"].to_numpy(dtype=bool, copy=False)
     pass_values = merged["pass_filter"].to_numpy(dtype=bool, copy=False)
@@ -96,7 +91,7 @@ def run_backtest(
         delayed_next_high_values = np.array([], dtype=float)
         delayed_next_low_values = np.array([], dtype=float)
 
-    blocked_values = (regime_values == "HIGH_VOL") | (~pass_values)
+    blocked_values = (regime_values == "HIGH_VOL") | (regime_values == "SUSTAINED") | (~pass_values)
     market_buy_prices = delayed_close_values * (1.0 + cfg.slippage_rate + cfg.spread_rate)
     market_sell_prices = delayed_close_values * (1.0 - cfg.slippage_rate - cfg.spread_rate)
     limit_buy_prices = delayed_close_values * (1.0 - cfg.limit_offset_rate)
@@ -397,36 +392,20 @@ def summarize_metrics(
         if valid_notional.empty:
             expectancy_bps = 0.0
         else:
-            expectancy_bps = float(
-                (valid_notional["pnl"] / valid_notional["entry_notional"]).mean() * 10_000.0
-            )
+            expectancy_bps = float((valid_notional["pnl"] / valid_notional["entry_notional"]).mean() * 10_000.0)
 
     max_dd = float(portfolio_df["drawdown"].max())
     final_equity = float(portfolio_df.iloc[-1]["equity"])
     period_pnl = final_equity - initial_cash
-    fee_cost = (
-        float(trades_df.get("fee", pd.Series(dtype=float)).fillna(0.0).sum())
-        if not trades_df.empty
-        else 0.0
-    )
+    fee_cost = float(trades_df.get("fee", pd.Series(dtype=float)).fillna(0.0).sum()) if not trades_df.empty else 0.0
     limit_stats = _limit_order_stats(trades_df)
     if trades_df.empty:
         impact_cost = 0.0
     else:
         px = trades_df["price"].fillna(0.0).astype(float).abs()
         sz = trades_df["size"].fillna(0.0).astype(float).abs()
-        slip = (
-            trades_df.get("slippage", pd.Series(0.0, index=trades_df.index))
-            .fillna(0.0)
-            .astype(float)
-            .abs()
-        )
-        sprd = (
-            trades_df.get("spread", pd.Series(0.0, index=trades_df.index))
-            .fillna(0.0)
-            .astype(float)
-            .abs()
-        )
+        slip = trades_df.get("slippage", pd.Series(0.0, index=trades_df.index)).fillna(0.0).astype(float).abs()
+        sprd = trades_df.get("spread", pd.Series(0.0, index=trades_df.index)).fillna(0.0).astype(float).abs()
         impact_cost = float((px * sz * (slip + sprd)).sum())
     total_cost = fee_cost + impact_cost
     gross_pnl_est = period_pnl + total_cost
@@ -511,11 +490,7 @@ def _limit_fill_state(
 
 def _limit_partial_qty(*, order_qty: float, cfg: BacktestConfig, bar_volume: float) -> float:
     baseline = max(0.0, min(order_qty, order_qty * cfg.limit_partial_fill_ratio))
-    if (
-        cfg.limit_book_depth_units <= 0.0
-        and cfg.limit_queue_ahead_units <= 0.0
-        and cfg.limit_volume_participation_rate <= 0.0
-    ):
+    if cfg.limit_book_depth_units <= 0.0 and cfg.limit_queue_ahead_units <= 0.0 and cfg.limit_volume_participation_rate <= 0.0:
         return baseline
 
     depth_cap = cfg.limit_book_depth_units
@@ -552,9 +527,7 @@ def pair_roundtrips(trades_df: pd.DataFrame) -> pd.DataFrame:
             }
             continue
         if side == "sell" and open_trade is not None:
-            entry_value = _to_float(open_trade["price"]) * _to_float(
-                open_trade["size"]
-            ) + _to_float(open_trade["fee"])
+            entry_value = _to_float(open_trade["price"]) * _to_float(open_trade["size"]) + _to_float(open_trade["fee"])
             exit_value = _to_float(t.price) * _to_float(t.size) - _to_float(t.fee)
             pnl = exit_value - entry_value
             rows.append(
@@ -562,12 +535,9 @@ def pair_roundtrips(trades_df: pd.DataFrame) -> pd.DataFrame:
                     "entry_ts": open_trade["timestamp"],
                     "exit_ts": t.timestamp,
                     "pnl": pnl,
-                    "entry_notional": _to_float(open_trade["price"])
-                    * _to_float(open_trade["size"]),
+                    "entry_notional": _to_float(open_trade["price"]) * _to_float(open_trade["size"]),
                     "return_bps": (
-                        pnl
-                        / (_to_float(open_trade["price"]) * _to_float(open_trade["size"]))
-                        * 10_000.0
+                        pnl / (_to_float(open_trade["price"]) * _to_float(open_trade["size"])) * 10_000.0
                         if _to_float(open_trade["price"]) * _to_float(open_trade["size"]) > 0.0
                         else 0.0
                     ),
@@ -578,11 +548,7 @@ def pair_roundtrips(trades_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _limit_order_stats(trades_df: pd.DataFrame) -> dict[str, float]:
-    if (
-        trades_df.empty
-        or "order_mode" not in trades_df.columns
-        or "status" not in trades_df.columns
-    ):
+    if trades_df.empty or "order_mode" not in trades_df.columns or "status" not in trades_df.columns:
         return {
             "LimitOrderCount": 0.0,
             "LimitFilledCount": 0.0,

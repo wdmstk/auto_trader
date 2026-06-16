@@ -9,8 +9,9 @@ QUALIFICATION_REPORT_PATH="${QUALIFICATION_REPORT_PATH:-data/validation/statisti
 ANALYSIS_DIR="${ANALYSIS_DIR:-data/validation/weekly_autotune/weekly_revalidation/manifest_route_run_data/analysis}"
 OUTPUT_JSON="${OUTPUT_JSON:-}"
 OUTPUT_MD="${OUTPUT_MD:-}"
+RUN_ID="${RUN_ID:-${PIPELINE_RUN_ID:-}}"
 
-"$PYTHON_BIN" - "$QUALIFICATION_REPORT_PATH" "$ANALYSIS_DIR" "$OUTPUT_JSON" "$OUTPUT_MD" <<'PY'
+"$PYTHON_BIN" - "$QUALIFICATION_REPORT_PATH" "$ANALYSIS_DIR" "$OUTPUT_JSON" "$OUTPUT_MD" "$RUN_ID" <<'PY'
 from __future__ import annotations
 
 import json
@@ -103,6 +104,7 @@ qualification_path = Path(sys.argv[1])
 analysis_dir = Path(sys.argv[2])
 output_json_arg = sys.argv[3].strip()
 output_md_arg = sys.argv[4].strip()
+run_id = sys.argv[5].strip()
 
 default_output_dir = (
     analysis_dir.parents[1]
@@ -142,10 +144,13 @@ for route in routes:
     )
 
 payload = {
+    "run_id": run_id,
     "generated_at": datetime.now(UTC).isoformat(),
     "qualification_report_path": str(qualification_path),
     "analysis_dir": str(analysis_dir),
+    "qualification_failed_route_count": len(routes),
     "route_count": len(diagnostics),
+    "status": "pass" if len(diagnostics) == len(routes) else "fail",
     "routes": diagnostics,
 }
 output_json.parent.mkdir(parents=True, exist_ok=True)
@@ -155,8 +160,11 @@ lines = [
     "# Statistical Fail Diagnostics",
     "",
     f"- generated_at: {payload['generated_at']}",
+    f"- run_id: {run_id or '-'}",
     f"- qualification_report_path: {qualification_path}",
     f"- analysis_dir: {analysis_dir}",
+    f"- status: {payload['status']}",
+    f"- qualification_failed_route_count: {len(routes)}",
     f"- route_count: {len(diagnostics)}",
     "",
 ]

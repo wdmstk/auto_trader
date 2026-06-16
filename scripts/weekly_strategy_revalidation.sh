@@ -50,7 +50,9 @@ STATISTICAL_DIR="${STATISTICAL_DIR:-data/validation/statistical_qualification}"
 STATISTICAL_REPORT_PATH="$STATISTICAL_DIR/qualification_report.json"
 STATISTICAL_MANIFEST_PATH="$STATISTICAL_DIR/frozen_manifest.json"
 ROUTE_SELECTION_PATH="${ROUTE_SELECTION_PATH:-}"
+RISK_EVAL_PATH="${RISK_EVAL_PATH:-data/risk/risk_eval.parquet}"
 STATISTICAL_GATE_MODE="${STATISTICAL_GATE_MODE:-soft}"
+RUN_ID="${RUN_ID:-${PIPELINE_RUN_ID:-weekly-revalidation-$(TZ=UTC date +%Y%m%dT%H%M%SZ)}}"
 MANIFEST_SUMMARY_PATH="$OUT_DIR/manifest_route_summary.json"
 MANIFEST_CANDIDATE_REPORT_PATH="$OUT_DIR/manifest_candidate_report.json"
 MANIFEST_DATA_ROOT="${MANIFEST_DATA_ROOT:-$OUT_DIR/manifest_route_run_data}"
@@ -58,6 +60,7 @@ MANIFEST_DATA_ROOT="${MANIFEST_DATA_ROOT:-$OUT_DIR/manifest_route_run_data}"
 SUMMARY_PATH="$OUT_DIR/timeframe_comparison_summary.json"
 echo "weekly_parallel: scan=$WEEKLY_SCAN_PARALLEL route=$WEEKLY_ROUTE_PARALLEL route_data=$WEEKLY_ROUTE_DATA_PARALLEL"
 echo "statistical_gate_mode=$STATISTICAL_GATE_MODE"
+echo "run_id=$RUN_ID"
 SUMMARY_PATH="$SUMMARY_PATH" \
 CANDIDATE_REPORT_PATH="$CANDIDATE_REPORT_PATH" \
 PARALLEL="$WEEKLY_SCAN_PARALLEL" \
@@ -109,11 +112,12 @@ fi
 
 mkdir -p "$STATISTICAL_DIR"
 PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
-python - "$SELECTED_MARKET_SUMMARY_PATH" "$SELECTED_ANALYSIS_DIR" "$STATISTICAL_MANIFEST_PATH" "$STATISTICAL_REPORT_PATH" "$DELAY_BARS" <<'EOF_PY'
+python - "$SELECTED_MARKET_SUMMARY_PATH" "$SELECTED_ANALYSIS_DIR" "$STATISTICAL_MANIFEST_PATH" "$STATISTICAL_REPORT_PATH" "$DELAY_BARS" "$RUN_ID" <<'EOF_PY'
 from __future__ import annotations
 
 import json
 import sys
+from datetime import UTC, datetime
 
 from auto_trader.analysis.statistical import build_statistical_qualification
 
@@ -123,6 +127,8 @@ report = build_statistical_qualification(
     manifest_path=sys.argv[3],
     report_path=sys.argv[4],
     execution_delay_bars=int(sys.argv[5]),
+    run_id=sys.argv[6],
+    generated_at=datetime.now(UTC).isoformat(),
 )
 print(json.dumps({"status": report["status"], "report_path": sys.argv[4]}, ensure_ascii=True))
 EOF_PY
@@ -274,7 +280,9 @@ python - \
   "$DRIFT_REPORT_PATH" \
   "$STATISTICAL_REPORT_PATH" \
   "$ROUTE_SELECTION_PATH" \
-  "$STATISTICAL_GATE_MODE" <<'EOF_PY'
+  "$RISK_EVAL_PATH" \
+  "$STATISTICAL_GATE_MODE" \
+  "$RUN_ID" <<'EOF_PY'
 from __future__ import annotations
 
 import os
@@ -290,9 +298,12 @@ dst = Path(sys.argv[6])
 drift_path = Path(sys.argv[7])
 statistical_path = Path(sys.argv[8])
 route_selection_path = Path(sys.argv[9]) if len(sys.argv) > 9 and sys.argv[9] else None
-statistical_gate_mode = sys.argv[10] if len(sys.argv) > 10 else "soft"
+risk_eval_path = Path(sys.argv[10]) if len(sys.argv) > 10 and sys.argv[10] else None
+statistical_gate_mode = sys.argv[11] if len(sys.argv) > 11 else "soft"
+run_id = sys.argv[12] if len(sys.argv) > 12 else ""
 
 import json
+from datetime import UTC, datetime
 
 from auto_trader.analysis.revalidation import build_weekly_revalidation_report
 from auto_trader.analysis.trade_routes import (
@@ -308,8 +319,11 @@ report = build_weekly_revalidation_report(
     drift_report=drift_path,
     statistical_report=statistical_path,
     route_selection=route_selection_path if route_selection_path and route_selection_path.exists() else None,
+    portfolio_risk_eval=risk_eval_path if risk_eval_path and risk_eval_path.exists() else None,
     timeframe="15m",
     statistical_gate_mode=statistical_gate_mode,
+    run_id=run_id,
+    generated_at=datetime.now(UTC).isoformat(),
 )
 if probe_candidate_path.exists():
     try:
@@ -331,6 +345,8 @@ report["selection"] = selection
 report["summary_paths"] = {
     "market": str(market_summary),
     "limit": str(limit_summary),
+    "drift": str(drift_path),
+    "statistical": str(statistical_path),
 }
 
 
@@ -344,5 +360,12 @@ def _atomic_write_text(path: Path, text: str) -> None:
 _atomic_write_text(dst, json.dumps(report, ensure_ascii=True, indent=2))
 print(dst)
 EOF_PY
+
+RUN_ID="$RUN_ID" \
+QUALIFICATION_REPORT_PATH="$STATISTICAL_REPORT_PATH" \
+ANALYSIS_DIR="$SELECTED_ANALYSIS_DIR" \
+OUTPUT_JSON="$OUT_DIR/statistical_fail_diagnostics.json" \
+OUTPUT_MD="$OUT_DIR/statistical_fail_diagnostics.md" \
+./scripts/statistical_fail_diagnostics_report.sh
 
 echo "done: $OUT_DIR"

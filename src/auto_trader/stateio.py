@@ -17,10 +17,17 @@ class StateLockTimeoutError(RuntimeError):
 
 
 class FileLock:
-    def __init__(self, path: str | Path, timeout_sec: float = 1.0, poll_sec: float = 0.02) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        timeout_sec: float = 1.0,
+        poll_sec: float = 0.02,
+        stale_timeout_sec: float = 300.0,
+    ) -> None:
         self.path = Path(path)
         self.timeout_sec = timeout_sec
         self.poll_sec = poll_sec
+        self.stale_timeout_sec = stale_timeout_sec
         self._locked = False
 
     def __enter__(self) -> FileLock:
@@ -30,12 +37,18 @@ class FileLock:
             try:
                 fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(str(os.getpid()))
+                    json.dump(
+                        {"pid": os.getpid(), "created_at": time.time()},
+                        f,
+                        ensure_ascii=True,
+                    )
                     f.flush()
                     os.fsync(f.fileno())
                 self._locked = True
                 return self
             except FileExistsError:
+                if self._reclaim_if_stale():
+                    continue
                 if (time.monotonic() - start) >= self.timeout_sec:
                     raise StateLockTimeoutError(f"timed out acquiring lock: {self.path}") from None
                 time.sleep(self.poll_sec)
@@ -44,6 +57,21 @@ class FileLock:
         if self._locked:
             self.path.unlink(missing_ok=True)
             self._locked = False
+
+    def _reclaim_if_stale(self) -> bool:
+        lock_info = _read_lock_info(self.path)
+        if lock_info is None:
+            return False
+        pid, created_at = lock_info
+        if not _is_stale_lock(
+            pid=pid,
+            created_at=created_at,
+            stale_timeout_sec=self.stale_timeout_sec,
+            path=self.path,
+        ):
+            return False
+        self.path.unlink(missing_ok=True)
+        return True
 
 
 def atomic_write_file(
@@ -63,9 +91,7 @@ def atomic_write_file(
     return target
 
 
-def atomic_write_json(
-    path: str | Path, payload: dict[str, object], *, make_backup: bool = True
-) -> Path:
+def atomic_write_json(path: str | Path, payload: dict[str, object], *, make_backup: bool = True) -> Path:
     def _write(tmp_path: Path) -> None:
         with tmp_path.open("w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=True)
@@ -91,3 +117,81 @@ def read_json_with_recovery(path: str | Path) -> dict[str, object]:
     except Exception:
         pass
     return {}
+
+
+def _read_lock_info(path: Path) -> tuple[int | None, float | None] | None:
+    def _maybe_int(value: object) -> int | None:
+        try:
+            if isinstance(value, bool):
+                return int(value)
+            if isinstance(value, int):
+                return value
+            if isinstance(value, float):
+                return int(value)
+            if isinstance(value, str):
+                return int(value)
+            return None
+        except Exception:
+            return None
+
+    def _maybe_float(value: object) -> float | None:
+        try:
+            if isinstance(value, bool):
+                return float(value)
+            if isinstance(value, int | float):
+                return float(value)
+            if isinstance(value, str):
+                return float(value)
+            return None
+        except Exception:
+            return None
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        pid = payload.get("pid")
+        created_at = payload.get("created_at")
+        return _maybe_int(pid), _maybe_float(created_at)
+    if isinstance(payload, int):
+        return payload, None
+    if isinstance(payload, str) and payload.isdigit():
+        return int(payload), None
+    try:
+        pid = int(path.read_text(encoding="utf-8").strip())
+    except Exception:
+        pid = None
+    try:
+        created_at = path.stat().st_mtime
+    except FileNotFoundError:
+        return None
+    return pid, created_at
+
+
+def _is_stale_lock(
+    *,
+    pid: int | None,
+    created_at: float | None,
+    stale_timeout_sec: float,
+    path: Path,
+) -> bool:
+    if pid is not None and not _pid_is_alive(pid):
+        return True
+    if stale_timeout_sec <= 0:
+        return False
+    try:
+        age_sec = time.time() - (created_at if created_at is not None else path.stat().st_mtime)
+    except FileNotFoundError:
+        return False
+    return age_sec >= stale_timeout_sec
+
+
+def _pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True

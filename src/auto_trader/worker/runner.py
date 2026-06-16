@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 import pandas as pd
+import yaml
 
 from auto_trader.exchange.cli import _resolve_api_credentials
 from auto_trader.exchange.gateway import GatewayConfig, OrderGateway
@@ -21,16 +22,20 @@ from auto_trader.position.manager import PositionConfig, PositionManager
 from auto_trader.position.models import FillEvent, PositionState, build_route_key
 from auto_trader.position.store import PositionStore
 from auto_trader.regime.classifier import RegimeConfig, classify_regime
+from auto_trader.risk.manager import RiskConfig as LiveRiskConfig
+from auto_trader.risk.manager import RiskManager, build_concentration_score
 from auto_trader.stateio import FileLock, read_json_with_recovery
 from auto_trader.strategy.ml_filter import apply_signal_ml_filter, resolve_ml_artifact_path
 from auto_trader.strategy.range_strategy import RangeStrategyConfig, generate_range_signals
 from auto_trader.strategy.session_gate import apply_session_gate
 from auto_trader.strategy.trend_strategy import TrendStrategyConfig, generate_trend_signals
+from auto_trader.worker.execution_sync import reconcile_execution_events_once
 from auto_trader.worker.market_data import (
     BinanceKlineClient,
     BinanceKlineClientConfig,
     resample_ohlcv,
 )
+from auto_trader.worker.route_sync import resolve_worker_routes
 from auto_trader.worker.state import WorkerState
 
 OrderMode = Literal["market", "limit"]
@@ -43,6 +48,7 @@ class TradeRoute:
     timeframe: str
     expected_regime: str
     candidate_status: str = "core"
+    statistical_status: str = "missing"
 
     def route_key(self) -> str:
         return build_route_key(
@@ -55,12 +61,17 @@ class TradeRoute:
         return self.route_key()
 
     def to_dict(self) -> dict[str, object]:
+        route_policy = ""
+        if self.statistical_status != "pass":
+            route_policy = "test-only / statistical-fail"
         return {
             "symbol": self.symbol,
             "strategy": self.strategy,
             "timeframe": self.timeframe,
             "expected_regime": self.expected_regime,
             "candidate_status": self.candidate_status,
+            "statistical_status": self.statistical_status,
+            "route_policy": route_policy,
             "route_key": self.route_key(),
         }
 
@@ -70,11 +81,10 @@ class WorkerConfig:
     symbols: tuple[str, ...]
     trend_symbols: tuple[str, ...]
     range_symbols: tuple[str, ...]
+    execution_mode: str = "testnet"
     route_selection_path: str = ""
     auto_sync_route_selection: bool = True
-    weekly_revalidation_report_path: str = (
-        "data/validation/weekly_revalidation/weekly_revalidation_report.json"
-    )
+    weekly_revalidation_report_path: str = "data/validation/weekly_revalidation/weekly_revalidation_report.json"
     auto_sync_weekly_symbols: bool = True
     trend_order_mode: OrderMode = "market"
     range_order_mode: OrderMode = "market"
@@ -89,6 +99,10 @@ class WorkerConfig:
     equity: float = 1000.0
     limit_offset_rate: float = 0.0
     runtime_state_path: str = "data/runtime/control_state.json"
+    runtime_state_max_age_sec: int = 120
+    allow_runtime_state_fail_open: bool = False
+    settings_path: str = ""
+    risk_input_path: str = "data/risk/risk_input.parquet"
     gateway_state_path: str = "data/exchange/gateway_state.json"
     positions_dir: str = "data/positions"
     worker_state_path: str = "data/runtime/worker_state.json"
@@ -106,6 +120,24 @@ class WorkerConfig:
     position_config: PositionConfig = PositionConfig()
 
 
+@dataclass(frozen=True)
+class ExecutionSyncState:
+    status: str
+    cumulative_filled_qty: float
+    event_ts: datetime
+
+
+@dataclass(frozen=True)
+class EffectiveRiskConfig:
+    source_path: str
+    max_dd_pct: float
+    max_symbol_exposure_pct: float
+    max_portfolio_exposure_pct: float
+    max_correlated_exposure_pct: float
+    max_vol_weighted_exposure_pct: float
+    max_risk_contribution_pct: float
+
+
 class LiveTradingWorker:
     def __init__(
         self,
@@ -116,6 +148,17 @@ class LiveTradingWorker:
         sleeper: Any = time.sleep,
     ) -> None:
         self.config = config
+        self._effective_risk_config = self._load_effective_risk_config()
+        self._risk_manager = RiskManager(
+            LiveRiskConfig(
+                max_dd_pct=self._effective_risk_config.max_dd_pct,
+                max_symbol_exposure_pct=self._effective_risk_config.max_symbol_exposure_pct,
+                max_portfolio_exposure_pct=self._effective_risk_config.max_portfolio_exposure_pct,
+                max_correlated_exposure_pct=self._effective_risk_config.max_correlated_exposure_pct,
+                max_vol_weighted_exposure_pct=self._effective_risk_config.max_vol_weighted_exposure_pct,
+                max_risk_contribution_pct=self._effective_risk_config.max_risk_contribution_pct,
+            )
+        )
         self.market_client = market_client or BinanceKlineClient(
             BinanceKlineClientConfig(
                 base_url=config.market_base_url,
@@ -134,6 +177,7 @@ class LiveTradingWorker:
                 timeframe=config.strategy_timeframe,
                 expected_regime="TREND",
                 candidate_status="legacy",
+                statistical_status="missing",
             )
             self._active_routes[route.route_key()] = route
         for symbol in self._active_range_symbols:
@@ -143,13 +187,17 @@ class LiveTradingWorker:
                 timeframe=config.strategy_timeframe,
                 expected_regime="RANGE",
                 candidate_status="legacy",
+                statistical_status="missing",
             )
             self._active_routes.setdefault(route.route_key(), route)
-        self._active_symbols = self._merge_symbols(
-            self._base_symbols, self._active_trend_symbols, self._active_range_symbols
-        )
+        self._active_symbols = self._merge_symbols(self._base_symbols, self._active_trend_symbols, self._active_range_symbols)
         self.position_store = PositionStore(config.positions_dir)
-        self.position_manager = PositionManager(config.position_config)
+        position_config = PositionConfig(
+            max_add_count=config.position_config.max_add_count,
+            max_symbol_exposure_pct=self._effective_risk_config.max_symbol_exposure_pct,
+            max_portfolio_exposure_pct=self._effective_risk_config.max_portfolio_exposure_pct,
+        )
+        self.position_manager = PositionManager(position_config)
         self.position_manager.replace_positions(self.position_store.load())
         self.worker_state = self._load_worker_state()
         self.execution_client = BinanceWsExecutionClient()
@@ -179,6 +227,17 @@ class LiveTradingWorker:
             "runtime": runtime_state,
             "symbol_sync": symbol_sync,
             "execution_sync": self.reconcile_execution_events_once(),
+            "effective_config": {
+                "risk": {
+                    "source_path": self._effective_risk_config.source_path,
+                    "max_dd_pct": self._effective_risk_config.max_dd_pct,
+                    "max_symbol_exposure_pct": self._effective_risk_config.max_symbol_exposure_pct,
+                    "max_portfolio_exposure_pct": self._effective_risk_config.max_portfolio_exposure_pct,
+                    "max_correlated_exposure_pct": self._effective_risk_config.max_correlated_exposure_pct,
+                    "max_vol_weighted_exposure_pct": self._effective_risk_config.max_vol_weighted_exposure_pct,
+                    "max_risk_contribution_pct": self._effective_risk_config.max_risk_contribution_pct,
+                }
+            },
             "trade_symbols": {
                 "symbols": list(self._active_symbols),
                 "trend_symbols": list(self._active_trend_symbols),
@@ -189,11 +248,7 @@ class LiveTradingWorker:
         mark_prices: dict[str, float] = {}
         try:
             closed_by_symbol = self._load_closed_market_frames()
-            mark_prices = {
-                symbol: float(frame["close"].iloc[-1])
-                for symbol, frame in closed_by_symbol.items()
-                if not frame.empty
-            }
+            mark_prices = {symbol: float(frame["close"].iloc[-1]) for symbol, frame in closed_by_symbol.items() if not frame.empty}
         except Exception as exc:
             self.worker_state.last_error = f"market_data_error:{exc.__class__.__name__}"
             self.worker_state.last_cycle_at = cycle_started_at
@@ -229,9 +284,7 @@ class LiveTradingWorker:
             mark_prices[route.symbol] = mark_price
 
             state_key = route.state_key()
-            already_processed = (
-                self.worker_state.last_processed_bars.get(state_key) == latest_bar_ts
-            )
+            already_processed = self.worker_state.last_processed_bars.get(state_key) == latest_bar_ts
             signal_frame = self._build_signal_frame(
                 symbol=route.symbol,
                 frame_15m=frame,
@@ -257,12 +310,6 @@ class LiveTradingWorker:
                 "reason_codes": latest.get("signal_reason_codes", []),
             }
             pos = self.position_manager.get(route_key)
-            risk_blocked = self.position_manager.risk_blocked(
-                mark_prices=mark_prices,
-                equity=self.config.equity,
-                symbol=route.symbol,
-            )
-            route_summary["risk_blocked"] = risk_blocked
             self.worker_state.last_processed_bars[state_key] = latest_bar_ts
             if already_processed:
                 route_summary["status"] = "already_processed"
@@ -276,9 +323,12 @@ class LiveTradingWorker:
                     latest_row=latest,
                     position=pos,
                     mark_price=mark_price,
-                    risk_blocked=risk_blocked,
+                    mark_prices=mark_prices,
                     allow_runtime_gate=False,
                 )
+                route_summary["risk_blocked"] = bool(action_result.get("risk_blocked", False))
+                if "risk" in action_result:
+                    route_summary["risk"] = action_result.get("risk")
                 route_summary["trade"] = action_result
                 if action_result.get("order_submitted"):
                     orders.append(action_result)
@@ -295,9 +345,7 @@ class LiveTradingWorker:
                 if isinstance(route_result, dict):
                     symbol_routes.append(route_result)
             active_route_count = symbol_summary.get("active_route_count", 0)
-            symbol_summary["active_route_count"] = (
-                int(active_route_count) if isinstance(active_route_count, int | str) else 0
-            ) + 1
+            symbol_summary["active_route_count"] = (int(active_route_count) if isinstance(active_route_count, int | str) else 0) + 1
             if route.route_key() in routes:
                 route_result = routes[route.route_key()]
                 symbol_summary["status"] = str(route_result.get("status", symbol_summary["status"]))
@@ -310,9 +358,7 @@ class LiveTradingWorker:
         results_obj = summary.get("routes", summary.get("symbols", {}))
         if isinstance(results_obj, dict):
             self.worker_state.last_results = {
-                str(symbol): cast(dict[str, object], result)
-                for symbol, result in results_obj.items()
-                if isinstance(result, dict)
+                str(symbol): cast(dict[str, object], result) for symbol, result in results_obj.items() if isinstance(result, dict)
             }
         else:
             self.worker_state.last_results = {}
@@ -321,9 +367,7 @@ class LiveTradingWorker:
         self.worker_state.save(self.config.worker_state_path)
         self.position_store.save(self.position_manager.all_positions())
 
-    def _flatten_positions(
-        self, mark_prices: dict[str, float], *, reason: str
-    ) -> list[dict[str, object]]:
+    def _flatten_positions(self, mark_prices: dict[str, float], *, reason: str) -> list[dict[str, object]]:
         orders: list[dict[str, object]] = []
         for pos in list(self.position_manager.all_positions()):
             if pos.qty <= 0:
@@ -358,7 +402,7 @@ class LiveTradingWorker:
         latest_row: dict[str, object],
         position: PositionState | None,
         mark_price: float,
-        risk_blocked: bool,
+        mark_prices: dict[str, float],
         allow_runtime_gate: bool,
     ) -> dict[str, object]:
         signal_ts = pd.to_datetime(cast(Any, latest_row.get("timestamp")), utc=True).to_pydatetime()
@@ -370,11 +414,7 @@ class LiveTradingWorker:
         size_ratio = float(cast(Any, latest_row.get("position_size_ratio", 0.0)))
         reason_codes_value = latest_row.get("signal_reason_codes", [])
         reason_codes = reason_codes_value if isinstance(reason_codes_value, list) else []
-        order_mode = (
-            self.config.trend_order_mode
-            if route.strategy == "trend"
-            else self.config.range_order_mode
-        )
+        order_mode = self.config.trend_order_mode if route.strategy == "trend" else self.config.range_order_mode
         if route.strategy == "trend" and route.symbol not in self._active_trend_symbols:
             return {"order_submitted": False, "status": "disabled"}
         if route.strategy == "range" and route.symbol not in self._active_range_symbols:
@@ -389,9 +429,7 @@ class LiveTradingWorker:
                 side="sell" if position.side == "buy" else "buy",
                 qty=qty,
                 order_type=order_mode,
-                limit_price=self._limit_price(
-                    order_mode, mark_price, "sell" if position.side == "buy" else "buy"
-                ),
+                limit_price=self._limit_price(order_mode, mark_price, "sell" if position.side == "buy" else "buy"),
                 signal_ts=signal_ts,
                 regime=regime,
                 pass_filter=pass_filter,
@@ -406,13 +444,24 @@ class LiveTradingWorker:
                 pre_position=position,
             )
 
-        if risk_blocked:
-            return {"order_submitted": False, "status": "risk_blocked"}
-
         if position is None and entry_signal and pass_filter:
             qty = self._entry_qty(mark_price, size_ratio)
             if qty <= 0:
                 return {"order_submitted": False, "status": "qty_zero"}
+            risk_eval = self._evaluate_projected_risk(
+                route=route,
+                side="buy",
+                qty=qty,
+                mark_price=mark_price,
+                mark_prices=mark_prices,
+            )
+            if bool(risk_eval.get("risk_blocked", False)):
+                return {
+                    "order_submitted": False,
+                    "status": "risk_blocked",
+                    "risk_blocked": True,
+                    "risk": risk_eval,
+                }
             return self._submit_order(
                 symbol=route.symbol,
                 side="buy",
@@ -431,12 +480,27 @@ class LiveTradingWorker:
                 is_add=False,
                 reason_codes=reason_codes,
                 pre_position=None,
+                risk_eval=risk_eval,
             )
 
         if position is not None and add_signal and pass_filter:
             qty = self._entry_qty(mark_price, size_ratio)
             if qty <= 0:
                 return {"order_submitted": False, "status": "qty_zero"}
+            risk_eval = self._evaluate_projected_risk(
+                route=route,
+                side="buy",
+                qty=qty,
+                mark_price=mark_price,
+                mark_prices=mark_prices,
+            )
+            if bool(risk_eval.get("risk_blocked", False)):
+                return {
+                    "order_submitted": False,
+                    "status": "risk_blocked",
+                    "risk_blocked": True,
+                    "risk": risk_eval,
+                }
             return self._submit_order(
                 symbol=route.symbol,
                 side="buy",
@@ -455,9 +519,10 @@ class LiveTradingWorker:
                 is_add=True,
                 reason_codes=reason_codes,
                 pre_position=position,
+                risk_eval=risk_eval,
             )
 
-        return {"order_submitted": False, "status": "no_action"}
+        return {"order_submitted": False, "status": "no_action", "risk_blocked": False}
 
     def _submit_order(
         self,
@@ -479,6 +544,7 @@ class LiveTradingWorker:
         is_add: bool,
         reason_codes: object | None = None,
         pre_position: PositionState | None = None,
+        risk_eval: dict[str, object] | None = None,
     ) -> dict[str, object]:
         normalized_qty = float(qty)
         normalized_limit_price = limit_price
@@ -519,8 +585,13 @@ class LiveTradingWorker:
         event = self.gateway.submit(
             req,
             allow_runtime_gate=allow_runtime_gate,
-            allow_policy_gate=allow_runtime_gate,
+            allow_policy_gate=allow_runtime_gate or action in {"exit", "emergency_close"},
         )
+        block_reason_codes = []
+        if isinstance(risk_eval, dict):
+            raw_block_reason_codes = risk_eval.get("block_reason_codes", [])
+            if isinstance(raw_block_reason_codes, list):
+                block_reason_codes = [str(value) for value in raw_block_reason_codes]
         log_row = {
             "ts": _now_iso(),
             "symbol": symbol,
@@ -546,13 +617,15 @@ class LiveTradingWorker:
             "reason_codes": reason_codes if reason_codes is not None else [],
             "pre_position_exists": pre_position is not None and pre_position.qty > 0.0,
             "pre_position_qty": float(pre_position.qty) if pre_position is not None else 0.0,
-            "pre_position_avg_entry": (
-                float(pre_position.avg_entry) if pre_position is not None else 0.0
-            ),
+            "pre_position_avg_entry": (float(pre_position.avg_entry) if pre_position is not None else 0.0),
             "pre_position_side": pre_position.side if pre_position is not None else "",
-            "pre_position_add_count": int(pre_position.add_count)
-            if pre_position is not None
-            else 0,
+            "pre_position_add_count": int(pre_position.add_count) if pre_position is not None else 0,
+            "risk_blocked": bool((risk_eval or {}).get("risk_blocked", False)),
+            "risk_codes": block_reason_codes,
+            "risk_size_scale": _coerce_float(
+                risk_eval.get("size_scale", 1.0) if isinstance(risk_eval, dict) else 1.0,
+                default=1.0,
+            ),
         }
         self._append_order_event(log_row)
 
@@ -560,28 +633,9 @@ class LiveTradingWorker:
         result["order_submitted"] = True
         result["gateway_status"] = event.status
         result["gateway_reason"] = event.reason
+        result["risk"] = risk_eval or {"risk_blocked": False, "block_reason_codes": ["RISK_OK"]}
         if event.status == "ack":
-            fill = FillEvent(
-                symbol=symbol,
-                side=side,
-                qty=float(qty),
-                price=float(
-                    event.limit_price
-                    if event.order_type == "limit" and event.limit_price
-                    else price
-                ),
-                filled_at=event.ack_at or datetime.now(UTC),
-                is_add=is_add,
-                strategy=strategy,
-                timeframe=timeframe,
-                route_key=route_key,
-            )
-            state = self.position_manager.apply_fill(fill)
-            self.position_store.save(self.position_manager.all_positions())
-            result["position_qty"] = state.qty
-            result["position_avg_entry"] = state.avg_entry
-            result["position_side"] = state.side
-            result["position_route_key"] = state.route_key
+            result["pending_reconciliation"] = True
         return result
 
     def _append_order_event(self, payload: dict[str, object]) -> None:
@@ -595,41 +649,12 @@ class LiveTradingWorker:
                 os.fsync(f.fileno())
 
     def reconcile_execution_events_once(self) -> dict[str, object]:
-        events_path = Path(self.config.execution_events_path)
-        cursor_path = Path(self.config.execution_cursor_path)
-        if not events_path.exists():
-            return {"processed": 0, "applied": 0, "invalid": 0, "ignored": 0}
-
-        lines = events_path.read_text(encoding="utf-8").splitlines()
-        start_index = _read_line_cursor(cursor_path)
-        if start_index >= len(lines):
-            return {"processed": 0, "applied": 0, "invalid": 0, "ignored": 0}
-
-        processed = 0
-        applied = 0
-        invalid = 0
-        ignored = 0
-        for line in lines[start_index:]:
-            processed += 1
-            event = self.execution_client.parse_message(line)
-            if event is None:
-                invalid += 1
-                continue
-            if event.status not in {"filled", "canceled", "expired"}:
-                ignored += 1
-                continue
-            if self._apply_execution_event(event):
-                applied += 1
-            else:
-                ignored += 1
-
-        _write_line_cursor(cursor_path, len(lines))
-        return {
-            "processed": processed,
-            "applied": applied,
-            "invalid": invalid,
-            "ignored": ignored,
-        }
+        return reconcile_execution_events_once(
+            events_path=self.config.execution_events_path,
+            cursor_path=self.config.execution_cursor_path,
+            parse_message=self.execution_client.parse_message,
+            handle_event=self._apply_execution_event,
+        )
 
     def _apply_execution_event(self, event: ExecutionStreamEvent) -> bool:
         order_row = self._find_order_event_context(
@@ -643,7 +668,25 @@ class LiveTradingWorker:
         if not route_key:
             return False
 
-        reconciled = self._reconciled_position_from_execution(order_row, event)
+        previous_sync = self._last_execution_sync_state(
+            order_id=event.order_id,
+            client_order_id=event.client_order_id,
+        )
+        cumulative_filled_qty = max(float(event.filled_qty), 0.0)
+        previous_cumulative = previous_sync.cumulative_filled_qty if previous_sync is not None else 0.0
+        if cumulative_filled_qty < previous_cumulative:
+            return False
+        if previous_sync is not None and cumulative_filled_qty == previous_cumulative and event.status == previous_sync.status:
+            return False
+        if previous_sync is not None and cumulative_filled_qty <= previous_cumulative and event.event_ts <= previous_sync.event_ts:
+            return False
+
+        delta_filled_qty = max(0.0, cumulative_filled_qty - previous_cumulative)
+        reconciled = self._apply_execution_fill_delta(
+            order_row=order_row,
+            event=event,
+            delta_filled_qty=delta_filled_qty,
+        )
         if reconciled is None or reconciled.qty <= 0.0:
             self.position_manager.remove_position(route_key)
             reconciled_qty = 0.0
@@ -677,11 +720,54 @@ class LiveTradingWorker:
             "reason_codes": order_row.get("reason_codes", []),
             "sync_source": "execution_report",
             "execution_event_ts": event.event_ts.isoformat(),
-            "execution_filled_qty": float(event.filled_qty),
+            "execution_filled_qty": cumulative_filled_qty,
+            "execution_delta_filled_qty": delta_filled_qty,
+            "execution_fill_price": (float(event.avg_fill_price) if float(event.avg_fill_price) > 0.0 else _fill_price_from_order_row(order_row)),
             "reconciled_position_qty": reconciled_qty,
         }
         self._append_order_event(sync_row)
         return True
+
+    def _last_execution_sync_state(
+        self,
+        *,
+        order_id: str,
+        client_order_id: str,
+    ) -> ExecutionSyncState | None:
+        path = Path(self.config.order_events_path)
+        if not path.exists():
+            return None
+        latest: ExecutionSyncState | None = None
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if str(payload.get("sync_source", "")) != "execution_report":
+                continue
+            payload_order_id = str(payload.get("order_id", ""))
+            payload_client_order_id = str(payload.get("client_order_id", ""))
+            if order_id and payload_order_id != order_id:
+                continue
+            if not order_id and client_order_id and payload_client_order_id != client_order_id:
+                continue
+            event_ts = pd.to_datetime(
+                cast(Any, payload.get("execution_event_ts", "")),
+                utc=True,
+                errors="coerce",
+            )
+            if pd.isna(event_ts):
+                continue
+            current = ExecutionSyncState(
+                status=str(payload.get("status", "")).strip(),
+                cumulative_filled_qty=_coerce_float(payload.get("execution_filled_qty", 0.0) or 0.0),
+                event_ts=event_ts.to_pydatetime(),
+            )
+            if latest is None or current.event_ts >= latest.event_ts:
+                latest = current
+        return latest
 
     def _find_order_event_context(
         self,
@@ -709,31 +795,29 @@ class LiveTradingWorker:
                 return payload
         return None
 
-    def _reconciled_position_from_execution(
+    def _apply_execution_fill_delta(
         self,
         order_row: dict[str, object],
         event: ExecutionStreamEvent,
+        delta_filled_qty: float,
     ) -> PositionState | None:
-        original_qty = max(0.0, _coerce_float(order_row.get("qty", 0.0) or 0.0))
-        filled_qty = min(max(float(event.filled_qty), 0.0), original_qty)
-        pre_position = _position_from_order_row(order_row)
-        if filled_qty <= 0.0:
-            return pre_position
-
         route_key = str(order_row.get("route_key", "")).strip()
+        current_position = self.position_manager.get(route_key) or _position_from_order_row(order_row)
+        if delta_filled_qty <= 0.0:
+            return current_position
         side = str(order_row.get("side", "")).strip().lower()
         if side not in {"buy", "sell"}:
-            return pre_position
+            return current_position
 
         pm = PositionManager(self.position_manager.config)
-        if pre_position is not None and pre_position.qty > 0.0:
-            pm.replace_positions([pre_position])
+        if current_position is not None and current_position.qty > 0.0:
+            pm.replace_positions([current_position])
         return pm.apply_fill(
             FillEvent(
                 symbol=str(order_row.get("symbol", "")),
                 side=cast(Literal["buy", "sell"], side),
-                qty=filled_qty,
-                price=_fill_price_from_order_row(order_row),
+                qty=delta_filled_qty,
+                price=_fill_price_from_execution_event(event, order_row),
                 filled_at=event.event_ts,
                 is_add=str(order_row.get("action", "")).strip().lower() == "add",
                 strategy=str(order_row.get("strategy", "")).strip() or "legacy",
@@ -801,14 +885,10 @@ class LiveTradingWorker:
             except Exception as exc:
                 self.worker_state.last_error = f"ml_filter_error:{exc.__class__.__name__}"
                 return None
-        closed_cutoff = pd.to_datetime(base["timestamp"].iloc[-1], utc=True).floor(
-            _pandas_timeframe_rule(timeframe)
-        )
+        closed_cutoff = pd.to_datetime(base["timestamp"].iloc[-1], utc=True).floor(_pandas_timeframe_rule(timeframe))
         return cast(
             pd.DataFrame,
-            signals[
-                pd.to_datetime(cast(Any, signals["timestamp"]), utc=True) <= closed_cutoff
-            ].copy(),
+            signals[pd.to_datetime(cast(Any, signals["timestamp"]), utc=True) <= closed_cutoff].copy(),
         )
 
     def _load_closed_market_frames(self) -> dict[str, pd.DataFrame]:
@@ -831,9 +911,7 @@ class LiveTradingWorker:
         frame = raw_frame.copy()
         frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
         frame = frame.sort_values("timestamp")
-        cutoff = pd.to_datetime(frame["timestamp"].iloc[-1], utc=True).floor(
-            _pandas_timeframe_rule(timeframe)
-        )
+        cutoff = pd.to_datetime(frame["timestamp"].iloc[-1], utc=True).floor(_pandas_timeframe_rule(timeframe))
         resampled = resample_ohlcv(frame, timeframe)
         resampled["timestamp"] = pd.to_datetime(resampled["timestamp"], utc=True)
         closed = resampled[resampled["timestamp"] <= cutoff].copy().reset_index(drop=True)
@@ -859,6 +937,110 @@ class LiveTradingWorker:
         except Exception:
             return WorkerState()
 
+    def _latest_risk_input_rows(self) -> pd.DataFrame:
+        path = Path(self.config.risk_input_path)
+        if not path.exists():
+            return pd.DataFrame()
+        try:
+            frame = pd.read_parquet(path)
+        except Exception:
+            return pd.DataFrame()
+        if frame.empty or "symbol" not in frame.columns:
+            return pd.DataFrame()
+        if "timestamp" in frame.columns:
+            frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce")
+            frame = frame.sort_values("timestamp")
+        return frame.groupby("symbol", dropna=False).tail(1).reset_index(drop=True)
+
+    def _evaluate_projected_risk(
+        self,
+        *,
+        route: TradeRoute,
+        side: Literal["buy", "sell"],
+        qty: float,
+        mark_price: float,
+        mark_prices: dict[str, float],
+    ) -> dict[str, object]:
+        exposures = self.position_manager.exposure_snapshot(
+            mark_prices=mark_prices,
+            equity=self.config.equity,
+        )
+        projected_exposures = dict(exposures)
+        additional_notional = max(float(qty), 0.0) * max(float(mark_price), 0.0)
+        symbol_key = f"{route.symbol}_exposure_pct"
+        projected_symbol_exposure_pct = projected_exposures.get(symbol_key, 0.0) + (
+            (additional_notional / self.config.equity) * 100.0 if self.config.equity > 0 else 0.0
+        )
+        projected_exposures[symbol_key] = projected_symbol_exposure_pct
+        projected_portfolio_exposure_pct = projected_exposures.get("portfolio_exposure_pct", 0.0) + (
+            (additional_notional / self.config.equity) * 100.0 if self.config.equity > 0 else 0.0
+        )
+        projected_exposures["portfolio_exposure_pct"] = projected_portfolio_exposure_pct
+
+        symbol_only_exposures = {
+            key: float(value) for key, value in projected_exposures.items() if key.endswith("_exposure_pct") and key != "portfolio_exposure_pct"
+        }
+        concentration_score = build_concentration_score(symbol_only_exposures)
+        correlated_exposure_pct = sum(sorted(symbol_only_exposures.values(), reverse=True)[:2])
+
+        if self._normalized_execution_mode() != "production":
+            risk_blocked = (
+                projected_symbol_exposure_pct > self._effective_risk_config.max_symbol_exposure_pct
+                or projected_portfolio_exposure_pct > self._effective_risk_config.max_portfolio_exposure_pct
+            )
+            codes = ["RISK_OK"]
+            if risk_blocked:
+                codes = []
+                if projected_symbol_exposure_pct > self._effective_risk_config.max_symbol_exposure_pct:
+                    codes.append("RISK_SYMBOL_EXPOSURE")
+                if projected_portfolio_exposure_pct > self._effective_risk_config.max_portfolio_exposure_pct:
+                    codes.append("RISK_PORTFOLIO_EXPOSURE")
+            return {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "symbol": route.symbol,
+                "risk_blocked": risk_blocked,
+                "block_reason_codes": codes,
+                "current_dd_pct": 0.0,
+                "portfolio_exposure_pct": projected_portfolio_exposure_pct,
+                "concentration_score": concentration_score,
+                "correlated_exposure_pct": correlated_exposure_pct,
+                "vol_weighted_exposure_pct": 0.0,
+                "risk_contribution_pct": 0.0,
+                "missing_vol_ratio": 0.0,
+                "size_scale": 0.0 if risk_blocked else 1.0,
+                "emergency_state": False,
+            }
+
+        risk_input = self._latest_risk_input_rows()
+        row = (
+            risk_input[risk_input["symbol"].astype(str) == route.symbol].tail(1) if not risk_input.empty and "symbol" in risk_input.columns else pd.DataFrame()
+        )
+        current_equity = float(row.iloc[0]["current_equity"]) if not row.empty and "current_equity" in row.columns else self.config.equity
+        equity_peak = float(row.iloc[0]["equity_peak"]) if not row.empty and "equity_peak" in row.columns else current_equity
+        vol_weighted_exposure_pct = (
+            float(row.iloc[0]["vol_weighted_exposure_pct"])
+            if not row.empty and "vol_weighted_exposure_pct" in row.columns
+            else projected_portfolio_exposure_pct
+        )
+        risk_contribution_pct = (
+            float(row.iloc[0]["risk_contribution_pct"]) if not row.empty and "risk_contribution_pct" in row.columns else projected_symbol_exposure_pct
+        )
+        missing_vol_ratio = float(row.iloc[0]["missing_vol_ratio"]) if not row.empty and "missing_vol_ratio" in row.columns else 1.0
+
+        return self._risk_manager.evaluate(
+            timestamp=datetime.now(UTC),
+            symbol=route.symbol,
+            current_equity=current_equity,
+            equity_peak=equity_peak,
+            symbol_exposure_pct=projected_symbol_exposure_pct,
+            portfolio_exposure_pct=projected_portfolio_exposure_pct,
+            concentration_score=concentration_score,
+            correlated_exposure_pct=correlated_exposure_pct,
+            vol_weighted_exposure_pct=vol_weighted_exposure_pct,
+            risk_contribution_pct=risk_contribution_pct,
+            missing_vol_ratio=missing_vol_ratio,
+        )
+
     def _build_gateway(self, *, transport: object | None) -> OrderGateway:
         if transport is None:
             api_key, api_secret = _resolve_api_credentials("testnet-futures-live")
@@ -877,6 +1059,9 @@ class LiveTradingWorker:
             transport,  # type: ignore[arg-type]
             GatewayConfig(
                 runtime_state_path=self.config.runtime_state_path,
+                require_runtime_state=self._normalized_execution_mode() != "dry-run",
+                allow_runtime_state_fail_open=bool(self._normalized_execution_mode() == "dry-run" and self.config.allow_runtime_state_fail_open),
+                runtime_state_max_age_sec=int(self.config.runtime_state_max_age_sec),
                 state_path=self.config.gateway_state_path,
                 stale_signal_ttl_sec=self.config.stale_signal_ttl_sec,
             ),
@@ -888,6 +1073,52 @@ class LiveTradingWorker:
             return path
         return str(self.config.weekly_revalidation_report_path).strip()
 
+    def _configured_settings_path(self) -> str:
+        path = str(self.config.settings_path).strip()
+        if path:
+            return path
+        if self._normalized_execution_mode() == "production":
+            return "config/config.prod.yaml"
+        return ""
+
+    def _load_effective_risk_config(self) -> EffectiveRiskConfig:
+        settings_path = self._configured_settings_path()
+        if settings_path:
+            payload = yaml.safe_load(Path(settings_path).read_text(encoding="utf-8")) or {}
+            risk = payload.get("risk", {}) if isinstance(payload, dict) else {}
+            return EffectiveRiskConfig(
+                source_path=settings_path,
+                max_dd_pct=float(risk.get("max_drawdown_pct", 15.0)),
+                max_symbol_exposure_pct=_coerce_float(
+                    risk.get("max_symbol_exposure_pct", self.config.max_symbol_exposure_pct),
+                    default=self.config.max_symbol_exposure_pct,
+                ),
+                max_portfolio_exposure_pct=_coerce_float(
+                    risk.get("max_portfolio_exposure_pct", self.config.max_portfolio_exposure_pct),
+                    default=self.config.max_portfolio_exposure_pct,
+                ),
+                max_correlated_exposure_pct=50.0,
+                max_vol_weighted_exposure_pct=60.0,
+                max_risk_contribution_pct=55.0,
+            )
+        return EffectiveRiskConfig(
+            source_path="worker_cli_defaults",
+            max_dd_pct=15.0,
+            max_symbol_exposure_pct=float(self.config.max_symbol_exposure_pct),
+            max_portfolio_exposure_pct=float(self.config.max_portfolio_exposure_pct),
+            max_correlated_exposure_pct=50.0,
+            max_vol_weighted_exposure_pct=60.0,
+            max_risk_contribution_pct=55.0,
+        )
+
+    def _normalized_execution_mode(self) -> str:
+        mode = str(self.config.execution_mode).strip().lower()
+        if mode in {"prod", "production"}:
+            return "production"
+        if mode in {"dry-run", "dry_run", "dryrun"}:
+            return "dry-run"
+        return "testnet"
+
     def _route_selection_sync_enabled(self) -> bool:
         return bool(self.config.auto_sync_route_selection and self.config.auto_sync_weekly_symbols)
 
@@ -896,6 +1127,7 @@ class LiveTradingWorker:
         snapshot: dict[str, object] = {
             "enabled": bool(self._route_selection_sync_enabled()),
             "status": "disabled" if not self._route_selection_sync_enabled() else "idle",
+            "execution_mode": self._normalized_execution_mode(),
             "selection_path": selection_path,
             "report_path": selection_path,
             "trend_symbols": list(self._active_trend_symbols),
@@ -911,21 +1143,32 @@ class LiveTradingWorker:
             snapshot["status"] = "missing_or_invalid"
             return snapshot
 
-        routes = self._routes_from_selection_payload(report)
+        resolved = resolve_worker_routes(
+            report,
+            execution_mode=self._normalized_execution_mode(),
+            default_timeframe=self.config.strategy_timeframe,
+        )
+        routes = None
+        if resolved is not None:
+            routes = tuple(
+                TradeRoute(
+                    symbol=route.symbol,
+                    strategy=route.strategy,
+                    timeframe=route.timeframe,
+                    expected_regime=route.expected_regime,
+                    candidate_status=route.candidate_status,
+                    statistical_status=route.statistical_status,
+                )
+                for route in resolved
+            )
         if routes is None:
             snapshot["status"] = "missing_or_invalid"
             return snapshot
 
         self._active_routes = {route.route_key(): route for route in routes}
-        self._active_trend_symbols = tuple(
-            route.symbol for route in routes if route.strategy == "trend"
-        )
-        self._active_range_symbols = tuple(
-            route.symbol for route in routes if route.strategy == "range"
-        )
-        self._active_symbols = self._merge_symbols(
-            self._base_symbols, self._active_trend_symbols, self._active_range_symbols
-        )
+        self._active_trend_symbols = tuple(route.symbol for route in routes if route.strategy == "trend")
+        self._active_range_symbols = tuple(route.symbol for route in routes if route.strategy == "range")
+        self._active_symbols = self._merge_symbols(self._base_symbols, self._active_trend_symbols, self._active_range_symbols)
         snapshot.update(
             {
                 "status": "updated",
@@ -937,23 +1180,22 @@ class LiveTradingWorker:
         )
         return snapshot
 
-    def _routes_from_selection_payload(
-        self, payload: dict[str, object]
-    ) -> tuple[TradeRoute, ...] | None:
+    def _routes_from_selection_payload(self, payload: dict[str, object]) -> tuple[TradeRoute, ...] | None:
+        execution_mode = self._normalized_execution_mode()
         selection = payload.get("selection", {})
         if isinstance(selection, dict):
             trade_routes = self._normalize_trade_routes(selection.get("trade_routes"))
             if trade_routes is not None:
-                return trade_routes
+                if execution_mode != "production":
+                    return trade_routes
+                return tuple(route for route in trade_routes if route.statistical_status == "pass")
 
         statistical = payload.get("statistical_qualification", {})
         if not isinstance(statistical, dict) or str(statistical.get("status", "")) != "pass":
             return ()
 
         if isinstance(selection, dict):
-            has_selection_keys = (
-                "trend_enabled_symbols" in selection or "range_enabled_symbols" in selection
-            )
+            has_selection_keys = "trend_enabled_symbols" in selection or "range_enabled_symbols" in selection
             if has_selection_keys:
                 timeframe = str(selection.get("timeframe", self.config.strategy_timeframe)).strip()
                 trend_symbols = self._normalize_symbols(selection.get("trend_enabled_symbols"))
@@ -964,6 +1206,8 @@ class LiveTradingWorker:
                     timeframe=timeframe or self.config.strategy_timeframe,
                 )
                 if routes is not None:
+                    if execution_mode == "production":
+                        return ()
                     return routes
 
         candidates = payload.get("candidates", {})
@@ -1029,6 +1273,7 @@ class LiveTradingWorker:
                     timeframe=timeframe,
                     expected_regime="TREND",
                     candidate_status="legacy",
+                    statistical_status="missing",
                 )
             )
         for symbol in range_symbols or ():
@@ -1039,6 +1284,7 @@ class LiveTradingWorker:
                     timeframe=timeframe,
                     expected_regime="RANGE",
                     candidate_status="legacy",
+                    statistical_status="missing",
                 )
             )
         return tuple(routes) if routes else None
@@ -1053,11 +1299,7 @@ class LiveTradingWorker:
         strategy = str(row.get("strategy", "")).strip()
         if not symbol or strategy not in {"trend", "range"}:
             return None
-        timeframe = (
-            str(row.get("timeframe", "")).strip()
-            or default_timeframe
-            or self.config.strategy_timeframe
-        )
+        timeframe = str(row.get("timeframe", "")).strip() or default_timeframe or self.config.strategy_timeframe
         expected_regime = str(row.get("expected_regime", "")).strip()
         if not expected_regime:
             expected_regime = "TREND" if strategy == "trend" else "RANGE"
@@ -1067,6 +1309,7 @@ class LiveTradingWorker:
             timeframe=timeframe,
             expected_regime=expected_regime,
             candidate_status=str(row.get("candidate_status", "core")),
+            statistical_status=str(row.get("statistical_status", "missing")).strip() or "missing",
         )
 
     def _normalize_symbols(self, value: object) -> tuple[str, ...] | None:
@@ -1108,7 +1351,13 @@ def _now_iso() -> str:
 
 def _coerce_float(value: object, default: float = 0.0) -> float:
     try:
-        return float(value)  # type: ignore[arg-type]
+        if isinstance(value, bool):
+            return float(value)
+        if isinstance(value, int | float):
+            return float(value)
+        if isinstance(value, str):
+            return float(value)
+        return default
     except (TypeError, ValueError):
         return default
 
@@ -1171,6 +1420,15 @@ def _fill_price_from_order_row(row: dict[str, object]) -> float:
     if order_type == "limit" and isinstance(limit_price, int | float) and float(limit_price) > 0.0:
         return float(limit_price)
     return _coerce_float(row.get("price", 0.0) or 0.0)
+
+
+def _fill_price_from_execution_event(
+    event: ExecutionStreamEvent,
+    order_row: dict[str, object],
+) -> float:
+    if float(event.avg_fill_price) > 0.0:
+        return float(event.avg_fill_price)
+    return _fill_price_from_order_row(order_row)
 
 
 def _pandas_timeframe_rule(timeframe: str) -> str:

@@ -6,22 +6,25 @@ from typing import Literal
 
 import pandas as pd
 
-Regime = Literal["RANGE", "TREND", "HIGH_VOL"]
+Regime = Literal["RANGE", "TREND", "SPIKE", "SUSTAINED"]
 
 
 @dataclass(frozen=True)
 class RegimeConfig:
     high_vol_atr_zscore_threshold: float = 3.0
     high_vol_return_abs_zscore_threshold: float = 3.0
+    high_vol_sustained_min_bars: int = 3
     trend_adx_threshold: float = 25.0
     trend_breakout_persistence_min_bars: int = 3
     range_bb_width_percentile_max: float = 40.0
     range_adx_max: float = 20.0
-    min_regime_hold_bars: int = 3
-    high_vol_cooldown_bars: int = 5
+    min_regime_hold_bars: int = 1
+    high_vol_cooldown_bars: int = 1
 
 
 ALLOWED_REASON_CODES = {
+    "HV_SPIKE",
+    "HV_SUSTAINED",
     "HV_ATR_SPIKE",
     "HV_RETURN_SPIKE",
     "HV_SPREAD_WIDENING",
@@ -94,20 +97,17 @@ def _classify_group(g: pd.DataFrame, cfg: RegimeConfig) -> pd.DataFrame:
     bb_width_rank = pd.Series(bb_width_values, index=g.index).rank(pct=True) * 100.0
     adx_proxy = (ret_abs * 100.0).clip(0, 50)
 
-    high_vol_mask = (atr_z >= cfg.high_vol_atr_zscore_threshold) | (
-        ret_z >= cfg.high_vol_return_abs_zscore_threshold
-    )
+    high_vol_mask = (atr_z >= cfg.high_vol_atr_zscore_threshold) | (ret_z >= cfg.high_vol_return_abs_zscore_threshold)
     trend_mask = (
         (g["breakout_persistence"] >= (cfg.trend_breakout_persistence_min_bars / 5.0))
         & (g["momentum_persistence"] >= 0.5)
         & (adx_proxy >= cfg.trend_adx_threshold)
     )
-    range_mask = (bb_width_rank <= cfg.range_bb_width_percentile_max) & (
-        adx_proxy <= cfg.range_adx_max
-    )
+    range_mask = (bb_width_rank <= cfg.range_bb_width_percentile_max) & (adx_proxy <= cfg.range_adx_max)
 
-    active_regime: Regime = "RANGE"
+    active_regime: Literal["RANGE", "TREND"] = "RANGE"
     hold_count = 0
+    hv_run_count = 0
     hv_cooldown = 0
     regimes: list[Regime] = []
     confidences: list[float] = []
@@ -118,49 +118,59 @@ def _classify_group(g: pd.DataFrame, cfg: RegimeConfig) -> pd.DataFrame:
     for i in range(len(g)):
         reason_codes: list[str] = []
         if bool(warmup_values[i]):
-            regimes.append("HIGH_VOL")
+            regimes.append("SUSTAINED")
             confidences.append(0.0)
             vol_states.append("extreme")
             reasons.append(["FALLBACK_INSUFFICIENT_DATA"])
             allow.append(False)
             continue
 
-        desired: Regime = "RANGE"
+        desired_base: Literal["RANGE", "TREND"] = active_regime
+        vol_regime: Regime | None = None
         atr_i = _safe_float(atr_z.iloc[i])
         ret_i = _safe_float(ret_z.iloc[i])
         if bool(high_vol_mask.iloc[i]):
-            desired = "HIGH_VOL"
+            hv_run_count += 1
+            vol_regime = "SPIKE"
+            if hv_run_count >= cfg.high_vol_sustained_min_bars:
+                vol_regime = "SUSTAINED"
+                hv_cooldown = cfg.high_vol_cooldown_bars
+            reason_codes.append("HV_SPIKE")
             if atr_i >= cfg.high_vol_atr_zscore_threshold:
                 reason_codes.append("HV_ATR_SPIKE")
             if ret_i >= cfg.high_vol_return_abs_zscore_threshold:
                 reason_codes.append("HV_RETURN_SPIKE")
+            desired_base = active_regime
         elif bool(trend_mask.iloc[i]):
-            desired = "TREND"
+            hv_run_count = 0
+            vol_regime = None
+            desired_base = "TREND"
             reason_codes.extend(["TR_BREAKOUT_PERSIST", "TR_MOMENTUM_PERSIST", "TR_ADX_STRONG"])
         elif bool(range_mask.iloc[i]):
-            desired = "RANGE"
+            hv_run_count = 0
+            vol_regime = None
+            desired_base = "RANGE"
             reason_codes.extend(["RG_LOW_VOL", "RG_MEAN_REVERSION_BIAS", "RG_FAKE_BREAKOUT_BIAS"])
         else:
-            desired = active_regime
+            hv_run_count = 0
+            if hv_cooldown > 0:
+                vol_regime = "SUSTAINED"
+                hv_cooldown -= 1
+            else:
+                vol_regime = None
+            desired_base = active_regime
 
-        if desired == "HIGH_VOL":
-            active_regime = "HIGH_VOL"
-            hv_cooldown = cfg.high_vol_cooldown_bars
-            hold_count = 0
-        elif active_regime == "HIGH_VOL" and hv_cooldown > 0:
-            desired = "HIGH_VOL"
-            hv_cooldown -= 1
-        elif desired != active_regime:
+        if desired_base != active_regime:
             if hold_count < cfg.min_regime_hold_bars:
-                desired = active_regime
+                desired_base = active_regime
                 hold_count += 1
             else:
-                active_regime = desired
+                active_regime = desired_base
                 hold_count = 0
         else:
             hold_count += 1
 
-        regime: Regime = active_regime
+        regime: Regime = vol_regime or active_regime
         regimes.append(regime)
         confidence = _confidence_for_regime(
             regime=regime,
@@ -178,7 +188,7 @@ def _classify_group(g: pd.DataFrame, cfg: RegimeConfig) -> pd.DataFrame:
             reason_codes = ["FALLBACK_TIMEOUT"]
         reason_codes = [r for r in reason_codes if r in ALLOWED_REASON_CODES]
         reasons.append(reason_codes)
-        allow.append(regime != "HIGH_VOL")
+        allow.append(regime != "SUSTAINED")
 
     result["regime"] = regimes
     result["confidence"] = confidences
@@ -208,12 +218,10 @@ def _confidence_for_regime(
     mean_reversion_distance: float,
     bb_width_pct: float,
 ) -> float:
-    if regime == "HIGH_VOL":
+    if regime in {"SPIKE", "SUSTAINED"}:
         return min(1.0, max(_safe_float(atr_z), _safe_float(ret_z)) / 5.0)
     if regime == "TREND":
-        score = (
-            breakout_persistence + momentum_persistence + min(1.0, trend_efficiency * 2.0)
-        ) / 3.0
+        score = (breakout_persistence + momentum_persistence + min(1.0, trend_efficiency * 2.0)) / 3.0
         return score
     # RANGE
     width_score = max(0.0, 1.0 - (_safe_float(bb_width_pct) / 100.0))

@@ -363,6 +363,7 @@ GUI:
 streamlit run src/auto_trader/gui/app.py
 ```
 - `Multi-Symbol Panel` で複数銘柄の regime/entry件数に加え、PnL/DD/Exposure・return 相関行列・walkforward 指標（PF/WinRate/DD/PnL）を確認できます。
+- `Trading` タブの `Exchange Position Sync` で Binance Futures testnet の現在ポジションと local `positions.parquet` の差分を直接確認できます。
 
 ## Parallel Walkforward (Multi-Symbol)
 

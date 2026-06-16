@@ -30,7 +30,8 @@
 
 2. 注文
 - 発注前に最新リスク制約を再検証。
-- `pass_filter=false` / `HIGH_VOL` は送信禁止。
+- `pass_filter=false` / `HIGH_VOL` は新規建て・追加建てを送信禁止。
+- 既存ポジションを減らす `exit` / `emergency_close` は送信を許可する。
 
 3. 障害対応
 - timeout/reject/partial fill をハンドリング。

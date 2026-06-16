@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import cast
 
 import pandas as pd
 
@@ -44,4 +45,4 @@ def test_apply_session_gate_blocks_outside_hours() -> None:
     assert bool(out.loc[1, "entry_signal"]) is False
     assert bool(out.loc[1, "add_signal"]) is False
     assert bool(out.loc[1, "pass_filter"]) is False
-    assert "SESSION_BLOCKED_OUT_OF_HOURS" in out.loc[1, "signal_reason_codes"]
+    assert "SESSION_BLOCKED_OUT_OF_HOURS" in cast(list[str], out.loc[1, "signal_reason_codes"])

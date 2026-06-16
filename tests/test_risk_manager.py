@@ -160,3 +160,22 @@ def test_vol_weighted_soft_limit_scales_size() -> None:
     assert bool(out["risk_blocked"]) is False
     size_scale = float(cast(Any, out["size_scale"]))
     assert 0.25 <= size_scale < 1.0
+
+
+def test_risk_contribution_blocks() -> None:
+    rm = RiskManager(RiskConfig(max_risk_contribution_pct=5.0, max_vol_weighted_exposure_pct=100.0))
+    out = rm.evaluate(
+        timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+        symbol="BTCUSDT",
+        current_equity=10000.0,
+        equity_peak=10000.0,
+        symbol_exposure_pct=10.0,
+        portfolio_exposure_pct=20.0,
+        concentration_score=0.2,
+        vol_weighted_exposure_pct=10.0,
+        risk_contribution_pct=25.0,
+        missing_vol_ratio=0.0,
+    )
+    assert bool(out["risk_blocked"]) is True
+    codes = cast(list[str], out["block_reason_codes"])
+    assert "RISK_RISK_CONTRIBUTION" in codes

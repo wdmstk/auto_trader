@@ -39,6 +39,8 @@ def build_statistical_qualification(
     ml_label_horizon_bars: int = 0,
     purge_bars: int = 0,
     thresholds: StatisticalThresholds | None = None,
+    run_id: str = "",
+    generated_at: str = "",
 ) -> dict[str, Any]:
     t = thresholds or StatisticalThresholds()
     rows = _load_rows(summary)
@@ -52,36 +54,23 @@ def build_statistical_qualification(
         "thresholds": asdict(t),
     }
     current_manifest = {"schema_version": "1.0", "settings": settings, "inputs": inputs}
-    manifest_status, manifest_reasons = _freeze_or_validate_manifest(
-        manifest_file, current_manifest
-    )
+    manifest_status, manifest_reasons = _freeze_or_validate_manifest(manifest_file, current_manifest)
 
-    route_results = [
-        _qualify_route(row, root=root, thresholds=t)
-        for row in rows
-        if all(_route_fields(row)) and _is_point_candidate(row, t)
-    ]
-    strategy_results = [
-        _qualify_strategy(strategy, route_results, thresholds=t) for strategy in ("trend", "range")
-    ]
+    route_results = [_qualify_route(row, root=root, thresholds=t) for row in rows if all(_route_fields(row)) and _is_point_candidate(row, t)]
+    strategy_results = [_qualify_strategy(strategy, route_results, thresholds=t) for strategy in ("trend", "range")]
     audit_reasons = list(manifest_reasons)
     if execution_delay_bars < 1:
         audit_reasons.append("execution_delay_bars_lt_1")
     if purge_bars < ml_label_horizon_bars:
         audit_reasons.append("purge_bars_lt_ml_label_horizon")
     leakage_status = "pass" if not audit_reasons else "fail"
-    route_pass = all(
-        any(r["status"] == "pass" and r["strategy"] == strategy for r in route_results)
-        for strategy in ("trend", "range")
-    )
+    route_pass = all(any(r["status"] == "pass" and r["strategy"] == strategy for r in route_results) for strategy in ("trend", "range"))
     strategy_pass = all(r["status"] == "pass" for r in strategy_results)
-    status = (
-        "pass"
-        if manifest_status == "pass" and leakage_status == "pass" and route_pass and strategy_pass
-        else "fail"
-    )
+    status = "pass" if manifest_status == "pass" and leakage_status == "pass" and route_pass and strategy_pass else "fail"
     report = {
         "schema_version": "1.0",
+        "run_id": run_id,
+        "generated_at": generated_at,
         "status": status,
         "manifest_status": manifest_status,
         "manifest_path": str(manifest_file),
@@ -99,9 +88,7 @@ def build_statistical_qualification(
     return report
 
 
-def _qualify_route(
-    row: dict[str, Any], *, root: Path, thresholds: StatisticalThresholds
-) -> dict[str, Any]:
+def _qualify_route(row: dict[str, Any], *, root: Path, thresholds: StatisticalThresholds) -> dict[str, Any]:
     symbol, timeframe, strategy = _route_fields(row)
     route_key = f"{strategy}:{symbol}:{timeframe}"
     stamp = f"{symbol}_{timeframe}_{strategy}"
@@ -148,13 +135,9 @@ def _qualify_route(
         "period_pnl": period_pnl > 0.0,
         "max_drawdown": max_dd <= thresholds.max_drawdown,
         "pf_ci_lower": float(stats["pf_ci_lower"]) > thresholds.min_pf_ci_lower,
-        "expectancy_bps_ci_lower": (
-            float(stats["expectancy_bps_ci_lower"]) > thresholds.min_expectancy_bps_ci_lower
-        ),
+        "expectancy_bps_ci_lower": (float(stats["expectancy_bps_ci_lower"]) > thresholds.min_expectancy_bps_ci_lower),
         "mc_drawdown_p95": (float(stats["mc_drawdown_p95"]) <= thresholds.max_mc_drawdown_p95),
-        "mc_loss_probability": (
-            float(stats["mc_loss_probability"]) <= thresholds.max_mc_loss_probability
-        ),
+        "mc_loss_probability": (float(stats["mc_loss_probability"]) <= thresholds.max_mc_loss_probability),
     }
     reasons.extend(name for name, ok in checks.items() if not ok)
     return {
@@ -177,9 +160,7 @@ def _qualify_route(
     }
 
 
-def _qualify_strategy(
-    strategy: str, routes: list[dict[str, Any]], *, thresholds: StatisticalThresholds
-) -> dict[str, Any]:
+def _qualify_strategy(strategy: str, routes: list[dict[str, Any]], *, thresholds: StatisticalThresholds) -> dict[str, Any]:
     selected = [r for r in routes if r.get("strategy") == strategy and r.get("status") == "pass"]
     frames: list[pd.DataFrame] = []
     for route in selected:
@@ -193,10 +174,7 @@ def _qualify_strategy(
     closed = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     stats = _statistics(closed, thresholds=thresholds)
     max_dd = max(
-        (
-            float(cast(dict[str, Any], route.get("metrics", {})).get("max_drawdown", 1.0))
-            for route in selected
-        ),
+        (float(cast(dict[str, Any], route.get("metrics", {})).get("max_drawdown", 1.0)) for route in selected),
         default=1.0,
     )
     count = int(stats["closed_trades"])
@@ -208,13 +186,9 @@ def _qualify_strategy(
         "period_pnl": float(stats["period_pnl"]) > 0.0,
         "max_drawdown": max_dd <= thresholds.max_drawdown,
         "pf_ci_lower": float(stats["pf_ci_lower"]) > thresholds.min_pf_ci_lower,
-        "expectancy_bps_ci_lower": (
-            float(stats["expectancy_bps_ci_lower"]) > thresholds.min_expectancy_bps_ci_lower
-        ),
+        "expectancy_bps_ci_lower": (float(stats["expectancy_bps_ci_lower"]) > thresholds.min_expectancy_bps_ci_lower),
         "mc_drawdown_p95": (float(stats["mc_drawdown_p95"]) <= thresholds.max_mc_drawdown_p95),
-        "mc_loss_probability": (
-            float(stats["mc_loss_probability"]) <= thresholds.max_mc_loss_probability
-        ),
+        "mc_loss_probability": (float(stats["mc_loss_probability"]) <= thresholds.max_mc_loss_probability),
     }
     return {
         "strategy": strategy,
@@ -227,19 +201,9 @@ def _qualify_strategy(
     }
 
 
-def _statistics(
-    closed: pd.DataFrame, *, thresholds: StatisticalThresholds
-) -> dict[str, float | int]:
-    pnl = (
-        pd.to_numeric(closed.get("pnl", pd.Series(dtype=float)), errors="coerce")
-        .dropna()
-        .to_numpy()
-    )
-    bps = (
-        pd.to_numeric(closed.get("return_bps", pd.Series(dtype=float)), errors="coerce")
-        .dropna()
-        .to_numpy()
-    )
+def _statistics(closed: pd.DataFrame, *, thresholds: StatisticalThresholds) -> dict[str, float | int]:
+    pnl = pd.to_numeric(closed.get("pnl", pd.Series(dtype=float)), errors="coerce").dropna().to_numpy()
+    bps = pd.to_numeric(closed.get("return_bps", pd.Series(dtype=float)), errors="coerce").dropna().to_numpy()
     if len(pnl) == 0 or len(bps) != len(pnl):
         return {
             "closed_trades": int(len(pnl)),
@@ -252,16 +216,12 @@ def _statistics(
             "mc_loss_probability": 1.0,
         }
     rng = np.random.default_rng(thresholds.seed)
-    samples = _moving_block_samples(
-        len(pnl), thresholds.bootstrap_samples, thresholds.block_size, rng
-    )
+    samples = _moving_block_samples(len(pnl), thresholds.bootstrap_samples, thresholds.block_size, rng)
     pnl_samples = pnl[samples]
     bps_samples = bps[samples]
     pf_samples = np.apply_along_axis(_profit_factor, 1, pnl_samples)
     expectation_samples = bps_samples.mean(axis=1)
-    mc_drawdowns = np.apply_along_axis(
-        _max_drawdown_from_pnl, 1, pnl_samples, thresholds.initial_cash
-    )
+    mc_drawdowns = np.apply_along_axis(_max_drawdown_from_pnl, 1, pnl_samples, thresholds.initial_cash)
     ending = pnl_samples.sum(axis=1)
     return {
         "closed_trades": int(len(pnl)),
@@ -275,9 +235,7 @@ def _statistics(
     }
 
 
-def _moving_block_samples(
-    size: int, samples: int, block_size: int, rng: np.random.Generator
-) -> np.ndarray:
+def _moving_block_samples(size: int, samples: int, block_size: int, rng: np.random.Generator) -> np.ndarray:
     block = max(1, min(block_size, size))
     blocks = int(np.ceil(size / block))
     starts = rng.integers(0, size, size=(samples, blocks))

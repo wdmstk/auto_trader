@@ -14,6 +14,7 @@ class ExecutionStreamEvent:
     side: str
     status: str
     filled_qty: float
+    avg_fill_price: float
     event_ts: datetime
 
 
@@ -43,6 +44,7 @@ class BinanceWsExecutionClient:
         side = str(order_payload.get("S", "")).lower()
         status = str(order_payload.get("X", "")).lower()
         qty = _to_float(order_payload.get("z", 0.0))
+        avg_fill_price = _to_float(order_payload.get("ap", order_payload.get("L", 0.0)))
         if not order_id or not symbol:
             return None
         if event_ms > 0:
@@ -56,6 +58,7 @@ class BinanceWsExecutionClient:
             side=side,
             status=status,
             filled_qty=qty,
+            avg_fill_price=avg_fill_price,
             event_ts=event_ts,
         )
 

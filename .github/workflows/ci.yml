@@ -23,6 +23,28 @@ jobs:
       - name: Validate Required Checks
         run: python scripts/validate_required_checks.py
 
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Pytest Coverage
+        run: pytest -q --cov=auto_trader --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=70
+      - name: Upload Coverage Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 14
+
   full:
     runs-on: ubuntu-latest
     steps:

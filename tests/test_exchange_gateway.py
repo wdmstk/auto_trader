@@ -125,6 +125,21 @@ def test_runtime_gate_blocks_when_trading_disabled(tmp_path: Path) -> None:
     assert transport.calls == 0
 
 
+def test_runtime_gate_blocks_when_state_missing_in_live_mode(tmp_path: Path) -> None:
+    transport = FlakyTransport(0)
+    gw = OrderGateway(
+        transport,
+        GatewayConfig(
+            runtime_state_path=str(tmp_path / "missing_control_state.json"),
+            require_runtime_state=True,
+        ),
+    )
+    ev = gw.submit(_req())
+    assert ev.status == "rejected"
+    assert ev.reason == "RUNTIME_STATE_MISSING"
+    assert transport.calls == 0
+
+
 def test_runtime_gate_blocks_on_emergency_stop(tmp_path: Path) -> None:
     runtime_state = tmp_path / "control_state.json"
     runtime_state.write_text(
@@ -145,6 +160,67 @@ def test_runtime_gate_blocks_on_emergency_stop(tmp_path: Path) -> None:
     assert ev.status == "rejected"
     assert ev.reason == "RUNTIME_EMERGENCY_STOP"
     assert transport.calls == 0
+
+
+def test_runtime_gate_blocks_when_state_is_stale(tmp_path: Path) -> None:
+    runtime_state = tmp_path / "control_state.json"
+    runtime_state.write_text(
+        json.dumps(
+            {
+                "trading_enabled": True,
+                "emergency_stop": False,
+                "close_all_requested": False,
+                "updated_at": (datetime.now(UTC) - timedelta(seconds=300)).isoformat(),
+            },
+            ensure_ascii=True,
+        ),
+        encoding="utf-8",
+    )
+    transport = FlakyTransport(0)
+    gw = OrderGateway(
+        transport,
+        GatewayConfig(
+            runtime_state_path=str(runtime_state),
+            require_runtime_state=True,
+            runtime_state_max_age_sec=120,
+        ),
+    )
+    ev = gw.submit(_req())
+    assert ev.status == "rejected"
+    assert ev.reason == "RUNTIME_STATE_STALE"
+    assert transport.calls == 0
+
+
+def test_runtime_gate_blocks_when_state_is_invalid_in_live_mode(tmp_path: Path) -> None:
+    runtime_state = tmp_path / "control_state.json"
+    runtime_state.write_text("{broken", encoding="utf-8")
+    transport = FlakyTransport(0)
+    gw = OrderGateway(
+        transport,
+        GatewayConfig(
+            runtime_state_path=str(runtime_state),
+            require_runtime_state=True,
+        ),
+    )
+    ev = gw.submit(_req())
+    assert ev.status == "rejected"
+    assert ev.reason == "RUNTIME_STATE_INVALID"
+    assert transport.calls == 0
+
+
+def test_runtime_gate_allows_explicit_dry_run_fail_open_when_state_missing(tmp_path: Path) -> None:
+    transport = FlakyTransport(0)
+    gw = OrderGateway(
+        transport,
+        GatewayConfig(
+            runtime_state_path=str(tmp_path / "missing_control_state.json"),
+            require_runtime_state=False,
+            allow_runtime_state_fail_open=True,
+        ),
+    )
+    ev = gw.submit(_req())
+    assert ev.status == "ack"
+    assert transport.calls == 1
 
 
 def test_emergency_close_can_bypass_policy_gate(tmp_path: Path) -> None:

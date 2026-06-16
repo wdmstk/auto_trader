@@ -18,6 +18,8 @@
 - risk manager
 - e2e smoke
 - dry-run orchestrator
+- live safety regression suite (`tests/test_live_safety_regression.py`)
 
 ## 追加ルール
 - 新規で安全ゲートに関わるテストは `@pytest.mark.smoke` を付与する。
+- fail-open / duplicate / stale / partial の回帰は `tests/test_live_safety_regression.py` に集約する。

@@ -334,3 +334,40 @@ def test_build_trade_route_selection_drops_seed_core_route_in_hard_mode() -> Non
     )
 
     assert out["trade_routes"] == []
+    assert out["dropped_routes"][0]["symbol"] == "BNBUSDT"
+    assert out["dropped_routes"][0]["dropped_reason"] == "statistical_fail"
+
+
+def test_build_trade_route_selection_drops_failing_seed_route_in_production_style_report() -> None:
+    report = {
+        "statistical_qualification": {
+            "status": "fail",
+            "qualification_report_path": "qualification.json",
+            "passed_route_keys": [],
+        },
+        "selection": {
+            "timeframe": "15m",
+            "trade_routes": [
+                {
+                    "symbol": "SOLUSDT",
+                    "strategy": "trend",
+                    "timeframe": "15m",
+                    "expected_regime": "TREND",
+                    "candidate_status": "core",
+                    "statistical_status": "fail",
+                    "selection_source": "autotune",
+                }
+            ],
+        },
+    }
+
+    out = build_trade_route_selection(
+        report,
+        default_timeframe="15m",
+        seed_manifest=report,
+        statistical_gate_mode="hard",
+    )
+
+    assert out["trade_routes"] == []
+    assert out["dropped_routes"][0]["symbol"] == "SOLUSDT"
+    assert out["dropped_routes"][0]["dropped_reason"] == "statistical_fail"

@@ -12,8 +12,9 @@ WEEKLY_REPORT_PATH="${WEEKLY_REPORT_PATH:-data/validation/weekly_autotune/weekly
 STATISTICAL_REPORT_PATH="${STATISTICAL_REPORT_PATH:-data/validation/statistical_qualification/qualification_report.json}"
 OUTPUT_JSON="${OUTPUT_JSON:-data/validation/weekly_autotune/weekly_revalidation/manifest_vs_weekly_diff.json}"
 OUTPUT_MD="${OUTPUT_MD:-data/validation/weekly_autotune/weekly_revalidation/manifest_vs_weekly_diff.md}"
+RUN_ID="${RUN_ID:-${PIPELINE_RUN_ID:-}}"
 
-"$PYTHON_BIN" - "$MANIFEST_PATH" "$WEEKLY_SUMMARY_PATH" "$WEEKLY_CANDIDATE_PATH" "$WEEKLY_REPORT_PATH" "$STATISTICAL_REPORT_PATH" "$OUTPUT_JSON" "$OUTPUT_MD" <<'PY'
+"$PYTHON_BIN" - "$MANIFEST_PATH" "$WEEKLY_SUMMARY_PATH" "$WEEKLY_CANDIDATE_PATH" "$WEEKLY_REPORT_PATH" "$STATISTICAL_REPORT_PATH" "$OUTPUT_JSON" "$OUTPUT_MD" "$RUN_ID" <<'PY'
 from __future__ import annotations
 
 import json
@@ -142,6 +143,7 @@ statistical = load_json(Path(__import__("sys").argv[5]).as_posix())
 output_json = Path(__import__("sys").argv[6])
 output_md = Path(__import__("sys").argv[7])
 manifest_path = Path(__import__("sys").argv[1])
+run_id = __import__("sys").argv[8].strip()
 
 manifest_routes = manifest.get("selection", {}).get("trade_routes", [])
 manifest_routes = manifest_routes if isinstance(manifest_routes, list) else []
@@ -246,6 +248,7 @@ for raw in manifest_routes:
     )
 
 payload = {
+    "run_id": run_id,
     "generated_at": datetime.now(UTC).isoformat(),
     "manifest_path": str(Path(__import__("sys").argv[1])),
     "weekly_summary_path": str(Path(__import__("sys").argv[2])),
@@ -261,6 +264,7 @@ lines = [
     "# Manifest vs Weekly Diff",
     "",
     f"- generated_at: {payload['generated_at']}",
+    f"- run_id: {run_id or '-'}",
     f"- route_count: {len(rows)}",
     f"- manifest_path: {payload['manifest_path']}",
     f"- weekly_summary_path: {payload['weekly_summary_path']}",

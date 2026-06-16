@@ -7,6 +7,7 @@ cd "$ROOT_DIR"
 INPUT_PATH="${INPUT_PATH:-data/validation/runtime_metrics.jsonl}"
 OUTPUT_DIR="${OUTPUT_DIR:-data/validation}"
 OUTPUT_PATH="${OUTPUT_PATH:-$OUTPUT_DIR/runtime_metrics_health_report.json}"
+RUN_ID="${RUN_ID:-${PIPELINE_RUN_ID:-}}"
 
 PENDING_WARN="${PENDING_WARN:-3}"
 PENDING_CRIT="${PENDING_CRIT:-10}"
@@ -18,7 +19,7 @@ RISK_BLOCK_WARN="${RISK_BLOCK_WARN:-10}"
 
 mkdir -p "$OUTPUT_DIR"
 
-python - "$INPUT_PATH" "$OUTPUT_PATH" \
+python - "$INPUT_PATH" "$OUTPUT_PATH" "$RUN_ID" \
   "$PENDING_WARN" "$PENDING_CRIT" \
   "$LATENCY_WARN_MS" "$LATENCY_CRIT_MS" \
   "$LOAD_WARN" "$LOAD_CRIT" \
@@ -41,20 +42,24 @@ def as_float(v: object, default: float = 0.0) -> float:
 def main() -> int:
     input_path = Path(sys.argv[1])
     output_path = Path(sys.argv[2])
-    pending_warn = float(sys.argv[3])
-    pending_crit = float(sys.argv[4])
-    latency_warn_ms = float(sys.argv[5])
-    latency_crit_ms = float(sys.argv[6])
-    load_warn = float(sys.argv[7])
-    load_crit = float(sys.argv[8])
-    risk_block_warn = float(sys.argv[9])
+    run_id = sys.argv[3]
+    pending_warn = float(sys.argv[4])
+    pending_crit = float(sys.argv[5])
+    latency_warn_ms = float(sys.argv[6])
+    latency_crit_ms = float(sys.argv[7])
+    load_warn = float(sys.argv[8])
+    load_crit = float(sys.argv[9])
+    risk_block_warn = float(sys.argv[10])
+    generated_at = datetime.now(UTC).isoformat()
 
     if not input_path.exists():
         payload = {
+            "run_id": run_id,
+            "generated_at": generated_at,
             "overall_status": "fail",
             "reason": "input_missing",
             "input_path": str(input_path),
-            "checked_at": datetime.now(UTC).isoformat(),
+            "checked_at": generated_at,
         }
         output_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
         print(json.dumps(payload, ensure_ascii=True))
@@ -74,10 +79,12 @@ def main() -> int:
 
     if not rows:
         payload = {
+            "run_id": run_id,
+            "generated_at": generated_at,
             "overall_status": "fail",
             "reason": "no_valid_rows",
             "input_path": str(input_path),
-            "checked_at": datetime.now(UTC).isoformat(),
+            "checked_at": generated_at,
         }
         output_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
         print(json.dumps(payload, ensure_ascii=True))
@@ -145,10 +152,12 @@ def main() -> int:
         overall = "warn"
 
     payload = {
+        "run_id": run_id,
+        "generated_at": generated_at,
         "overall_status": overall,
         "input_path": str(input_path),
         "output_path": str(output_path),
-        "checked_at": datetime.now(UTC).isoformat(),
+        "checked_at": generated_at,
         "rows": len(rows),
         "summary": {
             "warn_rows": warn_count,

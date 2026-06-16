@@ -37,9 +37,7 @@ def generate_trend_signals(
     symbol_values = merged["symbol"].astype(str).to_numpy(copy=False)
     timeframe_values = merged["timeframe"].astype(str).to_numpy(copy=False)
     regime_values = merged["regime"].astype(str).to_numpy(copy=False)
-    trade_allowed_values = (
-        merged["is_trade_allowed"].fillna(False).astype(bool).to_numpy(copy=False)
-    )
+    trade_allowed_values = merged["is_trade_allowed"].fillna(False).astype(bool).to_numpy(copy=False)
     risk_blocked_values = merged["risk_blocked"].fillna(False).astype(bool).to_numpy(copy=False)
     breakout_values = merged["breakout_persistence"].astype(float).to_numpy(copy=False)
     momentum_values = merged["momentum_persistence"].astype(float).to_numpy(copy=False)
@@ -65,13 +63,11 @@ def generate_trend_signals(
         blocked = bool(risk_blocked_values[i])
         regime = str(regime_values[i])
         is_trade_allowed = bool(trade_allowed_values[i])
-        high_vol = (regime == "HIGH_VOL") or (not is_trade_allowed)
+        high_vol = (regime in {"HIGH_VOL", "SUSTAINED"}) or (not is_trade_allowed)
         symbol = str(symbol_values[i])
         timeframe = str(timeframe_values[i])
         key = (symbol, timeframe)
-        st = state.setdefault(
-            key, {"in_position": False, "add_count": 0, "cooldown": 0, "hold_bars": 0}
-        )
+        st = state.setdefault(key, {"in_position": False, "add_count": 0, "cooldown": 0, "hold_bars": 0})
         in_position = bool(st["in_position"])
         current_add_count = int(st["add_count"])
         cooldown = int(st["cooldown"])
@@ -98,15 +94,7 @@ def generate_trend_signals(
         score_ok = score >= cfg.min_entry_score
 
         entry = (
-            gate_ok
-            and symbol_enabled
-            and (not in_position)
-            and (cooldown <= 0)
-            and score_ok
-            and breakout_ok
-            and momentum_ok
-            and pullback_ok
-            and higher_high_ok
+            gate_ok and symbol_enabled and (not in_position) and (cooldown <= 0) and score_ok and breakout_ok and momentum_ok and pullback_ok and higher_high_ok
         )
         if entry:
             reasons.extend(
@@ -130,10 +118,8 @@ def generate_trend_signals(
             if not score_ok:
                 reasons.append("TR_BLOCK_SCORE_LOW")
 
-        exit_by_regime = regime != "TREND"
-        exit_by_trend_weaken = (
-            float(trend_efficiency_values[i]) < cfg.trend_efficiency_exit_threshold
-        )
+        exit_by_regime = regime not in {"TREND", "SPIKE"}
+        exit_by_trend_weaken = float(trend_efficiency_values[i]) < cfg.trend_efficiency_exit_threshold
         exit_by_max_hold = cfg.max_hold_bars > 0 and in_position and hold_bars >= cfg.max_hold_bars
         exit = exit_by_regime or exit_by_trend_weaken or exit_by_max_hold or high_vol
         if exit_by_regime:
