@@ -41,14 +41,21 @@ def test_classify_regime_output_contract() -> None:
         "is_trade_allowed",
     }
     assert required.issubset(out.columns)
-    assert out["regime"].isin(["RANGE", "TREND", "HIGH_VOL"]).all()
+    assert out["regime"].isin(["RANGE", "TREND", "SPIKE", "SUSTAINED"]).all()
 
 
 def test_high_vol_disables_trading() -> None:
     out = classify_regime(_feature_sample(), RegimeConfig(high_vol_cooldown_bars=2))
-    high_vol_rows = out[out["regime"] == "HIGH_VOL"]
-    assert not high_vol_rows.empty
-    assert (~high_vol_rows["is_trade_allowed"]).all()
+    sustained_rows = out[out["regime"] == "SUSTAINED"]
+    assert not sustained_rows.empty
+    assert (~sustained_rows["is_trade_allowed"]).all()
+
+
+def test_spike_keeps_trading_allowed() -> None:
+    out = classify_regime(_feature_sample(), RegimeConfig(high_vol_sustained_min_bars=4))
+    spike_rows = out[out["regime"] == "SPIKE"]
+    assert not spike_rows.empty
+    assert spike_rows["is_trade_allowed"].all()
 
 
 def test_reason_codes_are_whitelisted() -> None:

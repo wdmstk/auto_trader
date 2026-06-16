@@ -11,6 +11,7 @@ GATEWAY_STATE_PATH="${GATEWAY_STATE_PATH:-data/exchange/gateway_state.json}"
 EVENT_LOG="${EVENT_LOG:-data/gui/control_events.jsonl}"
 OUTPUT_DIR="${OUTPUT_DIR:-data/validation}"
 RESULT_PATH="${RESULT_PATH:-$OUTPUT_DIR/futures_runtime_gate_check.jsonl}"
+RUN_ID="${RUN_ID:-${PIPELINE_RUN_ID:-}}"
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -42,7 +43,7 @@ record_result() {
   local order_out="$3"
   local ts
   ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  python - "$RESULT_PATH" "$ts" "$scenario" "$runtime_out" "$order_out" <<'PY'
+  python - "$RESULT_PATH" "$ts" "$scenario" "$runtime_out" "$order_out" "$RUN_ID" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -52,8 +53,10 @@ checked_at = sys.argv[2]
 scenario = sys.argv[3]
 runtime_out = sys.argv[4]
 order_out = sys.argv[5]
+run_id = sys.argv[6]
 row = {
     "checked_at": checked_at,
+    "run_id": run_id,
     "scenario": scenario,
     "runtime": runtime_out,
     "order": order_out,
@@ -65,6 +68,7 @@ PY
 
 echo "Running futures runtime gate check..."
 echo "result_path=$RESULT_PATH"
+echo "run_id=$RUN_ID"
 
 # 1) STOP -> RUNTIME_TRADING_DISABLED
 append_event "STOP"

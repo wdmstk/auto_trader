@@ -28,8 +28,10 @@ def is_stale(updated_at: datetime, now: datetime | None = None, max_delay_sec: i
 def emergency_badge(emergency_state: bool, regime: str) -> str:
     if emergency_state:
         return "EMERGENCY"
-    if regime == "HIGH_VOL":
-        return "HIGH_VOL"
+    if regime in {"HIGH_VOL", "SUSTAINED"}:
+        return "SUSTAINED"
+    if regime == "SPIKE":
+        return "SPIKE"
     return "NORMAL"
 
 

@@ -36,9 +36,7 @@ def generate_range_signals(
     symbol_values = merged["symbol"].astype(str).to_numpy(copy=False)
     timeframe_values = merged["timeframe"].astype(str).to_numpy(copy=False)
     regime_values = merged["regime"].astype(str).to_numpy(copy=False)
-    trade_allowed_values = (
-        merged["is_trade_allowed"].fillna(False).astype(bool).to_numpy(copy=False)
-    )
+    trade_allowed_values = merged["is_trade_allowed"].fillna(False).astype(bool).to_numpy(copy=False)
     risk_blocked_values = merged["risk_blocked"].fillna(False).astype(bool).to_numpy(copy=False)
     rsi_values = merged["rsi"].astype(float).to_numpy(copy=False)
     wick_values = merged["wick_ratio"].astype(float).to_numpy(copy=False)
@@ -70,7 +68,7 @@ def generate_range_signals(
 
         regime = str(regime_values[i])
         is_trade_allowed = bool(trade_allowed_values[i])
-        is_high_vol = regime == "HIGH_VOL" or not is_trade_allowed
+        is_high_vol = regime in {"HIGH_VOL", "SUSTAINED"} or not is_trade_allowed
         if is_high_vol:
             reasons.append("RG_BLOCK_HIGH_VOL")
         if blocked:
@@ -89,17 +87,7 @@ def generate_range_signals(
         score = (int(rsi_ok) + int(wick_ok) + int(mr_ok) + int(rev_ok)) / 4.0
         score_ok = score >= cfg.min_entry_score
 
-        entry = (
-            allow_entry_gate
-            and symbol_enabled
-            and (not in_position)
-            and (cd <= 0)
-            and score_ok
-            and rsi_ok
-            and wick_ok
-            and mr_ok
-            and rev_ok
-        )
+        entry = allow_entry_gate and symbol_enabled and (not in_position) and (cd <= 0) and score_ok and rsi_ok and wick_ok and mr_ok and rev_ok
         if entry:
             reasons.extend(
                 [
@@ -109,17 +97,11 @@ def generate_range_signals(
                     "RG_ENTRY_REVERSAL_CANDLE",
                 ]
             )
-        elif (
-            allow_entry_gate
-            and symbol_enabled
-            and (not in_position)
-            and (cd <= 0)
-            and (not score_ok)
-        ):
+        elif allow_entry_gate and symbol_enabled and (not in_position) and (cd <= 0) and (not score_ok):
             reasons.append("RG_BLOCK_SCORE_LOW")
 
         exit_mr = abs(float(mr_values[i])) <= cfg.exit_mean_reversion_neutral_abs
-        exit_regime = regime != "RANGE"
+        exit_regime = regime not in {"RANGE", "SPIKE"}
         exit_max_hold = cfg.max_hold_bars > 0 and in_position and held_bars >= cfg.max_hold_bars
         exit_sig = exit_mr or exit_regime or exit_max_hold
         if exit_mr:

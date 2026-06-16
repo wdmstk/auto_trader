@@ -92,19 +92,19 @@ class RiskManager:
             blocked = True
             codes.append("RISK_VOL_WEIGHTED_EXPOSURE")
         elif vol_weighted_exposure_pct > self.config.soft_vol_weighted_exposure_pct:
-            scaled = self.config.soft_vol_weighted_exposure_pct / max(
-                vol_weighted_exposure_pct, 1e-9
-            )
+            scaled = self.config.soft_vol_weighted_exposure_pct / max(vol_weighted_exposure_pct, 1e-9)
             size_scale = min(size_scale, max(self.config.min_size_scale, scaled))
 
         if risk_contribution_pct > self.config.max_risk_contribution_pct:
+            blocked = True
+            codes.append("RISK_RISK_CONTRIBUTION")
             scaled = self.config.max_risk_contribution_pct / max(risk_contribution_pct, 1e-9)
             size_scale = min(size_scale, max(self.config.min_size_scale, scaled))
         if not codes:
             codes.append("RISK_OK")
 
         return {
-            "timestamp": timestamp.astimezone(UTC),
+            "timestamp": timestamp.astimezone(UTC).isoformat(),
             "symbol": symbol,
             "risk_blocked": blocked,
             "block_reason_codes": sorted(set(codes)),
@@ -161,17 +161,9 @@ def evaluate_portfolio_risk(
     symbol_exposure = inputs["symbol_exposure_pct"].astype(float).to_numpy(copy=False)
     portfolio_exposure = inputs["portfolio_exposure_pct"].astype(float).to_numpy(copy=False)
     concentration = inputs["concentration_score"].astype(float).to_numpy(copy=False)
-    correlated = (
-        inputs["correlated_exposure_pct"].astype(float).to_numpy(copy=False)
-        if has_correlated_exposure
-        else None
-    )
-    vol_weighted = (
-        inputs["vol_weighted_exposure_pct"].astype(float).to_numpy(copy=False) if has_vwe else None
-    )
-    risk_contribution = (
-        inputs["risk_contribution_pct"].astype(float).to_numpy(copy=False) if has_rc else None
-    )
+    correlated = inputs["correlated_exposure_pct"].astype(float).to_numpy(copy=False) if has_correlated_exposure else None
+    vol_weighted = inputs["vol_weighted_exposure_pct"].astype(float).to_numpy(copy=False) if has_vwe else None
+    risk_contribution = inputs["risk_contribution_pct"].astype(float).to_numpy(copy=False) if has_rc else None
     missing_vol = inputs["missing_vol_ratio"].astype(float).to_numpy(copy=False) if has_mv else None
 
     for i in range(len(inputs)):
@@ -185,9 +177,7 @@ def evaluate_portfolio_risk(
             concentration_score=float(concentration[i]),
             correlated_exposure_pct=float(correlated[i]) if correlated is not None else 0.0,
             vol_weighted_exposure_pct=float(vol_weighted[i]) if vol_weighted is not None else 0.0,
-            risk_contribution_pct=float(risk_contribution[i])
-            if risk_contribution is not None
-            else 0.0,
+            risk_contribution_pct=float(risk_contribution[i]) if risk_contribution is not None else 0.0,
             missing_vol_ratio=float(missing_vol[i]) if missing_vol is not None else 0.0,
         )
         rows.append(out)
@@ -214,13 +204,7 @@ def ensure_correlated_exposure_column(risk_inputs: pd.DataFrame) -> pd.DataFrame
         errors="coerce",
     ).fillna(0.0)
 
-    grouped = (
-        out.groupby("timestamp", dropna=False)["_symbol_exposure_pct_num"]
-        .nlargest(2)
-        .groupby(level=0)
-        .sum()
-        .astype(float)
-    )
+    grouped = out.groupby("timestamp", dropna=False)["_symbol_exposure_pct_num"].nlargest(2).groupby(level=0).sum().astype(float)
     out["correlated_exposure_pct"] = out["timestamp"].map(grouped).fillna(0.0).astype(float)
     out = out.drop(columns=["_symbol_exposure_pct_num"])
     return out
@@ -241,9 +225,7 @@ def ensure_volatility_risk_columns(risk_inputs: pd.DataFrame) -> pd.DataFrame:
         out["missing_vol_ratio"] = 1.0
         return out
 
-    vol_col = next(
-        (c for c in ["volatility", "rolling_volatility", "vol"] if c in out.columns), None
-    )
+    vol_col = next((c for c in ["volatility", "rolling_volatility", "vol"] if c in out.columns), None)
     if vol_col is None:
         if "portfolio_exposure_pct" in out.columns:
             vwe = pd.to_numeric(out["portfolio_exposure_pct"], errors="coerce").fillna(0.0)
@@ -254,9 +236,7 @@ def ensure_volatility_risk_columns(risk_inputs: pd.DataFrame) -> pd.DataFrame:
         out["missing_vol_ratio"] = 1.0
         return out
 
-    out["_exp"] = (
-        pd.to_numeric(out["symbol_exposure_pct"], errors="coerce").fillna(0.0).clip(lower=0.0)
-    )
+    out["_exp"] = pd.to_numeric(out["symbol_exposure_pct"], errors="coerce").fillna(0.0).clip(lower=0.0)
     out["_vol"] = pd.to_numeric(out[vol_col], errors="coerce")
     out["_vol_missing"] = out["_vol"].isna().astype(float)
 
@@ -269,9 +249,7 @@ def ensure_volatility_risk_columns(risk_inputs: pd.DataFrame) -> pd.DataFrame:
     out["vol_weighted_exposure_pct"] = weighted_tot
     out["risk_contribution_pct"] = 0.0
     valid = weighted_tot > 0
-    out.loc[valid, "risk_contribution_pct"] = (
-        out.loc[valid, "_weighted_exp"] / weighted_tot.loc[valid]
-    ) * 100.0
+    out.loc[valid, "risk_contribution_pct"] = (out.loc[valid, "_weighted_exp"] / weighted_tot.loc[valid]) * 100.0
     out["missing_vol_ratio"] = by_ts["_vol_missing"].transform("mean").fillna(1.0)
     drop_cols = ["_exp", "_vol", "_vol_missing", "_vol_filled", "_vol_factor", "_weighted_exp"]
     out = out.drop(columns=[c for c in drop_cols if c in out.columns])

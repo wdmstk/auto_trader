@@ -170,12 +170,21 @@ data/validation/weekly_autotune/
 - pipeline の current runtime 設定
 - worker / systemd / 手動起動で共通に使う current env
 
+派生ファイルとして、同じ run root に次も出力する。
+
+- `route_selection_runtime.testnet.env`
+  - current env と同じ canonical source を参照するが、`WORKER_EXECUTION_MODE=testnet` と `STATISTICAL_GATE_MODE=soft`
+- `route_selection_runtime.production.env`
+  - production 用の hard-gated selection を参照し、`WORKER_EXECUTION_MODE=production` と `STATISTICAL_GATE_MODE=hard`
+
 `route_selection_runtime.env` は pipeline の current runtime 設定であり、
 `RUN_WEEKLY=1` 後は `ROUTE_SELECTION_PATH` / `WEEKLY_REVALIDATION_REPORT_PATH` が
 `weekly_revalidation_report.json` を指す。
 
 `pipeline_summary.json/md` には、その run が `soft` / `hard` のどちらで週次統計 gate を扱ったかを
 `statistical_gate_mode` として残す。
+あわせて `runtime_options.testnet` / `runtime_options.production` を載せ、どの env と route_selection を
+soft/hard のどちらで使うかを明示する。
 
 ### `weekly_revalidation/`
 

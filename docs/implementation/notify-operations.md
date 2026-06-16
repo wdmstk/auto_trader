@@ -50,6 +50,7 @@ python -m auto_trader.notify --from-env --watch --interval-sec 5 --output-dir da
 ## Durability方針
 - `notify_state.json` は `atomic write + lock file + backup recovery` で更新される。
 - lock取得失敗時はタイムアウトで失敗し、状態ファイルは保全される。
+- stale な `.lock` は PID / 経過時間で回収して再試行する。
 - primary破損時は `notify_state.json.bak` から復旧を試行する。
 
 ## systemd 例

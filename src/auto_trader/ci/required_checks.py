@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-REQUIRED_CHECKS = {"full", "smoke"}
+REQUIRED_CHECKS = {"coverage", "full", "smoke"}
 
 
 def validate_required_checks(workflow_path: str | Path) -> tuple[bool, list[str], list[str]]:

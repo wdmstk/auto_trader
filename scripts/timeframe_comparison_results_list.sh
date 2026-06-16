@@ -11,8 +11,13 @@ DATA_ROOT="${DATA_ROOT:-data}"
 
 mkdir -p "$(dirname "$OUT_PATH")"
 
+PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
+if [ ! -x "$PYTHON_BIN" ]; then
+  PYTHON_BIN="$(command -v python3)"
+fi
+
 PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
-python - "$SUMMARY_PATH" "$CANDIDATE_REPORT_PATH" "$OUT_PATH" "$DATA_ROOT" <<'PY'
+"$PYTHON_BIN" - "$SUMMARY_PATH" "$CANDIDATE_REPORT_PATH" "$OUT_PATH" "$DATA_ROOT" <<'PY'
 from __future__ import annotations
 
 import json

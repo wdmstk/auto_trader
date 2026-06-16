@@ -61,11 +61,7 @@ def test_load_candidate_report_merges_weekly_range_probe(tmp_path: Path) -> None
     out = _load_candidate_report(candidate_path, weekly_path)
 
     assert any(row.get("symbol") == "XRPUSDT" for row in out["rows"] if isinstance(row, dict))
-    assert any(
-        row.get("symbol") == "BNBUSDT" and row.get("timeframe") == "30m"
-        for row in out["rows"]
-        if isinstance(row, dict)
-    )
+    assert any(row.get("symbol") == "BNBUSDT" and row.get("timeframe") == "30m" for row in out["rows"] if isinstance(row, dict))
     assert out["range_probe_candidates"]["timeframe_reports"][0]["timeframe"] == "30m"
     assert out["range_probe_candidates"]["timeframe_reports"][0]["core_symbols"] == ["BNBUSDT"]
 
@@ -108,11 +104,7 @@ def test_load_weekly_candidate_report_uses_weekly_candidates(tmp_path: Path) -> 
     out = _load_weekly_candidate_report(weekly_path)
 
     assert any(row.get("symbol") == "ETHUSDT" for row in out["rows"] if isinstance(row, dict))
-    assert any(
-        row.get("symbol") == "BNBUSDT" and row.get("candidate_status") == "probe"
-        for row in out["rows"]
-        if isinstance(row, dict)
-    )
+    assert any(row.get("symbol") == "BNBUSDT" and row.get("candidate_status") == "probe" for row in out["rows"] if isinstance(row, dict))
     assert "range_probe_candidates" in out
     assert out["decision"]["status"] == "warn"
 
@@ -241,13 +233,7 @@ def test_weekly_revalidation_report_path_prefers_runtime_env(tmp_path: Path, mon
     data_dir = tmp_path / "data"
     env_dir = data_dir / "validation" / "weekly_autotune"
     env_dir.mkdir(parents=True)
-    weekly_path = (
-        data_dir
-        / "validation"
-        / "weekly_autotune"
-        / "weekly_revalidation"
-        / "weekly_revalidation_report.json"
-    )
+    weekly_path = data_dir / "validation" / "weekly_autotune" / "weekly_revalidation" / "weekly_revalidation_report.json"
     env_path = env_dir / "route_selection_runtime.env"
     env_path.write_text(
         f"WEEKLY_REVALIDATION_REPORT_PATH={weekly_path}\n" f"ROUTE_SELECTION_PATH={weekly_path}\n",
@@ -259,9 +245,7 @@ def test_weekly_revalidation_report_path_prefers_runtime_env(tmp_path: Path, mon
     assert _route_selection_path() == weekly_path
 
 
-def test_load_weekly_candidate_report_uses_runtime_env_default_path(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_load_weekly_candidate_report_uses_runtime_env_default_path(tmp_path: Path, monkeypatch) -> None:
     data_dir = tmp_path / "data"
     env_dir = data_dir / "validation" / "weekly_autotune"
     weekly_dir = env_dir / "weekly_revalidation"
@@ -345,6 +329,8 @@ def test_worker_trade_routes_frame_uses_route_metadata() -> None:
                     "timeframe": "30m",
                     "expected_regime": "RANGE",
                     "candidate_status": "core",
+                    "statistical_status": "fail",
+                    "route_policy": "test-only / statistical-fail",
                 },
                 "signal": {
                     "regime": "RANGE",
@@ -364,6 +350,8 @@ def test_worker_trade_routes_frame_uses_route_metadata() -> None:
     assert frame.iloc[0]["strategy"] == "range"
     assert frame.iloc[0]["timeframe"] == "30m"
     assert frame.iloc[0]["expected_regime"] == "RANGE"
+    assert frame.iloc[0]["statistical_status"] == "fail"
+    assert frame.iloc[0]["route_policy"] == "test-only / statistical-fail"
     assert bool(frame.iloc[0]["entry_signal"]) is True
 
 
@@ -377,6 +365,8 @@ def test_candidate_trade_routes_frame_uses_weekly_selection_routes() -> None:
                     "timeframe": "30m",
                     "expected_regime": "RANGE",
                     "candidate_status": "core",
+                    "statistical_status": "fail",
+                    "route_policy": "test-only / statistical-fail",
                 }
             ]
         }
@@ -388,6 +378,8 @@ def test_candidate_trade_routes_frame_uses_weekly_selection_routes() -> None:
     assert frame.iloc[0]["symbol"] == "BNBUSDT"
     assert frame.iloc[0]["strategy"] == "range"
     assert frame.iloc[0]["timeframe"] == "30m"
+    assert frame.iloc[0]["statistical_status"] == "fail"
+    assert frame.iloc[0]["route_policy"] == "test-only / statistical-fail"
     assert frame.iloc[0]["status"] == "configured"
 
 
@@ -436,15 +428,9 @@ def test_discover_available_symbols_reads_multiple_sources(tmp_path: Path) -> No
     (tmp_path / "signals").mkdir()
     (tmp_path / "regime").mkdir()
 
-    pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(
-        tmp_path / "parquet" / "BTCUSDT_1m.parquet", index=False
-    )
-    pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(
-        tmp_path / "signals" / "ETHUSDT_15m_trend_signals.parquet", index=False
-    )
-    pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(
-        tmp_path / "regime" / "XRPUSDT_30m_regime.parquet", index=False
-    )
+    pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(tmp_path / "parquet" / "BTCUSDT_1m.parquet", index=False)
+    pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(tmp_path / "signals" / "ETHUSDT_15m_trend_signals.parquet", index=False)
+    pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(tmp_path / "regime" / "XRPUSDT_30m_regime.parquet", index=False)
 
     symbols = gui_app._discover_available_symbols(tmp_path)
 
@@ -454,15 +440,9 @@ def test_discover_available_symbols_reads_multiple_sources(tmp_path: Path) -> No
 def test_discover_symbol_timeframes_prioritizes_1m(tmp_path: Path) -> None:
     (tmp_path / "parquet").mkdir()
     (tmp_path / "signals").mkdir()
-    pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(
-        tmp_path / "parquet" / "BTCUSDT_30m.parquet", index=False
-    )
-    pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(
-        tmp_path / "parquet" / "BTCUSDT_1m.parquet", index=False
-    )
-    pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(
-        tmp_path / "signals" / "BTCUSDT_5m_trend_signals.parquet", index=False
-    )
+    pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(tmp_path / "parquet" / "BTCUSDT_30m.parquet", index=False)
+    pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(tmp_path / "parquet" / "BTCUSDT_1m.parquet", index=False)
+    pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(tmp_path / "signals" / "BTCUSDT_5m_trend_signals.parquet", index=False)
 
     timeframes = gui_app._discover_symbol_timeframes("BTCUSDT", tmp_path)
 
@@ -473,9 +453,7 @@ def test_discover_symbol_timeframes_prioritizes_1m(tmp_path: Path) -> None:
 def test_discover_backtest_runs_reads_metadata(tmp_path: Path) -> None:
     backtest_dir = tmp_path / "backtest" / "ETHUSDT_1m_trend_20260606"
     backtest_dir.mkdir(parents=True)
-    pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z", "equity": 100.0}]).to_parquet(
-        backtest_dir / "portfolio.parquet", index=False
-    )
+    pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z", "equity": 100.0}]).to_parquet(backtest_dir / "portfolio.parquet", index=False)
     (backtest_dir / "metadata.json").write_text(
         json.dumps(
             {
@@ -512,6 +490,23 @@ def test_inject_ui_stability_styles_adds_reload_css(monkeypatch) -> None:
     css = str(captured["args"][0])
     assert '[data-testid="stAppViewContainer"]' in css
     assert "opacity: 1 !important;" in css
+
+
+def test_resolve_futures_testnet_credentials_loads_repo_env(tmp_path: Path, monkeypatch) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "BINANCE_FUTURES_TESTNET_API_KEY=from_env_file\n" "BINANCE_FUTURES_TESTNET_API_SECRET=from_env_secret\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gui_app, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(gui_app, "_GUI_ENV_LOADED", False)
+    monkeypatch.delenv("BINANCE_FUTURES_TESTNET_API_KEY", raising=False)
+    monkeypatch.delenv("BINANCE_FUTURES_TESTNET_API_SECRET", raising=False)
+
+    key, secret = gui_app._resolve_futures_testnet_credentials()
+
+    assert key == "from_env_file"
+    assert secret == "from_env_secret"
 
 
 def test_core_symbol_focus_rows_uses_core_candidates_only() -> None:
@@ -555,6 +550,49 @@ def test_core_symbol_focus_rows_uses_core_candidates_only() -> None:
     assert rows[0]["timeframe"] == "15m"
     assert rows[0]["strategy"] == "trend"
     assert rows[1]["timeframe"] == "1h"
+
+
+def test_position_reconciliation_frame_compares_net_exchange_positions() -> None:
+    local = pd.DataFrame(
+        [
+            {
+                "symbol": "SOLUSDT",
+                "strategy": "trend",
+                "timeframe": "15m",
+                "route_key": "trend:SOLUSDT:15m",
+                "side": "buy",
+                "qty": 1.45,
+            }
+        ]
+    )
+    exchange = pd.DataFrame(
+        [
+            {
+                "symbol": "BTCUSDT",
+                "position_side": "BOTH",
+                "side": "buy",
+                "position_amt": 0.001,
+                "qty": 0.001,
+                "entry_price": 64207.2,
+                "mark_price": 64540.0,
+                "unrealized_profit": 0.3328,
+                "leverage": 3,
+                "margin_type": "CROSS",
+                "update_time": 1781424000162,
+                "update_at": "2026-06-14T08:00:00.162000+00:00",
+            }
+        ]
+    )
+
+    out = gui_app._position_reconciliation_frame(local, exchange)
+
+    assert list(out["symbol"]) == ["BTCUSDT", "SOLUSDT"]
+    btc = out[out["symbol"] == "BTCUSDT"].iloc[0]
+    sol = out[out["symbol"] == "SOLUSDT"].iloc[0]
+    assert btc["status"] == "exchange_only"
+    assert float(btc["qty_diff"]) == -0.001
+    assert sol["status"] == "local_only"
+    assert float(sol["qty_diff"]) == 1.45
 
 
 def test_downsample_for_chart_preserves_signal_rows() -> None:

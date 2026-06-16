@@ -13,8 +13,9 @@ HEALTH_REPORT_PATH="${HEALTH_REPORT_PATH:-data/validation/runtime_metrics_health
 FORCE_APPEND="${FORCE_APPEND:-false}"
 DRY_RUN="${DRY_RUN:-false}"
 OUTPUT_FORMAT="${OUTPUT_FORMAT:-json}"
+RUN_ID="${RUN_ID:-${PIPELINE_RUN_ID:-}}"
 
-python - "$RECORD_PATH" "$CHECKPOINTS_PATH" "$HEALTH_REPORT_PATH" "$FORCE_APPEND" "$DRY_RUN" "$OUTPUT_FORMAT" <<'PY'
+python - "$RECORD_PATH" "$CHECKPOINTS_PATH" "$HEALTH_REPORT_PATH" "$FORCE_APPEND" "$DRY_RUN" "$OUTPUT_FORMAT" "$RUN_ID" <<'PY'
 from __future__ import annotations
 
 import json
@@ -70,6 +71,7 @@ def main() -> int:
     force_append = str(sys.argv[4]).lower() in {"1", "true", "yes", "on"}
     dry_run = str(sys.argv[5]).lower() in {"1", "true", "yes", "on"}
     output_format = str(sys.argv[6]).lower()
+    run_id = str(sys.argv[7]).strip()
     rows = load_jsonl(checkpoints_path)
     health = load_json(health_path)
 
@@ -89,6 +91,7 @@ def main() -> int:
         "",
         "## Auto Appended Longrun Summary",
         f"- generated_at: {now}",
+        f"- run_id: {run_id or '-'}",
         f"- checkpoints_window: {window}",
         f"- checkpoints_rows: {rows_count}",
         f"- runtime_updated_progress pass-rate: {pass_rate(rows, 'runtime_updated_progress')}",
@@ -115,6 +118,7 @@ def main() -> int:
 
     payload = {
         "record_path": str(record_path),
+        "run_id": run_id,
         "checkpoints_rows": rows_count,
         "runtime_metrics_health": health_status,
         "force_append": force_append,

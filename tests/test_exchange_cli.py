@@ -57,11 +57,11 @@ def test_build_parser_accepts_order_type_and_limit_price() -> None:
     )
     assert args.order_type == "limit"
     assert args.limit_price == 65000.0
+    assert args.runtime_state_max_age_sec == 120
+    assert args.allow_runtime_state_fail_open is False
 
 
-def test_main_rejects_limit_without_limit_price(
-    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
-) -> None:
+def test_main_rejects_limit_without_limit_price(monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]) -> None:
     monkeypatch.setattr(
         sys,
         "argv",

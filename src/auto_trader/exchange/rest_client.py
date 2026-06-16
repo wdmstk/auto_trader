@@ -6,6 +6,7 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import ROUND_DOWN, Decimal
 from typing import Any, cast
 from urllib.error import HTTPError, URLError
@@ -23,6 +24,7 @@ class RestClientConfig:
     order_path: str = "/api/v3/order"
     time_path: str = "/api/v3/time"
     exchange_info_path: str = "/api/v3/exchangeInfo"
+    account_path: str = "/api/v3/account"
     api_key: str = ""
     api_secret: str = ""
     timeout_sec: float = 5.0
@@ -87,22 +89,7 @@ class BinanceRestTransport:
             # Unfilled policy v1: cancel-fixed via IOC.
             params["timeInForce"] = "IOC"
             params["price"] = order.limit_price
-        query = urlencode(params, doseq=False)
-        signature = hmac.new(
-            self.config.api_secret.encode("utf-8"),
-            query.encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()
-        body = f"{query}&signature={signature}".encode()
-        req = Request(
-            endpoint,
-            data=body,
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "X-MBX-APIKEY": self.config.api_key,
-            },
-            method="POST",
-        )
+        req = self._signed_request(endpoint, params=params, method="POST")
         try:
             raw = self._sender(req, self.config.timeout_sec)
         except HTTPError as exc:
@@ -125,6 +112,92 @@ class BinanceRestTransport:
         if order_id:
             return True, order_id, f"accepted:{status or 'UNKNOWN'}"
         return False, "", f"rejected:{status or 'UNKNOWN'}"
+
+    def fetch_account_positions(self) -> tuple[list[dict[str, object]], str]:
+        if not self.config.api_key or not self.config.api_secret:
+            return [], "credentials_missing"
+        endpoint = self.config.base_url.rstrip("/") + self.config.account_path
+        req = self._signed_request(
+            endpoint,
+            params={
+                "timestamp": int(time.time() * 1000) + self._timestamp_offset_ms,
+                "recvWindow": self.config.recv_window_ms,
+            },
+            method="GET",
+        )
+        try:
+            raw = self._sender(req, self.config.timeout_sec)
+        except HTTPError as exc:
+            return [], _http_error_detail(exc)
+        except URLError:
+            return [], "network_error"
+        except TimeoutError:
+            return [], "timeout"
+        except Exception:
+            return [], "rest_error"
+
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return [], "invalid_response"
+        if not isinstance(parsed, dict):
+            return [], "invalid_response"
+
+        rows: list[dict[str, object]] = []
+        positions = parsed.get("positions", [])
+        if not isinstance(positions, list):
+            return [], "invalid_response"
+        for item in positions:
+            if not isinstance(item, dict):
+                continue
+            position_amt = _to_float(item.get("positionAmt", 0.0))
+            if position_amt == 0.0:
+                continue
+            entry_price = _to_float(item.get("entryPrice", 0.0))
+            mark_price = _to_float(item.get("markPrice", 0.0))
+            unrealized_profit = _to_float(item.get("unrealizedProfit", 0.0))
+            update_time = _safe_int(item.get("updateTime", 0))
+            rows.append(
+                {
+                    "symbol": str(item.get("symbol", "")).strip().upper(),
+                    "position_side": str(item.get("positionSide", "")).strip().upper(),
+                    "side": "buy" if position_amt > 0.0 else "sell",
+                    "position_amt": position_amt,
+                    "qty": abs(position_amt),
+                    "entry_price": entry_price,
+                    "mark_price": mark_price,
+                    "unrealized_profit": unrealized_profit,
+                    "leverage": _safe_int(item.get("leverage", 0)),
+                    "margin_type": str(item.get("marginType", "")).strip().upper(),
+                    "update_time": update_time,
+                    "update_at": ("" if update_time <= 0 else datetime.fromtimestamp(update_time / 1000, tz=UTC).isoformat()),
+                }
+            )
+        rows.sort(key=lambda row: str(row.get("symbol", "")))
+        return rows, "ok"
+
+    def _signed_request(
+        self,
+        endpoint: str,
+        *,
+        params: dict[str, object],
+        method: str,
+    ) -> Request:
+        query = urlencode(params, doseq=False)
+        signature = hmac.new(
+            self.config.api_secret.encode("utf-8"),
+            query.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        body = None
+        url = endpoint
+        headers = {"X-MBX-APIKEY": self.config.api_key}
+        if method.upper() == "POST":
+            body = f"{query}&signature={signature}".encode()
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+        else:
+            url = f"{endpoint}?{query}&signature={signature}"
+        return Request(url, data=body, headers=headers, method=method.upper())
 
     def _symbol_precision(self, symbol: str) -> SymbolPrecision:
         key = str(symbol).strip().upper()
@@ -152,7 +225,7 @@ def _sync_timestamp_offset_ms(config: RestClientConfig, sender: HttpSender) -> i
     try:
         raw = sender(req, config.timeout_sec)
         parsed = json.loads(raw)
-        server_time = int(parsed.get("serverTime", 0))
+        server_time = _safe_int(parsed.get("serverTime", 0))
         if server_time <= 0:
             return 0
         local_time = int(time.time() * 1000)
@@ -231,10 +304,60 @@ def _floor_to_step(value: float, step: float) -> float:
 
 def _as_positive_float(value: object) -> float | None:
     try:
-        number = float(value)  # type: ignore[arg-type]
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int | float):
+            number = float(value)
+        elif isinstance(value, str):
+            number = float(value)
+        else:
+            return None
     except (TypeError, ValueError):
         return None
     return number if number > 0 else None
+
+
+def _to_float(value: object) -> float:
+    try:
+        if isinstance(value, bool):
+            return 0.0
+        if isinstance(value, int | float):
+            return float(value)
+        if isinstance(value, str):
+            return float(value)
+        return 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _to_int(value: object) -> int:
+    try:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            return int(value)
+        return 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _safe_int(value: object) -> int:
+    try:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            return int(value)
+        return 0
+    except (TypeError, ValueError):
+        return 0
 
 
 def _http_error_detail(exc: HTTPError) -> str:

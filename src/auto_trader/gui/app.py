@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 # mypy: disable-error-code=misc
 import importlib
 import json
@@ -21,6 +23,7 @@ except Exception:  # pragma: no cover - UI fallback
     alt = None
 
 from auto_trader.analysis.trade_routes import resolve_live_trade_routes
+from auto_trader.exchange.rest_client import BinanceRestTransport, RestClientConfig
 from auto_trader.gui.overlay import build_overlay_frame, build_regime_segments
 from auto_trader.gui.state import ControlEvent, append_control_event, emergency_badge, is_stale
 from auto_trader.stateio import atomic_write_json, read_json_with_recovery
@@ -33,8 +36,11 @@ AUTO_REFRESH_SEC = 10.0
 DATA_STALE_WARN_SEC = 30
 DATA_STALE_CRIT_SEC = 120
 DEFAULT_RUNTIME_METRICS_PATH = DATA_DIR / "validation" / "runtime_metrics.jsonl"
+FUTURES_TESTNET_BASE_URL = "https://testnet.binancefuture.com"
+FUTURES_TESTNET_ACCOUNT_PATH = "/fapi/v2/account"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 JOB_STATE_PATH = DATA_DIR / "runtime" / "gui_refresh_job.json"
+_GUI_ENV_LOADED = False
 
 _STREAMLIT_DATAFRAME: Any = st.dataframe
 _P = ParamSpec("_P")
@@ -151,14 +157,10 @@ def _core_symbol_focus_rows(candidate_report: Mapping[str, object]) -> list[dict
     core_symbols_raw = candidate_report.get("core_symbols", [])
     if not isinstance(core_symbols_raw, list) or not core_symbols_raw:
         return []
-    core_symbols = [
-        str(symbol).strip().upper() for symbol in core_symbols_raw if str(symbol).strip()
-    ]
+    core_symbols = [str(symbol).strip().upper() for symbol in core_symbols_raw if str(symbol).strip()]
     best_rows = candidate_report.get("best_by_symbol_strategy", [])
     if not isinstance(best_rows, list) or not best_rows:
-        return [
-            {"symbol": symbol, "timeframe": "1m", "strategy": "trend"} for symbol in core_symbols
-        ]
+        return [{"symbol": symbol, "timeframe": "1m", "strategy": "trend"} for symbol in core_symbols]
 
     by_symbol: dict[str, dict[str, object]] = {}
     for row in best_rows:
@@ -169,9 +171,7 @@ def _core_symbol_focus_rows(candidate_report: Mapping[str, object]) -> list[dict
             continue
         current = by_symbol.get(symbol)
         candidate_score = _safe_float(row.get("candidate_score", float("-inf")))
-        current_score = (
-            _safe_float(current.get("candidate_score", float("-inf"))) if current else float("-inf")
-        )
+        current_score = _safe_float(current.get("candidate_score", float("-inf"))) if current else float("-inf")
         if current is None or candidate_score >= current_score:
             by_symbol[symbol] = dict(row)
 
@@ -404,16 +404,11 @@ def _render_candlestick_overlay(overlay: pd.DataFrame) -> None:
     frame["up"] = (frame["close"] >= frame["open"]).map({True: "UP", False: "DOWN"})
     regime_segments = build_regime_segments(frame)
 
-    price_span = (
-        pd.to_numeric(frame["high"], errors="coerce") - pd.to_numeric(frame["low"], errors="coerce")
-    ).abs()
+    price_span = (pd.to_numeric(frame["high"], errors="coerce") - pd.to_numeric(frame["low"], errors="coerce")).abs()
     price_anchor = pd.to_numeric(frame["close"], errors="coerce").abs()
     fallback_gap = (price_anchor * 0.003).clip(lower=0.05)
     marker_gap = pd.Series(
-        [
-            max(float(a) if pd.notna(a) else 0.0, float(b) if pd.notna(b) else 0.0)
-            for a, b in zip(price_span * 0.15, fallback_gap, strict=True)
-        ],
+        [max(float(a) if pd.notna(a) else 0.0, float(b) if pd.notna(b) else 0.0) for a, b in zip(price_span * 0.15, fallback_gap, strict=True)],
         index=frame.index,
     )
     frame["buy_y"] = pd.to_numeric(frame["low"], errors="coerce") - marker_gap
@@ -423,6 +418,8 @@ def _render_candlestick_overlay(overlay: pd.DataFrame) -> None:
     regime_colors = {
         "RANGE": "#0ea5e9",
         "TREND": "#10b981",
+        "SPIKE": "#f59e0b",
+        "SUSTAINED": "#ef4444",
         "HIGH_VOL": "#ef4444",
         "UNKNOWN": "#94a3b8",
     }
@@ -436,10 +433,12 @@ def _render_candlestick_overlay(overlay: pd.DataFrame) -> None:
             color=alt.Color(
                 "regime:N",
                 scale=alt.Scale(
-                    domain=["RANGE", "TREND", "HIGH_VOL", "UNKNOWN"],
+                    domain=["RANGE", "TREND", "SPIKE", "SUSTAINED", "HIGH_VOL", "UNKNOWN"],
                     range=[
                         regime_colors["RANGE"],
                         regime_colors["TREND"],
+                        regime_colors["SPIKE"],
+                        regime_colors["SUSTAINED"],
                         regime_colors["HIGH_VOL"],
                         regime_colors["UNKNOWN"],
                     ],
@@ -458,9 +457,7 @@ def _render_candlestick_overlay(overlay: pd.DataFrame) -> None:
             x=alt.X("timestamp:T", title="timestamp"),
             y=alt.Y("open:Q", title="price"),
             y2="close:Q",
-            color=alt.Color(
-                "up:N", scale=alt.Scale(domain=["UP", "DOWN"], range=["#16a34a", "#dc2626"])
-            ),
+            color=alt.Color("up:N", scale=alt.Scale(domain=["UP", "DOWN"], range=["#16a34a", "#dc2626"])),
             tooltip=[
                 "timestamp:T",
                 "open:Q",
@@ -540,9 +537,7 @@ def _render_candlestick_overlay(overlay: pd.DataFrame) -> None:
     ]
     chart = alt.layer(*layers).properties(height=780).interactive(bind_x=True, bind_y=True)
     st.altair_chart(chart, use_container_width=True)
-    st.caption(
-        "Blue up arrow = Buy/entry, orange down arrow = Sell/exit, purple cross = risk block."
-    )
+    st.caption("Blue up arrow = Buy/entry, orange down arrow = Sell/exit, purple cross = risk block.")
 
 
 def _downsample_for_chart(df: pd.DataFrame, max_points: int) -> pd.DataFrame:
@@ -577,11 +572,7 @@ def _load_symbol_regime(
         if preferred_path.exists():
             candidates.append(preferred_path)
     if regime_dir.exists():
-        candidates.extend(
-            path
-            for path in sorted(regime_dir.glob(f"{symbol}_*_regime.parquet"))
-            if path not in candidates
-        )
+        candidates.extend(path for path in sorted(regime_dir.glob(f"{symbol}_*_regime.parquet")) if path not in candidates)
     for path in candidates:
         frame = _read_optional(path)
         if frame.empty or "regime" not in frame.columns:
@@ -616,13 +607,9 @@ def _symbol_snapshot(
     range_entries = 0
     trend_entries = 0
     if not range_df.empty and "entry_signal" in range_df.columns:
-        range_entries = int(
-            pd.to_numeric(range_df["entry_signal"], errors="coerce").fillna(0).astype(bool).sum()
-        )
+        range_entries = int(pd.to_numeric(range_df["entry_signal"], errors="coerce").fillna(0).astype(bool).sum())
     if not trend_df.empty and "entry_signal" in trend_df.columns:
-        trend_entries = int(
-            pd.to_numeric(trend_df["entry_signal"], errors="coerce").fillna(0).astype(bool).sum()
-        )
+        trend_entries = int(pd.to_numeric(trend_df["entry_signal"], errors="coerce").fillna(0).astype(bool).sum())
     exposure: float = float("nan")
     dd: float = float("nan")
     vwe: float = float("nan")
@@ -632,26 +619,16 @@ def _symbol_snapshot(
         s = risk_df[risk_df.get("symbol", pd.Series(dtype=str)).astype(str) == symbol]
         if not s.empty:
             if "portfolio_exposure_pct" in s.columns:
-                exposure = float(
-                    pd.to_numeric(s["portfolio_exposure_pct"], errors="coerce").fillna(0.0).iloc[-1]
-                )
+                exposure = float(pd.to_numeric(s["portfolio_exposure_pct"], errors="coerce").fillna(0.0).iloc[-1])
             if "current_dd_pct" in s.columns:
                 dd = float(pd.to_numeric(s["current_dd_pct"], errors="coerce").fillna(0.0).iloc[-1])
             if "vol_weighted_exposure_pct" in s.columns:
-                vwe = float(
-                    pd.to_numeric(s["vol_weighted_exposure_pct"], errors="coerce")
-                    .fillna(0.0)
-                    .iloc[-1]
-                )
+                vwe = float(pd.to_numeric(s["vol_weighted_exposure_pct"], errors="coerce").fillna(0.0).iloc[-1])
             if "risk_contribution_pct" in s.columns:
-                rc = float(
-                    pd.to_numeric(s["risk_contribution_pct"], errors="coerce").fillna(0.0).iloc[-1]
-                )
+                rc = float(pd.to_numeric(s["risk_contribution_pct"], errors="coerce").fillna(0.0).iloc[-1])
             if "size_scale" in s.columns:
                 scale = float(pd.to_numeric(s["size_scale"], errors="coerce").fillna(1.0).iloc[-1])
-    pnl = float(wf_range.get(symbol, {}).get("monthly_pnl", 0.0)) + float(
-        wf_trend.get(symbol, {}).get("monthly_pnl", 0.0)
-    )
+    pnl = float(wf_range.get(symbol, {}).get("monthly_pnl", 0.0)) + float(wf_trend.get(symbol, {}).get("monthly_pnl", 0.0))
     return {
         "symbol": symbol,
         "regime": latest_regime,
@@ -678,6 +655,311 @@ def _latest_symbol_price(symbol: str, *, timeframe: str = "1m") -> float | None:
         return None
 
 
+def _resolve_futures_testnet_credentials() -> tuple[str, str]:
+    _ensure_gui_env_loaded()
+    return (
+        os.getenv("BINANCE_FUTURES_TESTNET_API_KEY", ""),
+        os.getenv("BINANCE_FUTURES_TESTNET_API_SECRET", ""),
+    )
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _ensure_gui_env_loaded() -> None:
+    global _GUI_ENV_LOADED
+    if _GUI_ENV_LOADED:
+        return
+    _GUI_ENV_LOADED = True
+    env_path = REPO_ROOT / ".env"
+    if not env_path.exists():
+        return
+    try:
+        _load_env_file(env_path)
+    except Exception:
+        return
+
+
+def _load_env_file(path: Path) -> None:
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key or key in os.environ:
+            continue
+        if value and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        os.environ[key] = value
+
+
+def _exchange_sync_cache_marker() -> str:
+    api_key, api_secret = _resolve_futures_testnet_credentials()
+    payload = f"{api_key}:{api_secret}:{FUTURES_TESTNET_BASE_URL}:{FUTURES_TESTNET_ACCOUNT_PATH}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _exchange_positions_frame(rows: list[dict[str, object]]) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "symbol",
+                "position_side",
+                "side",
+                "position_amt",
+                "qty",
+                "entry_price",
+                "mark_price",
+                "unrealized_profit",
+                "leverage",
+                "margin_type",
+                "update_time",
+                "update_at",
+            ]
+        )
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return frame
+    for col in ["position_amt", "qty", "entry_price", "mark_price", "unrealized_profit"]:
+        if col in frame.columns:
+            frame[col] = pd.to_numeric(frame[col], errors="coerce").fillna(0.0)
+    if "leverage" in frame.columns:
+        frame["leverage"] = pd.to_numeric(frame["leverage"], errors="coerce").fillna(0).astype(int)
+    if "update_time" in frame.columns:
+        frame["update_time"] = pd.to_numeric(frame["update_time"], errors="coerce").fillna(0).astype(int)
+    ordered_cols = [
+        "symbol",
+        "position_side",
+        "side",
+        "position_amt",
+        "qty",
+        "entry_price",
+        "mark_price",
+        "unrealized_profit",
+        "leverage",
+        "margin_type",
+        "update_time",
+        "update_at",
+    ]
+    for col in ordered_cols:
+        if col not in frame.columns:
+            frame[col] = "" if col.endswith("_at") or col in {"symbol", "position_side", "side", "margin_type"} else 0.0
+    frame = frame[ordered_cols].copy()
+    return frame.sort_values(["symbol", "side"], ascending=[True, True]).reset_index(drop=True)
+
+
+def _local_position_net_frame(position_df: pd.DataFrame) -> pd.DataFrame:
+    if position_df.empty:
+        return pd.DataFrame(
+            columns=[
+                "symbol",
+                "local_side",
+                "local_net_qty",
+                "local_abs_qty",
+                "route_count",
+                "route_keys",
+            ]
+        )
+    rows: list[dict[str, object]] = []
+    frame = position_df.copy()
+    if "symbol" not in frame.columns:
+        return pd.DataFrame()
+    frame["symbol"] = frame["symbol"].astype(str)
+    for symbol, group in frame.groupby("symbol", dropna=False):
+        signed_qty = 0.0
+        abs_qty = 0.0
+        route_keys: list[str] = []
+        for _, row in group.iterrows():
+            side = str(row.get("side", "")).strip().lower()
+            qty = _safe_float(row.get("qty", 0.0))
+            if qty <= 0.0:
+                continue
+            signed_qty += qty if side == "buy" else -qty
+            abs_qty += qty
+            route_key = str(row.get("route_key", "")).strip()
+            if route_key:
+                route_keys.append(route_key)
+        if signed_qty > 0.0:
+            local_side = "buy"
+        elif signed_qty < 0.0:
+            local_side = "sell"
+        else:
+            local_side = "flat"
+        rows.append(
+            {
+                "symbol": str(symbol),
+                "local_side": local_side,
+                "local_net_qty": signed_qty,
+                "local_abs_qty": abs_qty,
+                "route_count": int(len(group)),
+                "route_keys": ", ".join(sorted(set(route_keys))),
+            }
+        )
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    return out.sort_values(["symbol"], ascending=[True]).reset_index(drop=True)
+
+
+def _position_reconciliation_frame(
+    position_df: pd.DataFrame,
+    exchange_position_frame: pd.DataFrame,
+) -> pd.DataFrame:
+    local_frame = _local_position_net_frame(position_df)
+    exchange_frame = exchange_position_frame.copy()
+    if local_frame.empty and exchange_frame.empty:
+        return pd.DataFrame(
+            columns=[
+                "symbol",
+                "local_side",
+                "local_net_qty",
+                "exchange_side",
+                "exchange_position_amt",
+                "qty_diff",
+                "status",
+            ]
+        )
+    if not exchange_frame.empty and "position_amt" in exchange_frame.columns:
+        exchange_frame = exchange_frame.rename(columns={"position_amt": "exchange_position_amt", "side": "exchange_side"})
+    else:
+        exchange_frame = pd.DataFrame(columns=["symbol", "exchange_side", "exchange_position_amt"])
+    merged = local_frame.merge(exchange_frame, on="symbol", how="outer")
+    for col in ["local_net_qty", "local_abs_qty", "exchange_position_amt"]:
+        if col in merged.columns:
+            merged[col] = pd.to_numeric(merged[col], errors="coerce").fillna(0.0)
+    for col in ["local_side", "exchange_side", "route_keys"]:
+        if col not in merged.columns:
+            merged[col] = ""
+        merged[col] = merged[col].fillna("").astype(str)
+    merged["qty_diff"] = merged["local_net_qty"] - merged["exchange_position_amt"]
+    status: list[str] = []
+    for _, row in merged.iterrows():
+        local_qty = float(row.get("local_net_qty", 0.0) or 0.0)
+        exchange_qty = float(row.get("exchange_position_amt", 0.0) or 0.0)
+        if local_qty == 0.0 and exchange_qty == 0.0:
+            status.append("flat")
+        elif local_qty == exchange_qty:
+            status.append("match")
+        elif local_qty == 0.0:
+            status.append("exchange_only")
+        elif exchange_qty == 0.0:
+            status.append("local_only")
+        else:
+            status.append("mismatch")
+    merged["status"] = status
+    display_cols = [
+        "symbol",
+        "local_side",
+        "local_net_qty",
+        "exchange_side",
+        "exchange_position_amt",
+        "qty_diff",
+        "status",
+        "route_count",
+        "route_keys",
+    ]
+    for col in display_cols:
+        if col not in merged.columns:
+            merged[col] = "" if col in {"symbol", "local_side", "exchange_side", "status", "route_keys"} else 0.0
+    merged = merged[display_cols].copy()
+    return merged.sort_values(["status", "symbol"], ascending=[True, True]).reset_index(drop=True)
+
+
+def _fetch_exchange_positions_snapshot() -> dict[str, object]:
+    api_key, api_secret = _resolve_futures_testnet_credentials()
+    if not api_key or not api_secret:
+        return {
+            "status": "credentials_missing",
+            "reason": "BINANCE_FUTURES_TESTNET_API_KEY/SECRET not set",
+            "fetched_at": _now_iso(),
+            "rows": [],
+            "frame": _exchange_positions_frame([]),
+        }
+    transport = BinanceRestTransport(
+        RestClientConfig(
+            base_url=FUTURES_TESTNET_BASE_URL,
+            account_path=FUTURES_TESTNET_ACCOUNT_PATH,
+            api_key=api_key,
+            api_secret=api_secret,
+            sync_server_time=True,
+        )
+    )
+    rows, reason = transport.fetch_account_positions()
+    return {
+        "status": "ok" if reason == "ok" else "error",
+        "reason": reason,
+        "fetched_at": _now_iso(),
+        "rows": rows,
+        "frame": _exchange_positions_frame(rows),
+    }
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def _cached_exchange_positions_snapshot(refresh_token: int, cache_marker: str) -> dict[str, object]:
+    _ = refresh_token
+    _ = cache_marker
+    return _fetch_exchange_positions_snapshot()
+
+
+def _render_exchange_position_sync(position_df: pd.DataFrame) -> None:
+    st.subheader("Exchange Position Sync")
+    st.caption(
+        "Binance Futures testnet account endpoint を直接読んで、local positions と "
+        "exchange 正本を比較します。route metadata は REST では取得できないため、"
+        "比較は symbol net で行います。"
+    )
+    refresh_key = "exchange_position_refresh_token"
+    if refresh_key not in st.session_state:
+        st.session_state[refresh_key] = 0
+    sync_cols = st.columns([1, 2, 2])
+    if sync_cols[0].button("Refresh exchange positions", key="exchange_position_refresh_button"):
+        st.session_state[refresh_key] = int(st.session_state[refresh_key]) + 1
+    sync_snapshot = _cached_exchange_positions_snapshot(
+        int(st.session_state[refresh_key]),
+        _exchange_sync_cache_marker(),
+    )
+    sync_reason = str(sync_snapshot.get("reason", ""))
+    sync_status = str(sync_snapshot.get("status", ""))
+    sync_fetched_at = str(sync_snapshot.get("fetched_at", ""))
+    sync_cols[1].metric("Sync status", sync_status)
+    sync_cols[2].metric("Fetched at", sync_fetched_at or "-")
+    st.caption(f"sync_reason={sync_reason}")
+    exchange_frame = cast(pd.DataFrame, sync_snapshot.get("frame", pd.DataFrame()))
+    if sync_status != "ok" and sync_reason == "credentials_missing":
+        st.warning("BINANCE_FUTURES_TESTNET_API_KEY/SECRET が未設定のため exchange sync は無効です。")
+    elif sync_status != "ok":
+        st.warning(f"Exchange sync failed: {sync_reason}")
+    if exchange_frame.empty:
+        st.info("No exchange positions found.")
+    else:
+        exchange_display_cols = [
+            col
+            for col in [
+                "symbol",
+                "side",
+                "position_amt",
+                "qty",
+                "entry_price",
+                "mark_price",
+                "unrealized_profit",
+                "leverage",
+                "margin_type",
+                "update_at",
+            ]
+            if col in exchange_frame.columns
+        ]
+        st.dataframe(exchange_frame[exchange_display_cols], width="stretch", hide_index=True)
+
+    reconciliation_frame = _position_reconciliation_frame(position_df, exchange_frame)
+    if reconciliation_frame.empty:
+        st.info("No reconciliation rows available yet.")
+    else:
+        st.dataframe(reconciliation_frame, width="stretch", hide_index=True)
+
+
 def _live_pnl_frame(position_df: pd.DataFrame) -> pd.DataFrame:
     if position_df.empty:
         return pd.DataFrame(
@@ -701,9 +983,11 @@ def _live_pnl_frame(position_df: pd.DataFrame) -> pd.DataFrame:
         side = str(row.get("side", "buy"))
         qty = _safe_float(row.get("qty", 0.0))
         avg_entry = _safe_float(row.get("avg_entry", 0.0))
+        if qty <= 0.0:
+            continue
         mark_price = _latest_symbol_price(symbol) or avg_entry
         source_price = "market" if mark_price != avg_entry else "avg_entry"
-        if qty <= 0.0 or avg_entry <= 0.0:
+        if avg_entry <= 0.0:
             unrealized_pnl = 0.0
             unrealized_pnl_pct = 0.0
         elif side == "sell":
@@ -740,18 +1024,9 @@ def _live_pnl_summary(position_df: pd.DataFrame) -> dict[str, float]:
             "position_value": 0.0,
             "cost_basis": 0.0,
         }
-    live_unrealized_pnl = float(
-        pd.to_numeric(frame["unrealized_pnl"], errors="coerce").fillna(0.0).sum()
-    )
-    position_value = float(
-        pd.to_numeric(frame["position_value"], errors="coerce").fillna(0.0).sum()
-    )
-    cost_basis = float(
-        (
-            pd.to_numeric(frame["qty"], errors="coerce").fillna(0.0)
-            * pd.to_numeric(frame["avg_entry"], errors="coerce").fillna(0.0)
-        ).sum()
-    )
+    live_unrealized_pnl = float(pd.to_numeric(frame["unrealized_pnl"], errors="coerce").fillna(0.0).sum())
+    position_value = float(pd.to_numeric(frame["position_value"], errors="coerce").fillna(0.0).sum())
+    cost_basis = float((pd.to_numeric(frame["qty"], errors="coerce").fillna(0.0) * pd.to_numeric(frame["avg_entry"], errors="coerce").fillna(0.0)).sum())
     live_unrealized_pnl_pct = (live_unrealized_pnl / cost_basis * 100.0) if cost_basis > 0 else 0.0
     return {
         "live_unrealized_pnl": live_unrealized_pnl,
@@ -791,36 +1066,22 @@ def _read_walkforward_summary(symbol: str, timeframe: str, strategy: str) -> pd.
     return _read_optional(p2)
 
 
-def _load_walkforward_metric_map(
-    strategy: str, symbols: list[str], timeframe: str = "1m"
-) -> dict[str, dict[str, float]]:
+def _load_walkforward_metric_map(strategy: str, symbols: list[str], timeframe: str = "1m") -> dict[str, dict[str, float]]:
     out: dict[str, dict[str, float]] = {}
     for symbol in symbols:
         df = _read_walkforward_summary(symbol=symbol, timeframe=timeframe, strategy=strategy)
         if df.empty:
             out[symbol] = {"pf": 0.0, "win_rate": 0.0, "max_dd": 0.0, "monthly_pnl": 0.0}
             continue
-        pf = float(
-            pd.to_numeric(df.get("pf", pd.Series([0.0])), errors="coerce").fillna(0.0).mean()
-        )
-        wr = float(
-            pd.to_numeric(df.get("win_rate", pd.Series([0.0])), errors="coerce").fillna(0.0).mean()
-        )
-        dd = float(
-            pd.to_numeric(df.get("max_dd", pd.Series([0.0])), errors="coerce").fillna(0.0).mean()
-        )
-        pnl = float(
-            pd.to_numeric(df.get("monthly_pnl", pd.Series([0.0])), errors="coerce")
-            .fillna(0.0)
-            .mean()
-        )
+        pf = float(pd.to_numeric(df.get("pf", pd.Series([0.0])), errors="coerce").fillna(0.0).mean())
+        wr = float(pd.to_numeric(df.get("win_rate", pd.Series([0.0])), errors="coerce").fillna(0.0).mean())
+        dd = float(pd.to_numeric(df.get("max_dd", pd.Series([0.0])), errors="coerce").fillna(0.0).mean())
+        pnl = float(pd.to_numeric(df.get("monthly_pnl", pd.Series([0.0])), errors="coerce").fillna(0.0).mean())
         out[symbol] = {"pf": pf, "win_rate": wr, "max_dd": dd, "monthly_pnl": pnl}
     return out
 
 
-def _load_walkforward_artifact(
-    symbol: str, timeframe: str, strategy: str, kind: str
-) -> pd.DataFrame:
+def _load_walkforward_artifact(symbol: str, timeframe: str, strategy: str, kind: str) -> pd.DataFrame:
     p1 = DATA_DIR / "analysis" / f"walkforward_{symbol}_{timeframe}_{strategy}_{kind}.parquet"
     df = _read_optional(p1)
     if not df.empty:
@@ -845,12 +1106,8 @@ def _render_multi_symbol_panel() -> None:
         key="symbols_input",
     )
     max_symbols = st.slider("Max symbols to render", min_value=2, max_value=20, value=8, step=1)
-    enable_heavy = st.checkbox(
-        "Enable heavy visualizations (correlation/walkforward tables)", value=False
-    )
-    corr_rows = st.slider(
-        "Rows per symbol for correlation", min_value=300, max_value=5000, value=1500, step=100
-    )
+    enable_heavy = st.checkbox("Enable heavy visualizations (correlation/walkforward tables)", value=False)
+    corr_rows = st.slider("Rows per symbol for correlation", min_value=300, max_value=5000, value=1500, step=100)
     symbols = [s.strip().upper() for s in symbols_raw.split(",") if s.strip()]
     symbols = symbols[:max_symbols]
     if not symbols:
@@ -863,31 +1120,26 @@ def _render_multi_symbol_panel() -> None:
     rows = [_symbol_snapshot(s, risk_df, wf_range, wf_trend) for s in symbols]
     snap = pd.DataFrame(rows)
     snap["wf_range_pf"] = snap["symbol"].map(lambda s: wf_range.get(str(s), {}).get("pf", 0.0))
-    snap["wf_range_win_rate"] = snap["symbol"].map(
-        lambda s: wf_range.get(str(s), {}).get("win_rate", 0.0)
-    )
-    snap["wf_range_max_dd"] = snap["symbol"].map(
-        lambda s: wf_range.get(str(s), {}).get("max_dd", 0.0)
-    )
-    snap["wf_range_monthly_pnl"] = snap["symbol"].map(
-        lambda s: wf_range.get(str(s), {}).get("monthly_pnl", 0.0)
-    )
+    snap["wf_range_win_rate"] = snap["symbol"].map(lambda s: wf_range.get(str(s), {}).get("win_rate", 0.0))
+    snap["wf_range_max_dd"] = snap["symbol"].map(lambda s: wf_range.get(str(s), {}).get("max_dd", 0.0))
+    snap["wf_range_monthly_pnl"] = snap["symbol"].map(lambda s: wf_range.get(str(s), {}).get("monthly_pnl", 0.0))
     snap["wf_trend_pf"] = snap["symbol"].map(lambda s: wf_trend.get(str(s), {}).get("pf", 0.0))
-    snap["wf_trend_win_rate"] = snap["symbol"].map(
-        lambda s: wf_trend.get(str(s), {}).get("win_rate", 0.0)
-    )
-    snap["wf_trend_max_dd"] = snap["symbol"].map(
-        lambda s: wf_trend.get(str(s), {}).get("max_dd", 0.0)
-    )
-    snap["wf_trend_monthly_pnl"] = snap["symbol"].map(
-        lambda s: wf_trend.get(str(s), {}).get("monthly_pnl", 0.0)
-    )
+    snap["wf_trend_win_rate"] = snap["symbol"].map(lambda s: wf_trend.get(str(s), {}).get("win_rate", 0.0))
+    snap["wf_trend_max_dd"] = snap["symbol"].map(lambda s: wf_trend.get(str(s), {}).get("max_dd", 0.0))
+    snap["wf_trend_monthly_pnl"] = snap["symbol"].map(lambda s: wf_trend.get(str(s), {}).get("monthly_pnl", 0.0))
 
     st.dataframe(snap, use_container_width=True)
 
     if not snap.empty:
         st.caption("Regime map")
-        mapping = {"RANGE": 1.0, "TREND": 2.0, "HIGH_VOL": 3.0, "UNKNOWN": 0.0}
+        mapping = {
+            "RANGE": 1.0,
+            "TREND": 2.0,
+            "SPIKE": 3.0,
+            "SUSTAINED": 4.0,
+            "HIGH_VOL": 4.0,
+            "UNKNOWN": 0.0,
+        }
         heat = snap.copy()
         heat["regime_band"] = heat["regime"].map(mapping).fillna(0.0)
         if alt is not None:
@@ -939,9 +1191,7 @@ def _render_multi_symbol_panel() -> None:
 
         st.caption("Volatility-weighted risk ranking")
         risk_rank = snap.copy()
-        risk_rank = risk_rank.sort_values(
-            ["risk_contribution_pct", "vol_weighted_exposure_pct"], ascending=False
-        )
+        risk_rank = risk_rank.sort_values(["risk_contribution_pct", "vol_weighted_exposure_pct"], ascending=False)
         st.dataframe(
             risk_rank[
                 [
@@ -963,9 +1213,7 @@ def _render_multi_symbol_panel() -> None:
             else:
                 corr = ret_mat.corr()
                 if alt is not None:
-                    corr_long = corr.reset_index().melt(
-                        id_vars="index", var_name="symbol_y", value_name="corr"
-                    )
+                    corr_long = corr.reset_index().melt(id_vars="index", var_name="symbol_y", value_name="corr")
                     corr_long = corr_long.rename(columns={"index": "symbol_x"})
                     heatmap = (
                         alt.Chart(corr_long)
@@ -975,9 +1223,7 @@ def _render_multi_symbol_panel() -> None:
                             y=alt.Y("symbol_y:N", title="symbol"),
                             color=alt.Color(
                                 "corr:Q",
-                                scale=alt.Scale(
-                                    domain=[-1, 0, 1], range=["#2563eb", "#f8fafc", "#dc2626"]
-                                ),
+                                scale=alt.Scale(domain=[-1, 0, 1], range=["#2563eb", "#f8fafc", "#dc2626"]),
                                 legend=alt.Legend(title="corr"),
                             ),
                             tooltip=["symbol_x:N", "symbol_y:N", "corr:Q"],
@@ -1028,10 +1274,7 @@ def _render_runtime_metrics_panel() -> None:
         st.success("Health: OK")
     for msg in messages:
         st.caption(msg)
-    st.caption(
-        f"runtime_trading_enabled={runtime_trading}, runtime_emergency_stop={emergency_stop}, "
-        f"timestamp={latest.get('timestamp', '-')}"
-    )
+    st.caption(f"runtime_trading_enabled={runtime_trading}, runtime_emergency_stop={emergency_stop}, " f"timestamp={latest.get('timestamp', '-')}")
     st.json(latest)
 
 
@@ -1216,11 +1459,7 @@ def _route_selection_path() -> Path:
                             break
             except Exception:
                 raw = ""
-    return (
-        Path(raw)
-        if raw
-        else DATA_DIR / "validation" / "weekly_revalidation" / "weekly_revalidation_report.json"
-    )
+    return Path(raw) if raw else DATA_DIR / "validation" / "weekly_revalidation" / "weekly_revalidation_report.json"
 
 
 def _weekly_revalidation_report_path() -> Path:
@@ -1243,13 +1482,7 @@ def _weekly_revalidation_report_path() -> Path:
                 raw = ""
     if raw:
         return Path(raw)
-    preferred = (
-        DATA_DIR
-        / "validation"
-        / "weekly_autotune"
-        / "weekly_revalidation"
-        / "weekly_revalidation_report.json"
-    )
+    preferred = DATA_DIR / "validation" / "weekly_autotune" / "weekly_revalidation" / "weekly_revalidation_report.json"
     if preferred.exists():
         return preferred
     return DATA_DIR / "validation" / "weekly_revalidation" / "weekly_revalidation_report.json"
@@ -1261,9 +1494,7 @@ def _candidate_payload_from_trade_routes(payload: Mapping[str, object]) -> dict[
     if isinstance(selection, Mapping):
         routes = selection.get("trade_routes")
     if not isinstance(routes, list) or not routes:
-        resolved = resolve_live_trade_routes(
-            cast(dict[str, Any], dict(payload)), default_timeframe="15m"
-        )
+        resolved = resolve_live_trade_routes(cast(dict[str, Any], dict(payload)), default_timeframe="15m")
         routes = resolved.get("trade_routes", [])
     if not isinstance(routes, list) or not routes:
         return {}
@@ -1459,9 +1690,7 @@ def _manifest_weekly_diff_rows(
                 "weekly_fold_oos_days": _safe_float(row.get("weekly_fold_oos_days", 0.0)),
                 "fold_window_drift_days": _safe_float(row.get("fold_window_drift_days", 0.0)),
                 "closed_trades_mean": _safe_float(row.get("closed_trades_mean", 0.0)),
-                "statistical_reasons": ", ".join(
-                    str(item) for item in row.get("statistical_reasons", []) if str(item).strip()
-                )
+                "statistical_reasons": ", ".join(str(item) for item in row.get("statistical_reasons", []) if str(item).strip())
                 if isinstance(row.get("statistical_reasons", []), list)
                 else "",
             }
@@ -1523,18 +1752,14 @@ def _merge_candidate_payload(target: dict[str, object], source: Mapping[str, obj
             if not isinstance(timeframe_reports, list):
                 timeframe_reports = []
             source_values = [
-                str(report.get("timeframe", ""))
-                for report in timeframe_reports
-                if isinstance(report, dict) and str(report.get("timeframe", "")).strip()
+                str(report.get("timeframe", "")) for report in timeframe_reports if isinstance(report, dict) and str(report.get("timeframe", "")).strip()
             ]
         if not isinstance(source_values, list) or not source_values:
             continue
         target_values = target.get(key, [])
         if not isinstance(target_values, list):
             target_values = []
-        merged_values = list(
-            dict.fromkeys([*(str(v) for v in target_values), *(str(v) for v in source_values)])
-        )
+        merged_values = list(dict.fromkeys([*(str(v) for v in target_values), *(str(v) for v in source_values)]))
         target[key] = merged_values
 
     source_timeframe_reports = source.get("timeframe_reports", [])
@@ -1632,11 +1857,16 @@ def _load_regime_snapshot(
     if not rows:
         return pd.DataFrame()
     out = pd.DataFrame(rows)
-    severity = {"HIGH_VOL": 3, "TREND": 2, "RANGE": 1, "UNKNOWN": 0}
+    severity = {
+        "SUSTAINED": 4,
+        "HIGH_VOL": 4,
+        "SPIKE": 3,
+        "TREND": 2,
+        "RANGE": 1,
+        "UNKNOWN": 0,
+    }
     out["severity"] = out["regime"].map(severity).fillna(0).astype(int)
-    return out.sort_values(
-        ["symbol", "timeframe", "severity"], ascending=[True, True, False]
-    ).reset_index(drop=True)
+    return out.sort_values(["symbol", "timeframe", "severity"], ascending=[True, True, False]).reset_index(drop=True)
 
 
 def _active_worker_symbols(worker_state: WorkerState) -> list[str]:
@@ -1753,11 +1983,7 @@ def _overview_symbol_table(
     watchlist_symbols: set[str] | None = None,
 ) -> pd.DataFrame:
     worker_frame = _worker_last_results_frame(worker_state)
-    worker_lookup = {
-        str(row["symbol"]): cast(dict[str, object], row.to_dict())
-        for _, row in worker_frame.iterrows()
-        if "symbol" in row
-    }
+    worker_lookup = {str(row["symbol"]): cast(dict[str, object], row.to_dict()) for _, row in worker_frame.iterrows() if "symbol" in row}
     last_processed_lookup: dict[str, str] = {}
     for key, value in worker_state.last_processed_bars.items():
         _, symbol, _ = _worker_state_key_parts(str(key))
@@ -1778,9 +2004,7 @@ def _overview_symbol_table(
             {},
             preferred_regime_timeframe=preferred_regime_timeframe,
         )
-        candidate_status = str(
-            best_row.get("candidate_status") or candidate_status_map.get(symbol, "active")
-        )
+        candidate_status = str(best_row.get("candidate_status") or candidate_status_map.get(symbol, "active"))
         rows.append(
             {
                 "symbol": symbol,
@@ -1788,16 +2012,12 @@ def _overview_symbol_table(
                 "strategy": str(best_row.get("strategy", "")),
                 "timeframe": str(best_row.get("timeframe", "")),
                 "pf_mean": _safe_float(best_row.get("pf_mean", float("nan"))),
-                "expectancy_bps_mean": _safe_float(
-                    best_row.get("expectancy_bps_mean", float("nan"))
-                ),
+                "expectancy_bps_mean": _safe_float(best_row.get("expectancy_bps_mean", float("nan"))),
                 "max_dd_mean": _safe_float(best_row.get("max_dd_mean", float("nan"))),
                 "closed_trades_mean": _safe_float(best_row.get("closed_trades_mean", float("nan"))),
                 "regime": snapshot["regime"],
                 "regime_timeframe": snapshot["regime_timeframe"],
-                "why_not_trading": _worker_status_reason(worker_row)
-                if worker_row
-                else "worker result unavailable",
+                "why_not_trading": _worker_status_reason(worker_row) if worker_row else "worker result unavailable",
                 "status": str(worker_row.get("status", "")),
                 "trade_status": str(worker_row.get("trade_status", "")),
                 "risk_blocked": bool(worker_row.get("risk_blocked", False)),
@@ -1815,20 +2035,14 @@ def _overview_symbol_table(
                 "vol_weighted_exposure_pct": snapshot["vol_weighted_exposure_pct"],
                 "risk_contribution_pct": snapshot["risk_contribution_pct"],
                 "route": (
-                    "active+watchlist"
-                    if symbol in active_symbols and symbol in watchlist_symbols
-                    else "active"
-                    if symbol in active_symbols
-                    else "watchlist"
+                    "active+watchlist" if symbol in active_symbols and symbol in watchlist_symbols else "active" if symbol in active_symbols else "watchlist"
                 ),
             }
         )
     if not rows:
         return pd.DataFrame()
     out = pd.DataFrame(rows)
-    return out.sort_values(["candidate_status", "symbol"], ascending=[True, True]).reset_index(
-        drop=True
-    )
+    return out.sort_values(["candidate_status", "symbol"], ascending=[True, True]).reset_index(drop=True)
 
 
 def _strategy_symbol_table(
@@ -1848,9 +2062,7 @@ def _strategy_symbol_table(
         return pd.DataFrame()
 
     worker_frame = _worker_last_results_frame(worker_state)
-    worker_lookup = {
-        str(row["symbol"]): row.to_dict() for _, row in worker_frame.iterrows() if "symbol" in row
-    }
+    worker_lookup = {str(row["symbol"]): row.to_dict() for _, row in worker_frame.iterrows() if "symbol" in row}
     last_processed_lookup: dict[str, str] = {}
     for key, value in worker_state.last_processed_bars.items():
         _, symbol, _ = _worker_state_key_parts(str(key))
@@ -1875,11 +2087,7 @@ def _strategy_symbol_table(
             preferred_regime_timeframe=preferred_regime_timeframe,
         )
         if status == "core":
-            reason = (
-                _signal_gate_summary(cast(Mapping[str, object], worker_row))
-                if worker_row
-                else "worker result unavailable"
-            )
+            reason = _signal_gate_summary(cast(Mapping[str, object], worker_row)) if worker_row else "worker result unavailable"
         elif status == "watchlist":
             reason = "watchlist候補"
         elif status == "probe":
@@ -1920,9 +2128,7 @@ def _strategy_symbol_table(
     if not rows:
         return pd.DataFrame()
     out = pd.DataFrame(rows)
-    return out.sort_values(["candidate_status", "symbol"], ascending=[True, True]).reset_index(
-        drop=True
-    )
+    return out.sort_values(["candidate_status", "symbol"], ascending=[True, True]).reset_index(drop=True)
 
 
 def _regime_mix_label(regime_snapshot: pd.DataFrame) -> str:
@@ -1934,8 +2140,10 @@ def _regime_mix_label(regime_snapshot: pd.DataFrame) -> str:
     unique = sorted(set(regimes))
     if len(unique) == 1:
         return unique[0]
-    if "HIGH_VOL" in unique:
+    if "SUSTAINED" in unique or "HIGH_VOL" in unique:
         return "HIGH_VOL MIX"
+    if "SPIKE" in unique:
+        return "SPIKE MIX"
     if "TREND" in unique and "RANGE" in unique:
         return "MIXED"
     return "MIXED"
@@ -2054,11 +2262,7 @@ def _run_refresh_job() -> dict[str, object]:
         "status": "success" if overall_ok else "failed",
         "finished_at": finished_at,
         "steps": steps,
-        "message": (
-            "Refresh job completed successfully."
-            if overall_ok
-            else "Refresh job failed. See stderr_tail."
-        ),
+        "message": ("Refresh job completed successfully." if overall_ok else "Refresh job failed. See stderr_tail."),
     }
     _save_job_state(final_state)
     return final_state
@@ -2104,12 +2308,7 @@ def _source_snapshot(
         file_age = _format_age(datetime.fromtimestamp(path.stat().st_mtime, tz=UTC))
     rows = len(frame) if frame is not None else (1 if path.exists() else 0)
     latest_timestamp = "-"
-    if (
-        frame is not None
-        and timestamp_column
-        and timestamp_column in frame.columns
-        and not frame.empty
-    ):
+    if frame is not None and timestamp_column and timestamp_column in frame.columns and not frame.empty:
         latest_timestamp = str(frame.iloc[-1][timestamp_column])
     return {
         "source": name,
@@ -2187,10 +2386,10 @@ def _worker_trade_routes_frame(worker_state: WorkerState) -> pd.DataFrame:
         if not strategy and route_name in {"trend", "range"}:
             strategy = route_name
         timeframe = str(route.get("timeframe", signal.get("timeframe", key_timeframe))).strip()
-        expected_regime = str(
-            route.get("expected_regime", signal.get("expected_regime", ""))
-        ).strip()
+        expected_regime = str(route.get("expected_regime", signal.get("expected_regime", ""))).strip()
         candidate_status = str(route.get("candidate_status", "")).strip()
+        statistical_status = str(route.get("statistical_status", "")).strip()
+        route_policy = str(route.get("route_policy", "")).strip()
         if not route_symbol or not strategy:
             continue
         trade = result.get("trade", {})
@@ -2202,6 +2401,8 @@ def _worker_trade_routes_frame(worker_state: WorkerState) -> pd.DataFrame:
                 "timeframe": timeframe,
                 "expected_regime": expected_regime,
                 "candidate_status": candidate_status,
+                "statistical_status": statistical_status,
+                "route_policy": route_policy,
                 "status": str(result.get("status", "")),
                 "trade_status": trade_status,
                 "signal_regime": str(signal.get("regime", "")),
@@ -2219,9 +2420,7 @@ def _worker_trade_routes_frame(worker_state: WorkerState) -> pd.DataFrame:
 
 
 def _candidate_trade_routes_frame(candidate_report: Mapping[str, object]) -> pd.DataFrame:
-    resolved = resolve_live_trade_routes(
-        cast(dict[str, Any], dict(candidate_report)), default_timeframe="15m"
-    )
+    resolved = resolve_live_trade_routes(cast(dict[str, Any], dict(candidate_report)), default_timeframe="15m")
     raw_routes = resolved.get("trade_routes", [])
     if not isinstance(raw_routes, list):
         return pd.DataFrame()
@@ -2242,6 +2441,8 @@ def _candidate_trade_routes_frame(candidate_report: Mapping[str, object]) -> pd.
                 "timeframe": timeframe,
                 "expected_regime": str(item.get("expected_regime", "")).strip(),
                 "candidate_status": str(item.get("candidate_status", "")).strip(),
+                "statistical_status": str(item.get("statistical_status", "")).strip(),
+                "route_policy": str(item.get("route_policy", "")).strip(),
                 "status": "configured",
                 "trade_status": "",
                 "signal_regime": "",
@@ -2252,9 +2453,7 @@ def _candidate_trade_routes_frame(candidate_report: Mapping[str, object]) -> pd.
         )
     if not rows:
         return pd.DataFrame()
-    return (
-        pd.DataFrame(rows).sort_values(["strategy", "symbol", "timeframe"]).reset_index(drop=True)
-    )
+    return pd.DataFrame(rows).sort_values(["strategy", "symbol", "timeframe"]).reset_index(drop=True)
 
 
 def _worker_status_reason(row: Mapping[str, object]) -> str:
@@ -2378,18 +2577,13 @@ def _status_banner(
         "critical",
     }:
         metrics_level = _freshness_level(latest_metrics.get("timestamp", ""))
-        warnings.append(
-            f"Runtime metrics are {metrics_level}. Start `auto-trader-monitor.service` "
-            "or rerun `python -m auto_trader.monitor --watch`."
-        )
+        warnings.append(f"Runtime metrics are {metrics_level}. Start `auto-trader-monitor.service` " "or rerun `python -m auto_trader.monitor --watch`.")
     if not risk_df.empty and "timestamp" in risk_df.columns:
         ts = pd.to_datetime(risk_df.iloc[-1]["timestamp"], utc=True).to_pydatetime()
         if is_stale(ts, datetime.now(UTC), max_delay_sec=DATA_STALE_WARN_SEC):
             risk_input_age = "unknown"
             if not risk_input_df.empty and "timestamp" in risk_input_df.columns:
-                risk_input_age = _format_age(
-                    risk_input_df.iloc[-1]["timestamp"], now=datetime.now(UTC)
-                )
+                risk_input_age = _format_age(risk_input_df.iloc[-1]["timestamp"], now=datetime.now(UTC))
             warnings.append(
                 "Risk data is stale. Start `auto-trader-risk-refresh.timer` "
                 f"Latest risk input age: {risk_input_age}. "
@@ -2422,21 +2616,9 @@ def _operator_summary(
     decision_payload = candidate_report.get("decision", {})
     if not isinstance(decision_payload, Mapping):
         decision_payload = {}
-    market_reason = (
-        str(decision_payload.get("market_reason", {}).get("reason", ""))
-        if isinstance(decision_payload.get("market_reason"), Mapping)
-        else ""
-    )
-    limit_reason = (
-        str(decision_payload.get("limit_reason", {}).get("reason", ""))
-        if isinstance(decision_payload.get("limit_reason"), Mapping)
-        else ""
-    )
-    drift_reason = (
-        str(decision_payload.get("drift_reason", {}).get("reason", ""))
-        if isinstance(decision_payload.get("drift_reason"), Mapping)
-        else ""
-    )
+    market_reason = str(decision_payload.get("market_reason", {}).get("reason", "")) if isinstance(decision_payload.get("market_reason"), Mapping) else ""
+    limit_reason = str(decision_payload.get("limit_reason", {}).get("reason", "")) if isinstance(decision_payload.get("limit_reason"), Mapping) else ""
+    drift_reason = str(decision_payload.get("drift_reason", {}).get("reason", "")) if isinstance(decision_payload.get("drift_reason"), Mapping) else ""
 
     if bool(runtime_state.get("emergency_stop", False)):
         next_action = "Emergency stop active. Confirm and clear before resuming."
@@ -2489,9 +2671,7 @@ def _render_status_cards(
     risk_input_df: pd.DataFrame,
     gateway_state: dict[str, object],
 ) -> None:
-    level, messages = _status_banner(
-        runtime_state, worker_state, runtime_metrics, risk_df, risk_input_df
-    )
+    level, messages = _status_banner(runtime_state, worker_state, runtime_metrics, risk_df, risk_input_df)
     if level == "critical":
         st.error("Trading health: CRITICAL")
     elif level == "warning":
@@ -2654,6 +2834,8 @@ def _render_overview_tab(
         ]
         st.dataframe(live_pnl_frame[live_pnl_cols], width="stretch", hide_index=True)
 
+    _render_exchange_position_sync(position_df)
+
     candidate_rows = _candidate_frame(candidate_report)
     candidate_watchlist = _candidate_frame(candidate_report, "watchlist")
     best_rows = candidate_report.get("best_by_symbol_strategy", [])
@@ -2662,9 +2844,7 @@ def _render_overview_tab(
         for row in best_rows:
             if isinstance(row, dict):
                 row_map = cast(dict[str, object], row)
-                candidate_status_map[str(row_map.get("symbol", ""))] = str(
-                    row_map.get("candidate_status", "")
-                )
+                candidate_status_map[str(row_map.get("symbol", ""))] = str(row_map.get("candidate_status", ""))
     active_symbols = _active_worker_symbols(worker_state)
     candidate_rows_raw = candidate_report.get("rows", [])
     candidate_symbols_set: set[str] = set()
@@ -2677,15 +2857,11 @@ def _render_overview_tab(
                     candidate_symbols_set.add(symbol)
     candidate_symbols = sorted(candidate_symbols_set)
     watchlist_symbols = (
-        sorted(candidate_watchlist["symbol"].astype(str).unique().tolist())
-        if not candidate_watchlist.empty and "symbol" in candidate_watchlist.columns
-        else []
+        sorted(candidate_watchlist["symbol"].astype(str).unique().tolist()) if not candidate_watchlist.empty and "symbol" in candidate_watchlist.columns else []
     )
     regime_symbols = sorted(set(active_symbols) | set(candidate_symbols))
     show_core = st.checkbox("Show core", value=True, key="overview_symbols_show_core")
-    show_watchlist = st.checkbox(
-        "Show watchlist", value=False, key="overview_symbols_show_watchlist"
-    )
+    show_watchlist = st.checkbox("Show watchlist", value=False, key="overview_symbols_show_watchlist")
     show_probe = st.checkbox("Show probe", value=False, key="overview_symbols_show_probe")
     status_filter: set[str] = set()
     if show_core:
@@ -2793,15 +2969,11 @@ def _render_overview_tab(
                 if enabled
             }
             if enabled_purposes:
-                regime_display = regime_display[
-                    regime_display["purpose"].isin(enabled_purposes)
-                ].copy()
+                regime_display = regime_display[regime_display["purpose"].isin(enabled_purposes)].copy()
             else:
                 regime_display = regime_display.iloc[0:0].copy()
             loaded_symbols = set(regime_view["symbol"].astype(str))
-            regime_display = regime_display[
-                ["symbol", "timeframe", "purpose", "regime", "age", "updated_at"]
-            ].copy()
+            regime_display = regime_display[["symbol", "timeframe", "purpose", "regime", "age", "updated_at"]].copy()
             if regime_display.empty:
                 st.info("No regime rows match the current filters.")
             else:
@@ -2875,10 +3047,7 @@ def _render_trading_tab(
     candidate_report: dict[str, object],
 ) -> None:
     st.subheader("Trading")
-    st.caption(
-        "Trading focuses on live routes, worker state, and block reasons. "
-        "Overview carries the heavier portfolio and risk snapshot."
-    )
+    st.caption("Trading focuses on live routes, worker state, and block reasons. " "Overview carries the heavier portfolio and risk snapshot.")
     summary = _operator_summary(
         runtime_state=_load_runtime_state(),
         worker_state=worker_state,
@@ -2892,22 +3061,16 @@ def _render_trading_tab(
     summary_cols[1].metric("Decision", summary["decision_status"])
     summary_cols[2].metric("Next action", summary["next_action"])
     st.caption(
-        f"health={summary['health_level']}, limit_fill_rate={summary['limit_fill_rate']:.3f}, "
-        f"limit_taker_like_rate={summary['limit_taker_like_rate']:.3f}"
+        f"health={summary['health_level']}, limit_fill_rate={summary['limit_fill_rate']:.3f}, " f"limit_taker_like_rate={summary['limit_taker_like_rate']:.3f}"
     )
     for reason in summary["reasons"]:
         st.caption(f"- {reason}")
 
     worker_frame = _worker_last_results_frame(worker_state)
     if worker_frame.empty:
-        st.info(
-            "No worker results yet. Waiting for the worker to complete and persist "
-            "at least one cycle."
-        )
+        st.info("No worker results yet. Waiting for the worker to complete and persist " "at least one cycle.")
     else:
-        worker_frame["why_not_trading"] = worker_frame.apply(
-            lambda row: _worker_status_reason(row.to_dict()), axis=1
-        )
+        worker_frame["why_not_trading"] = worker_frame.apply(lambda row: _worker_status_reason(row.to_dict()), axis=1)
         cols = [
             "symbol",
             "status",
@@ -2930,10 +3093,7 @@ def _render_trading_tab(
     if route_frame.empty:
         route_frame = _candidate_trade_routes_frame(candidate_report)
         if not route_frame.empty:
-            st.caption(
-                "Worker cycle results are not available yet. Showing configured "
-                "live routes from the current route-selection manifest."
-            )
+            st.caption("Worker cycle results are not available yet. Showing configured " "live routes from the current route-selection manifest.")
     if route_frame.empty:
         st.info("No live trade routes yet.")
     else:
@@ -3023,9 +3183,7 @@ def _render_charts_tab(
             subset=["candidate_status"],
         )
     st.dataframe(style_frame, use_container_width=True, hide_index=True)
-    st.caption(
-        "Core-only selection. Timeframe and strategy are resolved from the candidate report."
-    )
+    st.caption("Core-only selection. Timeframe and strategy are resolved from the candidate report.")
 
     core_symbol_options = [str(row["symbol"]) for row in core_rows]
     overlay_symbol = st.selectbox(
@@ -3034,24 +3192,13 @@ def _render_charts_tab(
         index=0,
         key="charts_overlay_symbol",
     )
-    selected_row = next(
-        (row for row in core_rows if str(row.get("symbol", "")) == overlay_symbol), core_rows[0]
-    )
+    selected_row = next((row for row in core_rows if str(row.get("symbol", "")) == overlay_symbol), core_rows[0])
     overlay_timeframe = str(selected_row.get("timeframe", "1m")).strip() or "1m"
     overlay_strategy = str(selected_row.get("strategy", "trend")).strip() or "trend"
-    st.caption(
-        f"Selected core setup: symbol={overlay_symbol}, timeframe={overlay_timeframe}, "
-        f"strategy={overlay_strategy}"
-    )
+    st.caption(f"Selected core setup: symbol={overlay_symbol}, timeframe={overlay_timeframe}, " f"strategy={overlay_strategy}")
 
-    regime_df = _read_optional(
-        DATA_DIR / "regime" / f"{overlay_symbol}_{overlay_timeframe}_regime.parquet"
-    )
-    signal_df = _read_optional(
-        DATA_DIR
-        / "signals"
-        / f"{overlay_symbol}_{overlay_timeframe}_{overlay_strategy}_signals.parquet"
-    )
+    regime_df = _read_optional(DATA_DIR / "regime" / f"{overlay_symbol}_{overlay_timeframe}_regime.parquet")
+    signal_df = _read_optional(DATA_DIR / "signals" / f"{overlay_symbol}_{overlay_timeframe}_{overlay_strategy}_signals.parquet")
     overlay_fast_mode = st.checkbox("Compact mode", value=True, key="charts_overlay_fast_mode")
     max_rows_default = 180 if overlay_fast_mode else 360
     max_rows_limit = 600 if overlay_fast_mode else 1500
@@ -3063,9 +3210,7 @@ def _render_charts_tab(
         step=100,
         key="charts_overlay_bars",
     )
-    symbol_ohlcv = _read_optional(
-        DATA_DIR / "parquet" / f"{overlay_symbol}_{overlay_timeframe}.parquet"
-    )
+    symbol_ohlcv = _read_optional(DATA_DIR / "parquet" / f"{overlay_symbol}_{overlay_timeframe}.parquet")
     overlay = build_overlay_frame(
         ohlcv_df=symbol_ohlcv if not symbol_ohlcv.empty else ohlcv_df,
         signal_df=signal_df,
@@ -3123,18 +3268,14 @@ def _render_charts_tab(
                 .interactive(bind_x=True, bind_y=True)
             )
             st.altair_chart(ml_chart, use_container_width=True)
-            latest_ml = float(
-                pd.to_numeric(ml_frame["ml_score"], errors="coerce").fillna(0.0).iloc[-1]
-            )
+            latest_ml = float(pd.to_numeric(ml_frame["ml_score"], errors="coerce").fillna(0.0).iloc[-1])
             source = str(ml_frame.iloc[-1].get("ml_score_source", "position_size_ratio"))
             st.caption(f"latest={latest_ml:.3f}, source={source}")
         else:
             st.info("Signal view unavailable")
 
 
-def _render_analysis_tab(
-    *, portfolio_df: pd.DataFrame, backtest_runs: list[dict[str, object]]
-) -> None:
+def _render_analysis_tab(*, portfolio_df: pd.DataFrame, backtest_runs: list[dict[str, object]]) -> None:
     st.subheader("Analysis")
     st.caption("Heavy analysis is opt-in to keep the live console fast.")
     st.subheader("Backtest Snapshot")
@@ -3147,9 +3288,7 @@ def _render_analysis_tab(
             index=0,
             key="analysis_backtest_run",
         )
-        selected_run = next(
-            (run for run in backtest_runs if str(run["label"]) == selected_label), None
-        )
+        selected_run = next((run for run in backtest_runs if str(run["label"]) == selected_label), None)
         if selected_run is not None:
             portfolio_df = _read_optional(Path(str(selected_run["portfolio_path"])))
             st.caption(
@@ -3160,23 +3299,13 @@ def _render_analysis_tab(
                 f"output_dir={selected_run.get('output_dir', '-')}"
             )
     if portfolio_df.empty:
-        st.info(
-            "No backtest portfolio artifact found. Run `python -m auto_trader.backtest ...` first."
-        )
+        st.info("No backtest portfolio artifact found. Run `python -m auto_trader.backtest ...` first.")
     else:
         bt_c1, bt_c2, bt_c3, bt_c4 = st.columns(4)
-        latest_equity = (
-            float(portfolio_df.iloc[-1]["equity"]) if "equity" in portfolio_df.columns else 0.0
-        )
-        first_equity = (
-            float(portfolio_df.iloc[0]["equity"]) if "equity" in portfolio_df.columns else 0.0
-        )
+        latest_equity = float(portfolio_df.iloc[-1]["equity"]) if "equity" in portfolio_df.columns else 0.0
+        first_equity = float(portfolio_df.iloc[0]["equity"]) if "equity" in portfolio_df.columns else 0.0
         backtest_pnl = latest_equity - first_equity
-        backtest_dd = (
-            float(portfolio_df["drawdown"].max()) * 100.0
-            if "drawdown" in portfolio_df.columns
-            else 0.0
-        )
+        backtest_dd = float(portfolio_df["drawdown"].max()) * 100.0 if "drawdown" in portfolio_df.columns else 0.0
         bt_c1.metric("Backtest PnL", f"{backtest_pnl:.2f}")
         bt_c2.metric("Backtest MaxDD", f"{backtest_dd:.2f}%")
         bt_c3.metric("Backtest End Equity", f"{latest_equity:.2f}")
@@ -3236,35 +3365,26 @@ def _render_analysis_tab(
             risk_df = _read_optional(DATA_DIR / "risk" / "risk_eval.parquet")
             rows = [_symbol_snapshot(s, risk_df, wf_range, wf_trend) for s in symbols]
             snap = pd.DataFrame(rows)
-            snap["wf_range_pf"] = snap["symbol"].map(
-                lambda s: wf_range.get(str(s), {}).get("pf", 0.0)
-            )
-            snap["wf_range_win_rate"] = snap["symbol"].map(
-                lambda s: wf_range.get(str(s), {}).get("win_rate", 0.0)
-            )
-            snap["wf_range_max_dd"] = snap["symbol"].map(
-                lambda s: wf_range.get(str(s), {}).get("max_dd", 0.0)
-            )
-            snap["wf_range_monthly_pnl"] = snap["symbol"].map(
-                lambda s: wf_range.get(str(s), {}).get("monthly_pnl", 0.0)
-            )
-            snap["wf_trend_pf"] = snap["symbol"].map(
-                lambda s: wf_trend.get(str(s), {}).get("pf", 0.0)
-            )
-            snap["wf_trend_win_rate"] = snap["symbol"].map(
-                lambda s: wf_trend.get(str(s), {}).get("win_rate", 0.0)
-            )
-            snap["wf_trend_max_dd"] = snap["symbol"].map(
-                lambda s: wf_trend.get(str(s), {}).get("max_dd", 0.0)
-            )
-            snap["wf_trend_monthly_pnl"] = snap["symbol"].map(
-                lambda s: wf_trend.get(str(s), {}).get("monthly_pnl", 0.0)
-            )
+            snap["wf_range_pf"] = snap["symbol"].map(lambda s: wf_range.get(str(s), {}).get("pf", 0.0))
+            snap["wf_range_win_rate"] = snap["symbol"].map(lambda s: wf_range.get(str(s), {}).get("win_rate", 0.0))
+            snap["wf_range_max_dd"] = snap["symbol"].map(lambda s: wf_range.get(str(s), {}).get("max_dd", 0.0))
+            snap["wf_range_monthly_pnl"] = snap["symbol"].map(lambda s: wf_range.get(str(s), {}).get("monthly_pnl", 0.0))
+            snap["wf_trend_pf"] = snap["symbol"].map(lambda s: wf_trend.get(str(s), {}).get("pf", 0.0))
+            snap["wf_trend_win_rate"] = snap["symbol"].map(lambda s: wf_trend.get(str(s), {}).get("win_rate", 0.0))
+            snap["wf_trend_max_dd"] = snap["symbol"].map(lambda s: wf_trend.get(str(s), {}).get("max_dd", 0.0))
+            snap["wf_trend_monthly_pnl"] = snap["symbol"].map(lambda s: wf_trend.get(str(s), {}).get("monthly_pnl", 0.0))
             st.dataframe(snap, use_container_width=True)
 
             if not snap.empty:
                 st.caption("Regime map")
-                mapping = {"RANGE": 1.0, "TREND": 2.0, "HIGH_VOL": 3.0, "UNKNOWN": 0.0}
+                mapping = {
+                    "RANGE": 1.0,
+                    "TREND": 2.0,
+                    "SPIKE": 3.0,
+                    "SUSTAINED": 4.0,
+                    "HIGH_VOL": 4.0,
+                    "UNKNOWN": 0.0,
+                }
                 heat = snap.copy()
                 heat["regime_band"] = heat["regime"].map(mapping).fillna(0.0)
                 if alt is not None:
@@ -3316,9 +3436,7 @@ def _render_analysis_tab(
 
                 st.caption("Volatility-weighted risk ranking")
                 risk_rank = snap.copy()
-                risk_rank = risk_rank.sort_values(
-                    ["risk_contribution_pct", "vol_weighted_exposure_pct"], ascending=False
-                )
+                risk_rank = risk_rank.sort_values(["risk_contribution_pct", "vol_weighted_exposure_pct"], ascending=False)
                 st.dataframe(
                     risk_rank[
                         [
@@ -3340,9 +3458,7 @@ def _render_analysis_tab(
                     else:
                         corr = ret_mat.corr()
                         if alt is not None:
-                            corr_long = corr.reset_index().melt(
-                                id_vars="index", var_name="symbol_y", value_name="corr"
-                            )
+                            corr_long = corr.reset_index().melt(id_vars="index", var_name="symbol_y", value_name="corr")
                             corr_long = corr_long.rename(columns={"index": "symbol_x"})
                             heatmap = (
                                 alt.Chart(corr_long)
@@ -3401,12 +3517,8 @@ def _render_analysis_tab(
         else:
             st.caption("Fold summary: PF/WinRate/DD/PnL and invalid regime entries")
             st.dataframe(wf_summary, use_container_width=True)
-            wf_fast_mode = st.checkbox(
-                "Walkforward Fast Mode", value=True, key="analysis_wf_fast_mode"
-            )
-            show_wf_details = st.checkbox(
-                "Show Walkforward Details", value=False, key="analysis_wf_details"
-            )
+            wf_fast_mode = st.checkbox("Walkforward Fast Mode", value=True, key="analysis_wf_fast_mode")
+            show_wf_details = st.checkbox("Show Walkforward Details", value=False, key="analysis_wf_details")
             if show_wf_details:
                 max_portfolio_rows = st.slider(
                     "WF Portfolio Rows",
@@ -3471,10 +3583,7 @@ def _render_live_logs_tab(*, runtime_metrics_path: Path) -> None:
             st.success("Health: OK")
         for msg in messages:
             st.caption(msg)
-        st.caption(
-            f"runtime_trading_enabled={runtime_trading}, runtime_emergency_stop={emergency_stop}, "
-            f"timestamp={latest_metrics.get('timestamp', '-')}"
-        )
+        st.caption(f"runtime_trading_enabled={runtime_trading}, runtime_emergency_stop={emergency_stop}, " f"timestamp={latest_metrics.get('timestamp', '-')}")
         st.json(latest_metrics)
 
     st.subheader("Execution Events")
@@ -3521,9 +3630,7 @@ def _render_audit_tab(*, weekly_report: Mapping[str, object] | None) -> None:
 
 def _render_sidebar_controls() -> None:
     st.sidebar.subheader("Controls")
-    st.sidebar.caption(
-        "Fixed here for always-visible operation. Refresh JOB recomputes risk/runtime data."
-    )
+    st.sidebar.caption("Fixed here for always-visible operation. Refresh JOB recomputes risk/runtime data.")
     control_cols = st.sidebar.columns(1)
     for action in ["START", "STOP", "EMERGENCY_STOP", "EMERGENCY_CANCEL", "CLOSE_ALL"]:
         if control_cols[0].button(action, type="primary" if "EMERGENCY" in action else "secondary"):
@@ -3623,10 +3730,7 @@ def _render_analysis_workspace() -> None:
     candidate_report = _load_candidate_report()
     weekly_candidate_report = _load_weekly_candidate_report()
 
-    st.caption(
-        "This workspace does not auto-refresh. "
-        "Rerun manually after generating new analysis artifacts."
-    )
+    st.caption("This workspace does not auto-refresh. " "Rerun manually after generating new analysis artifacts.")
     charts_tab, analysis_tab, audit_tab = st.tabs(["Charts", "Analysis", "Audit"])
     with charts_tab:
         _render_charts_tab(
@@ -3659,8 +3763,10 @@ def _legacy_main() -> None:
     badge = emergency_badge(latest_emergency, latest_regime)
     if badge == "EMERGENCY":
         st.error("EMERGENCY STATE ACTIVE")
-    elif badge == "HIGH_VOL":
-        st.warning("HIGH_VOL DETECTED")
+    elif badge in {"HIGH_VOL", "SUSTAINED"}:
+        st.warning("SUSTAINED HIGH VOL DETECTED")
+    elif badge == "SPIKE":
+        st.warning("SPIKE DETECTED")
     else:
         st.success("NORMAL OPERATION")
 
@@ -3684,8 +3790,7 @@ def _legacy_main() -> None:
     c4.metric("MaxDD", dd)
     c5.metric("API", "CONNECTED")
     st.caption(
-        f"vol_weighted_exposure_pct={_latest_value(risk_df, 'vol_weighted_exposure_pct', '-')}, "
-        f"size_scale={_latest_value(risk_df, 'size_scale', '-')}"
+        f"vol_weighted_exposure_pct={_latest_value(risk_df, 'vol_weighted_exposure_pct', '-')}, " f"size_scale={_latest_value(risk_df, 'size_scale', '-')}"
     )
 
     st.subheader("Stale Monitor")
@@ -3715,13 +3820,9 @@ def _legacy_main() -> None:
     if show_overlay:
         st.subheader("Chart Overlay")
     if show_overlay and not ohlcv_df.empty:
-        overlay_strategy = st.selectbox(
-            "Overlay Strategy", options=["range", "trend"], index=0, key="overlay_strategy"
-        )
+        overlay_strategy = st.selectbox("Overlay Strategy", options=["range", "trend"], index=0, key="overlay_strategy")
         legacy_symbols = _discover_available_symbols()
-        legacy_symbol = st.selectbox(
-            "Overlay Symbol", options=legacy_symbols, index=0, key="legacy_overlay_symbol"
-        )
+        legacy_symbol = st.selectbox("Overlay Symbol", options=legacy_symbols, index=0, key="legacy_overlay_symbol")
         legacy_timeframe_options = _discover_symbol_timeframes(legacy_symbol)
         legacy_timeframe = st.selectbox(
             "Timeframe",
@@ -3729,11 +3830,7 @@ def _legacy_main() -> None:
             index=0 if "1m" in legacy_timeframe_options else 0,
             key="legacy_overlay_timeframe",
         )
-        signal_df = _read_optional(
-            DATA_DIR
-            / "signals"
-            / f"{legacy_symbol}_{legacy_timeframe}_{overlay_strategy}_signals.parquet"
-        )
+        signal_df = _read_optional(DATA_DIR / "signals" / f"{legacy_symbol}_{legacy_timeframe}_{overlay_strategy}_signals.parquet")
         overlay_fast_mode = st.checkbox("Overlay Fast Mode", value=True, key="overlay_fast_mode")
         max_rows_default = 300 if overlay_fast_mode else 800
         max_rows_limit = 2000 if overlay_fast_mode else 5000
@@ -3744,15 +3841,11 @@ def _legacy_main() -> None:
             value=max_rows_default,
             step=100,
         )
-        symbol_ohlcv = _read_optional(
-            DATA_DIR / "parquet" / f"{legacy_symbol}_{legacy_timeframe}.parquet"
-        )
+        symbol_ohlcv = _read_optional(DATA_DIR / "parquet" / f"{legacy_symbol}_{legacy_timeframe}.parquet")
         overlay = build_overlay_frame(
             ohlcv_df=symbol_ohlcv if not symbol_ohlcv.empty else ohlcv_df,
             signal_df=signal_df,
-            regime_df=_read_optional(
-                DATA_DIR / "regime" / f"{legacy_symbol}_{legacy_timeframe}_regime.parquet"
-            ),
+            regime_df=_read_optional(DATA_DIR / "regime" / f"{legacy_symbol}_{legacy_timeframe}_regime.parquet"),
             risk_df=risk_df,
             max_rows=max_rows,
         )
@@ -3787,9 +3880,7 @@ def _legacy_main() -> None:
     if show_walkforward:
         st.subheader("Walkforward Visual Check")
         strategy = st.selectbox("Strategy", options=["range", "trend"], index=0, key="wf_strategy")
-        wf_symbol = st.selectbox(
-            "WF Symbol", options=_discover_available_symbols(), index=0, key="wf_symbol"
-        )
+        wf_symbol = st.selectbox("WF Symbol", options=_discover_available_symbols(), index=0, key="wf_symbol")
         wf_summary = _load_walkforward_artifact(wf_symbol, "1m", strategy, "summary")
 
         if wf_summary.empty:
@@ -3800,32 +3891,22 @@ def _legacy_main() -> None:
             wf_fast_mode = st.checkbox("Walkforward Fast Mode", value=True, key="wf_fast_mode")
             show_wf_details = st.checkbox("Show Walkforward Details", value=False, key="wf_details")
             if show_wf_details:
-                max_portfolio_rows = st.slider(
-                    "WF Portfolio Rows", min_value=200, max_value=5000, value=1000, step=100
-                )
-                max_trade_rows = st.slider(
-                    "WF Trade Rows", min_value=50, max_value=2000, value=300, step=50
-                )
+                max_portfolio_rows = st.slider("WF Portfolio Rows", min_value=200, max_value=5000, value=1000, step=100)
+                max_trade_rows = st.slider("WF Trade Rows", min_value=50, max_value=2000, value=300, step=50)
 
                 wf_portfolio = _load_walkforward_artifact(wf_symbol, "1m", strategy, "portfolio")
                 wf_trades = _load_walkforward_artifact(wf_symbol, "1m", strategy, "trades")
                 wf_regime = _load_walkforward_artifact(wf_symbol, "1m", strategy, "regime_counts")
-                wf_invalid = _load_walkforward_artifact(
-                    wf_symbol, "1m", strategy, "invalid_entries"
-                )
+                wf_invalid = _load_walkforward_artifact(wf_symbol, "1m", strategy, "invalid_entries")
 
-                if not wf_portfolio.empty and {"timestamp", "equity", "fold"}.issubset(
-                    wf_portfolio.columns
-                ):
+                if not wf_portfolio.empty and {"timestamp", "equity", "fold"}.issubset(wf_portfolio.columns):
                     p = wf_portfolio.tail(max_portfolio_rows).copy()
                     p["timestamp"] = pd.to_datetime(p["timestamp"], utc=True)
                     p = p.sort_values(["fold", "timestamp"])
                     if wf_fast_mode:
                         p = _downsample_for_chart(p, max_points=1000)
                     st.line_chart(p.set_index("timestamp")[["equity"]])
-                if not wf_trades.empty and {"timestamp", "side", "price", "fold"}.issubset(
-                    wf_trades.columns
-                ):
+                if not wf_trades.empty and {"timestamp", "side", "price", "fold"}.issubset(wf_trades.columns):
                     st.caption("Trade timing/direction")
                     cols = ["timestamp", "fold", "side", "price", "size", "status"]
                     st.dataframe(wf_trades[cols].tail(max_trade_rows), use_container_width=True)
@@ -3853,10 +3934,7 @@ def main() -> None:
     st.set_page_config(page_title="Auto Trader Ops Console", layout="wide")
     _inject_ui_stability_styles()
     st.title("Auto Trader Operations Dashboard")
-    st.caption(
-        "Live Monitor auto-refreshes every 10 seconds. "
-        "Analysis Workspace refreshes only on manual rerun."
-    )
+    st.caption("Live Monitor auto-refreshes every 10 seconds. " "Analysis Workspace refreshes only on manual rerun.")
     _render_sidebar_controls()
     live_tab, analysis_tab = st.tabs(["Live Monitor", "Analysis Workspace"])
     with live_tab:

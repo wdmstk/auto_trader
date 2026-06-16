@@ -61,7 +61,7 @@ def test_build_overlay_frame_contains_expected_columns() -> None:
     assert out.iloc[0]["entry_marker"] == out.iloc[0]["close"]
     assert out.iloc[1]["exit_marker"] == out.iloc[1]["close"]
     assert out.iloc[1]["risk_block_marker"] == out.iloc[1]["close"]
-    assert float(out.iloc[1]["regime_band"]) == 3.0
+    assert float(out.iloc[1]["regime_band"]) == 4.0
 
 
 def test_build_regime_segments_groups_consecutive_runs() -> None:

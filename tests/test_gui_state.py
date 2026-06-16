@@ -18,7 +18,8 @@ def test_is_stale() -> None:
 
 def test_emergency_badge_priority() -> None:
     assert emergency_badge(True, "RANGE") == "EMERGENCY"
-    assert emergency_badge(False, "HIGH_VOL") == "HIGH_VOL"
+    assert emergency_badge(False, "HIGH_VOL") == "SUSTAINED"
+    assert emergency_badge(False, "SPIKE") == "SPIKE"
     assert emergency_badge(False, "RANGE") == "NORMAL"
 
 

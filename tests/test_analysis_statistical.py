@@ -75,6 +75,8 @@ def test_route_with_29_trades_fails_and_result_is_reproducible(tmp_path: Path) -
         manifest_path=manifest,
         execution_delay_bars=1,
         thresholds=_thresholds(min_strategy_trades=29),
+        run_id="run-123",
+        generated_at="2026-06-13T00:00:00+00:00",
     )
     second = build_statistical_qualification(
         {"rows": [row]},
@@ -82,9 +84,13 @@ def test_route_with_29_trades_fails_and_result_is_reproducible(tmp_path: Path) -
         manifest_path=manifest,
         execution_delay_bars=1,
         thresholds=_thresholds(min_strategy_trades=29),
+        run_id="run-123",
+        generated_at="2026-06-13T00:00:00+00:00",
     )
 
     assert first == second
+    assert first["run_id"] == "run-123"
+    assert first["generated_at"] == "2026-06-13T00:00:00+00:00"
     assert first["routes"][0]["status"] == "fail"
     assert "min_route_trades" in first["routes"][0]["reasons"]
 

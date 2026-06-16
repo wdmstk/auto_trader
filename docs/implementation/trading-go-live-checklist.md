@@ -108,7 +108,7 @@
   - Futures Testnetで複数routeのposition/order整合を確認
   - Runtime Metricsしきい値を連続運転で満たす
 - 判定者: auto
-- 判定日: 2026-06-07
+- 判定日: 2026-06-14
 
 最新判定の正本:
 - 本チェックリスト末尾の `Auto Decision Notes` と `判定日` を正本とする。
@@ -121,15 +121,48 @@
 <!-- AUTO_DECISION_NOTES_START -->
 ### Auto Decision Notes
 - go_live_ready: false
-- health_status: pass
-- weekly_status: pass
-- statistical_status: missing
-- longrun_rows: 17
+- health_status: fail
+- weekly_status: warn
+- statistical_status: fail
+- longrun_rows: 34
+- runtime_env_path: data/validation/weekly_autotune/route_selection_runtime.env
+- pipeline_summary_path: data/validation/weekly_autotune/pipeline_summary.json
+- weekly_report_path: data/validation/weekly_autotune/weekly_revalidation/weekly_revalidation_report.json
+- weekly_report_path_source: explicit_weekly_report_path
+- weekly_report_run_id: weekly-autotune-20260613T205857Z
+- weekly_report_generated_at: 2026-06-13T20:58:57.904260+00:00
+- weekly_report_age_hours: 13.65
+- statistical_report_path: data/validation/statistical_qualification/qualification_report.json
+- statistical_report_run_id: weekly-autotune-20260613T150841Z
+- statistical_report_generated_at: 2026-06-13T15:59:40.717928+00:00
+- statistical_report_age_hours: 18.63
+- strategy_report_path: data/validation/weekly_autotune/weekly_revalidation/strategy_quality_report.md
+- strategy_report_run_id: weekly-autotune-20260613T205857Z
+- strategy_report_generated_at: 2026-06-14T10:37:31.609394+00:00
+- strategy_report_age_hours: 0.00
+- strategy_report_json_path: data/validation/weekly_autotune/weekly_revalidation/strategy_quality_report.json
+- strategy_report_json_run_id: weekly-autotune-20260613T205857Z
+- strategy_report_json_generated_at: 2026-06-14T10:37:31.699132+00:00
+- strategy_report_json_age_hours: 0.00
+- ai_progress_report_path: data/validation/weekly_autotune/weekly_revalidation/ai_strategy_progress_report.json
+- ai_progress_report_run_id: weekly-autotune-20260613T205857Z
+- ai_progress_report_generated_at: 2026-06-14T10:37:31.825518+00:00
+- ai_progress_report_age_hours: 0.00
+- strategy_quality_range_recommendation: drop_or_retune
+- strategy_quality_trend_recommendation: drop_or_retune
+- health_report_path: data/validation/runtime_metrics_health_report.json
+- health_report_run_id: weekly-autotune-20260613T150841Z
+- health_report_generated_at: 2026-06-14T04:53:46.619613+00:00
+- health_report_age_hours: 5.73
 - unmet_reasons:
-  - statistical qualification が missing（No-Go）
+  - runtime metrics が fail（No-Go）
+  - weekly strategy revalidation が warn（要調整）
+  - statistical qualification が fail（No-Go）
 <!-- AUTO_DECISION_NOTES_END -->
 
 <!-- AUTO_OPEN_ITEMS_START -->
 ### Auto Open Items
-- [ ] statistical qualification が missing（No-Go）
+- [ ] runtime metrics が fail（No-Go）
+- [ ] weekly strategy revalidation が warn（要調整）
+- [ ] statistical qualification が fail（No-Go）
 <!-- AUTO_OPEN_ITEMS_END -->

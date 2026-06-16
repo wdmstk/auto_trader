@@ -256,6 +256,68 @@ def test_rest_transport_uses_configured_exchange_info_path() -> None:
     assert "https://example.com/fapi/v1/exchangeInfo?symbol=BTCUSDT" in seen_urls
 
 
+def test_rest_transport_fetches_futures_account_positions() -> None:
+    seen: dict[str, object] = {}
+
+    def sender(req: Request, __: float) -> str:
+        seen["url"] = req.full_url
+        seen["headers"] = dict(req.header_items())
+        return json.dumps(
+            {
+                "positions": [
+                    {
+                        "symbol": "BTCUSDT",
+                        "positionSide": "BOTH",
+                        "positionAmt": "0.0010",
+                        "entryPrice": "64207.2",
+                        "markPrice": "64540.0",
+                        "unrealizedProfit": "0.3328",
+                        "leverage": "3",
+                        "marginType": "cross",
+                        "updateTime": 1781424000162,
+                    },
+                    {
+                        "symbol": "SOLUSDT",
+                        "positionSide": "BOTH",
+                        "positionAmt": "0.0",
+                        "entryPrice": "68.0",
+                        "markPrice": "68.2",
+                        "unrealizedProfit": "0.0",
+                        "leverage": "3",
+                        "marginType": "cross",
+                        "updateTime": 1781424000162,
+                    },
+                ]
+            },
+            ensure_ascii=True,
+        )
+
+    transport = BinanceRestTransport(
+        RestClientConfig(
+            base_url="https://example.com",
+            account_path="/fapi/v2/account",
+            api_key="k",
+            api_secret="s",
+        ),
+        sender=sender,
+    )
+
+    rows, reason = transport.fetch_account_positions()
+
+    assert reason == "ok"
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "BTCUSDT"
+    assert rows[0]["position_amt"] == 0.001
+    assert rows[0]["qty"] == 0.001
+    assert rows[0]["side"] == "buy"
+    assert rows[0]["update_at"] == "2026-06-14T08:00:00.162000+00:00"
+    assert str(seen["url"]).startswith("https://example.com/fapi/v2/account?timestamp=")
+    assert "signature=" in str(seen["url"])
+    headers = seen["headers"]
+    assert isinstance(headers, dict)
+    assert headers.get("X-mbx-apikey") == "k"
+
+
 def test_rest_transport_handles_network_error() -> None:
     def sender(_: Request, __: float) -> str:
         raise URLError("down")

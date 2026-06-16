@@ -48,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="dry-run",
     )
     p.add_argument("--runtime-state-path", default=None)
+    p.add_argument("--runtime-state-max-age-sec", type=int, default=120)
+    p.add_argument("--allow-runtime-state-fail-open", action="store_true")
     p.add_argument("--state-path", default=None)
     p.add_argument("--base-url", default="https://testnet.binance.vision")
     return p
@@ -82,10 +84,7 @@ def main() -> int:
     else:
         api_key, api_secret = _resolve_api_credentials(args.mode)
         base_url = args.base_url
-        if (
-            args.mode == "testnet-futures-live"
-            and args.base_url == "https://testnet.binance.vision"
-        ):
+        if args.mode == "testnet-futures-live" and args.base_url == "https://testnet.binance.vision":
             base_url = "https://testnet.binancefuture.com"
         order_path = "/api/v3/order"
         if args.mode == "testnet-futures-live":
@@ -96,14 +95,8 @@ def main() -> int:
                 api_key=api_key,
                 api_secret=api_secret,
                 order_path=order_path,
-                time_path=(
-                    "/fapi/v1/time" if args.mode == "testnet-futures-live" else "/api/v3/time"
-                ),
-                exchange_info_path=(
-                    "/fapi/v1/exchangeInfo"
-                    if args.mode == "testnet-futures-live"
-                    else "/api/v3/exchangeInfo"
-                ),
+                time_path=("/fapi/v1/time" if args.mode == "testnet-futures-live" else "/api/v3/time"),
+                exchange_info_path=("/fapi/v1/exchangeInfo" if args.mode == "testnet-futures-live" else "/api/v3/exchangeInfo"),
                 sync_server_time=True,
             )
         )
@@ -111,6 +104,9 @@ def main() -> int:
         transport,
         GatewayConfig(
             runtime_state_path=args.runtime_state_path,
+            require_runtime_state=args.mode != "dry-run",
+            allow_runtime_state_fail_open=bool(args.mode == "dry-run" and args.allow_runtime_state_fail_open),
+            runtime_state_max_age_sec=int(args.runtime_state_max_age_sec),
             state_path=args.state_path,
         ),
     )

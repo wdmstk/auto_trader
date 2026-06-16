@@ -16,10 +16,9 @@ def build_trade_route_selection(
     primary = payload.get("candidates", payload)
     probe = payload.get("range_probe_candidates", {})
     statistical = _load_obj(payload.get("statistical_qualification", {}))
-    passed_route_keys = {
-        str(value) for value in statistical.get("passed_route_keys", []) if str(value)
-    }
+    passed_route_keys = {str(value) for value in statistical.get("passed_route_keys", []) if str(value)}
     statistical_status = str(statistical.get("status", "missing"))
+    dropped_routes: list[dict[str, Any]] = []
 
     rows = _candidate_rows(primary) + _candidate_rows(probe)
     selected: list[dict[str, Any]]
@@ -32,15 +31,27 @@ def build_trade_route_selection(
             passed_route_keys=passed_route_keys,
             qualification_report_path=str(statistical.get("qualification_report_path", "")),
             statistical_gate_mode=statistical_gate_mode,
+            dropped_routes=dropped_routes,
         )
     else:
         core_rows = [
-            row
-            for row in rows
-            if str(row.get("candidate_status", "")) == "core"
-            and statistical_status == "pass"
-            and _row_route_key(row) in passed_route_keys
+            row for row in rows if str(row.get("candidate_status", "")) == "core" and statistical_status == "pass" and _row_route_key(row) in passed_route_keys
         ]
+        if str(statistical_gate_mode).strip().lower() == "hard":
+            for row in rows:
+                if str(row.get("candidate_status", "")) != "core":
+                    continue
+                route_key = _row_route_key(row)
+                if not route_key or route_key in passed_route_keys:
+                    continue
+                dropped_routes.append(
+                    _dropped_route_from_row(
+                        row,
+                        qualification_report_path=str(statistical.get("qualification_report_path", "")),
+                        default_timeframe=default_timeframe,
+                        reason="statistical_fail",
+                    )
+                )
         ordered = sorted(core_rows, key=_route_sort_key, reverse=True)
         selected_routes = [
             _selection_route_from_row(
@@ -68,6 +79,7 @@ def build_trade_route_selection(
         "range_enabled_symbols": _csv_symbols(range_symbols),
         "symbol_timeframes": symbol_timeframes,
         "statistical_gate_mode": statistical_gate_mode,
+        "dropped_routes": dropped_routes,
     }
 
 
@@ -80,8 +92,11 @@ def _select_seed_routes(
     passed_route_keys: set[str],
     qualification_report_path: str,
     statistical_gate_mode: str,
+    dropped_routes: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     gate_mode = str(statistical_gate_mode).strip().lower() or "hard"
+    if dropped_routes is None:
+        dropped_routes = []
     if statistical_status == "missing":
         return []
     seed_payload = _load_obj(seed_manifest)
@@ -90,29 +105,51 @@ def _select_seed_routes(
     if not isinstance(seed_routes, list) or not seed_routes:
         seeded = resolve_live_trade_routes(seed_manifest, default_timeframe=default_timeframe)
         seed_routes = seeded.get("trade_routes", [])
-    row_by_key = {
-        _row_route_key(row): row
-        for row in rows
-        if isinstance(row, dict) and all(_route_fields(row))
-    }
+    row_by_key = {_row_route_key(row): row for row in rows if isinstance(row, dict) and all(_route_fields(row))}
     selected: list[dict[str, Any]] = []
     for raw_route in seed_routes:
         if not isinstance(raw_route, dict):
             continue
         route = _route_from_row(raw_route, default_timeframe=default_timeframe)
         if route is None:
+            is_fail = str(raw_route.get("statistical_status", "")).strip() != "pass"
+            if gate_mode == "hard" and is_fail:
+                dropped_routes.append(
+                    _dropped_route_from_row(
+                        raw_route,
+                        qualification_report_path=qualification_report_path,
+                        default_timeframe=default_timeframe,
+                        reason="statistical_fail",
+                    )
+                )
             continue
         route_key = _row_route_key(route)
         row = row_by_key.get(route_key)
         if row is None:
+            is_fail = str(raw_route.get("statistical_status", "")).strip() != "pass"
+            if gate_mode == "hard" and is_fail:
+                dropped_routes.append(
+                    _dropped_route_from_row(
+                        raw_route,
+                        qualification_report_path=qualification_report_path,
+                        default_timeframe=default_timeframe,
+                        reason="statistical_fail",
+                    )
+                )
             continue
-        statistical_route_status = (
-            "pass" if statistical_status == "pass" and route_key in passed_route_keys else "fail"
-        )
+        statistical_route_status = "pass" if statistical_status == "pass" and route_key in passed_route_keys else "fail"
         candidate_status = str(row.get("candidate_status", route.get("candidate_status", "")))
         if candidate_status != "core":
             continue
         if gate_mode == "hard" and statistical_route_status != "pass":
+            dropped_routes.append(
+                _dropped_route_from_row(
+                    row,
+                    qualification_report_path=qualification_report_path,
+                    default_timeframe=default_timeframe,
+                    reason="statistical_fail",
+                )
+            )
             continue
         enriched = dict(raw_route)
         enriched.update(
@@ -130,10 +167,43 @@ def _select_seed_routes(
                 "candidate_score": _num(row.get("candidate_score", 0.0)),
                 "statistical_status": statistical_route_status,
                 "qualification_report_path": qualification_report_path,
+                "route_policy": ("" if statistical_route_status == "pass" else "test-only / statistical-fail"),
             }
         )
         selected.append(enriched)
     return selected
+
+
+def _dropped_route_from_row(
+    row: dict[str, Any],
+    *,
+    qualification_report_path: str,
+    default_timeframe: str,
+    reason: str,
+) -> dict[str, Any]:
+    route = _route_from_row(row, default_timeframe=default_timeframe)
+    if route is None:
+        route = {
+            "symbol": str(row.get("symbol", "")).strip().upper(),
+            "strategy": str(row.get("strategy", "")).strip(),
+            "timeframe": str(row.get("timeframe", "")).strip() or default_timeframe,
+            "expected_regime": str(row.get("expected_regime", "")).strip(),
+            "candidate_status": str(row.get("candidate_status", "")).strip(),
+        }
+    route.update(
+        {
+            "pf_mean": _num(row.get("pf_mean", 0.0)),
+            "expectancy_bps_mean": _num(row.get("expectancy_bps_mean", 0.0)),
+            "period_pnl_mean": _num(row.get("period_pnl_mean", 0.0)),
+            "max_dd_mean": _num(row.get("max_dd_mean", 0.0)),
+            "closed_trades_mean": _num(row.get("closed_trades_mean", 0.0)),
+            "candidate_score": _num(row.get("candidate_score", 0.0)),
+            "qualification_report_path": qualification_report_path,
+            "route_policy": "production-drop",
+            "dropped_reason": reason,
+        }
+    )
+    return route
 
 
 def _selection_route_from_row(
@@ -155,6 +225,7 @@ def _selection_route_from_row(
             "candidate_score": _num(row.get("candidate_score", 0.0)),
             "statistical_status": "pass",
             "qualification_report_path": qualification_report_path,
+            "route_policy": "",
         }
     )
     return route
@@ -181,9 +252,7 @@ def validate_trade_route_selection(selection: object) -> None:
         if not statistical_status:
             raise ValueError(f"selection.trade_routes[{index}].statistical_status is required")
         if statistical_status not in {"pass", "fail"}:
-            raise ValueError(
-                f"selection.trade_routes[{index}].statistical_status must be pass/fail"
-            )
+            raise ValueError(f"selection.trade_routes[{index}].statistical_status must be pass/fail")
 
 
 def resolve_live_trade_routes(
@@ -194,43 +263,21 @@ def resolve_live_trade_routes(
     payload = _load_obj(report)
     selection = payload.get("selection", {})
     if isinstance(selection, dict):
-        normalized = _normalize_trade_routes(
-            selection.get("trade_routes"), default_timeframe=default_timeframe
-        )
+        normalized = _normalize_trade_routes(selection.get("trade_routes"), default_timeframe=default_timeframe)
         if normalized is not None:
             trade_routes = list(normalized)
             return {
                 "source": "selection.trade_routes",
-                "timeframe": str(selection.get("timeframe", default_timeframe)).strip()
-                or default_timeframe,
+                "timeframe": str(selection.get("timeframe", default_timeframe)).strip() or default_timeframe,
                 "trade_routes": trade_routes,
-                "trend_enabled_symbols": _csv_symbols(
-                    [
-                        str(route.get("symbol", ""))
-                        for route in trade_routes
-                        if str(route.get("strategy", "")) == "trend"
-                    ]
-                ),
-                "range_enabled_symbols": _csv_symbols(
-                    [
-                        str(route.get("symbol", ""))
-                        for route in trade_routes
-                        if str(route.get("strategy", "")) == "range"
-                    ]
-                ),
-                "symbol_timeframes": {
-                    str(route.get("symbol", "")): str(route.get("timeframe", default_timeframe))
-                    for route in trade_routes
-                },
+                "trend_enabled_symbols": _csv_symbols([str(route.get("symbol", "")) for route in trade_routes if str(route.get("strategy", "")) == "trend"]),
+                "range_enabled_symbols": _csv_symbols([str(route.get("symbol", "")) for route in trade_routes if str(route.get("strategy", "")) == "range"]),
+                "symbol_timeframes": {str(route.get("symbol", "")): str(route.get("timeframe", default_timeframe)) for route in trade_routes},
             }
 
-        has_selection_keys = (
-            "trend_enabled_symbols" in selection or "range_enabled_symbols" in selection
-        )
+        has_selection_keys = "trend_enabled_symbols" in selection or "range_enabled_symbols" in selection
         if has_selection_keys:
-            timeframe = (
-                str(selection.get("timeframe", default_timeframe)).strip() or default_timeframe
-            )
+            timeframe = str(selection.get("timeframe", default_timeframe)).strip() or default_timeframe
             routes = _legacy_routes_from_symbols(
                 trend_symbols=_csv_symbols(selection.get("trend_enabled_symbols", [])),
                 range_symbols=_csv_symbols(selection.get("range_enabled_symbols", [])),
@@ -243,23 +290,12 @@ def resolve_live_trade_routes(
                     "timeframe": timeframe,
                     "trade_routes": trade_routes,
                     "trend_enabled_symbols": _csv_symbols(
-                        [
-                            str(route.get("symbol", ""))
-                            for route in trade_routes
-                            if str(route.get("strategy", "")) == "trend"
-                        ]
+                        [str(route.get("symbol", "")) for route in trade_routes if str(route.get("strategy", "")) == "trend"]
                     ),
                     "range_enabled_symbols": _csv_symbols(
-                        [
-                            str(route.get("symbol", ""))
-                            for route in trade_routes
-                            if str(route.get("strategy", "")) == "range"
-                        ]
+                        [str(route.get("symbol", "")) for route in trade_routes if str(route.get("strategy", "")) == "range"]
                     ),
-                    "symbol_timeframes": {
-                        str(route.get("symbol", "")): str(route.get("timeframe", timeframe))
-                        for route in trade_routes
-                    },
+                    "symbol_timeframes": {str(route.get("symbol", "")): str(route.get("timeframe", timeframe)) for route in trade_routes},
                 }
 
     return {
@@ -362,9 +398,7 @@ def _route_from_row(
     if not symbol or strategy not in {"trend", "range"}:
         return None
     timeframe = str(row.get("timeframe", "")).strip() or default_timeframe
-    expected_regime = str(row.get("expected_regime", "")).strip() or (
-        "TREND" if strategy == "trend" else "RANGE"
-    )
+    expected_regime = str(row.get("expected_regime", "")).strip() or ("TREND" if strategy == "trend" else "RANGE")
     route: dict[str, Any] = {
         "symbol": symbol,
         "strategy": strategy,
@@ -379,11 +413,15 @@ def _route_from_row(
             "config_label",
             "statistical_status",
             "qualification_report_path",
+            "route_policy",
         ):
             if key in row:
                 value = row.get(key)
                 if value is not None:
                     route[key] = value
+        statistical_status = str(route.get("statistical_status", "")).strip()
+        if statistical_status and statistical_status != "pass" and "route_policy" not in route:
+            route["route_policy"] = "test-only / statistical-fail"
         params = row.get("params")
         if isinstance(params, dict):
             route["params"] = dict(params)
@@ -430,11 +468,7 @@ def _num(value: object) -> float:
 
 
 def _row_route_key(row: dict[str, Any]) -> str:
-    return (
-        f"{str(row.get('strategy', '')).strip()}:"
-        f"{str(row.get('symbol', '')).strip()}:"
-        f"{str(row.get('timeframe', '')).strip()}"
-    )
+    return f"{str(row.get('strategy', '')).strip()}:" f"{str(row.get('symbol', '')).strip()}:" f"{str(row.get('timeframe', '')).strip()}"
 
 
 def _load_obj(payload: str | Path | dict[str, Any]) -> dict[str, Any]:
