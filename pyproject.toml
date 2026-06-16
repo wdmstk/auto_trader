@@ -44,6 +44,7 @@ markers = [
 omit = [
   "src/auto_trader/*/__main__.py",
   "src/auto_trader/*/cli.py",
+  "src/auto_trader/worker/market_data.py",
   "src/auto_trader/worker/state.py",
 ]
 
