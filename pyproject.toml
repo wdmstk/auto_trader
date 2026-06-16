@@ -40,6 +40,13 @@ markers = [
   "smoke: fast high-signal tests for core safety gates and e2e path",
 ]
 
+[tool.coverage.run]
+omit = [
+  "src/auto_trader/*/__main__.py",
+  "src/auto_trader/*/cli.py",
+  "src/auto_trader/worker/state.py",
+]
+
 [tool.ruff]
 line-length = 160
 target-version = "py312"
