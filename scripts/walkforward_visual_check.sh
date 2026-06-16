@@ -5,6 +5,16 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
 PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python3)"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python)"
+  else
+    echo "python interpreter not found" >&2
+    exit 127
+  fi
+fi
 OHLCV_PATH="${OHLCV_PATH:-data/parquet/BTCUSDT_1m.parquet}"
 RANGE_SIGNALS_PATH="${RANGE_SIGNALS_PATH:-data/signals/BTCUSDT_1m_range_signals.parquet}"
 TREND_SIGNALS_PATH="${TREND_SIGNALS_PATH:-data/signals/BTCUSDT_1m_trend_signals.parquet}"

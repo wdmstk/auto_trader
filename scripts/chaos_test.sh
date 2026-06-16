@@ -8,6 +8,16 @@ OUT_DIR="${OUT_DIR:-data/validation/chaos}"
 mkdir -p "$OUT_DIR"
 
 PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python3)"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python)"
+  else
+    echo "python interpreter not found" >&2
+    exit 127
+  fi
+fi
 export PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 
 OHLCV_PATH="${OHLCV_PATH:-data/parquet/BTCUSDT_1m.parquet}"

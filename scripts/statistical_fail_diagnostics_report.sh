@@ -5,6 +5,16 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
 PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python3)"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python)"
+  else
+    echo "python interpreter not found" >&2
+    exit 127
+  fi
+fi
 QUALIFICATION_REPORT_PATH="${QUALIFICATION_REPORT_PATH:-data/validation/statistical_qualification/qualification_report.json}"
 ANALYSIS_DIR="${ANALYSIS_DIR:-data/validation/weekly_autotune/weekly_revalidation/manifest_route_run_data/analysis}"
 OUTPUT_JSON="${OUTPUT_JSON:-}"
