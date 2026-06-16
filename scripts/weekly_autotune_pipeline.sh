@@ -15,6 +15,16 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
     exit 127
   fi
 fi
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python3)"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python)"
+  else
+    echo "python interpreter not found" >&2
+    exit 127
+  fi
+fi
 
 RUN_ROOT="${RUN_ROOT:-data/validation/weekly_autotune}"
 RUN_EXPANSION="${RUN_EXPANSION:-1}"

@@ -15,6 +15,16 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
     exit 127
   fi
 fi
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python3)"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python)"
+  else
+    echo "python interpreter not found" >&2
+    exit 127
+  fi
+fi
 REPORT_PATH="${REPORT_PATH:-data/validation/weekly_autotune/weekly_revalidation/weekly_revalidation_report.json}"
 OUT_PATH="${OUT_PATH:-data/validation/weekly_autotune/weekly_revalidation/strategy_quality_report.md}"
 

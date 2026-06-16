@@ -7,6 +7,18 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
+PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python3)"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python)"
+  else
+    echo "python interpreter not found" >&2
+    exit 127
+  fi
+fi
+
 DURATION_SEC="${DURATION_SEC:-28800}"      # 8h
 INTERVAL_SEC="${INTERVAL_SEC:-1800}"       # 30min
 OUTPUT_DIR="${OUTPUT_DIR:-data/validation}"
@@ -52,7 +64,7 @@ read_updated_at() {
     echo ""
     return 0
   fi
-  python - "$path" <<'PY'
+  "$PYTHON_BIN" - "$path" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -89,7 +101,7 @@ proc_alive() {
 }
 
 json_escape() {
-  python - "$1" <<'PY'
+  "$PYTHON_BIN" - "$1" <<'PY'
 import json
 import sys
 print(json.dumps(sys.argv[1], ensure_ascii=True))
@@ -128,14 +140,14 @@ echo "RUN_ID=$RUN_ID"
 
 if [[ "$START_WATCHERS" == "true" ]]; then
   echo "Launching runtime/ops/notify watchers..."
-  ./.venv/bin/python -m auto_trader.runtime --watch --interval-sec 2 > "$OUTPUT_DIR/runtime_watch.log" 2>&1 &
+  "$PYTHON_BIN" -m auto_trader.runtime --watch --interval-sec 2 > "$OUTPUT_DIR/runtime_watch.log" 2>&1 &
   WATCHER_PIDS+=("$!")
-  ./.venv/bin/python -m auto_trader.ops \
+  "$PYTHON_BIN" -m auto_trader.ops \
     --runtime-state-path data/runtime/control_state.json \
     --risk-eval-path data/risk/risk_eval.parquet \
     --watch --interval-sec 5 --output-dir data/ops > "$OUTPUT_DIR/ops_watch.log" 2>&1 &
   WATCHER_PIDS+=("$!")
-  ./.venv/bin/python -m auto_trader.notify --from-env --watch --interval-sec 5 --output-dir data/ops > "$OUTPUT_DIR/notify_watch.log" 2>&1 &
+  "$PYTHON_BIN" -m auto_trader.notify --from-env --watch --interval-sec 5 --output-dir data/ops > "$OUTPUT_DIR/notify_watch.log" 2>&1 &
   WATCHER_PIDS+=("$!")
   sleep 1
 fi
@@ -179,7 +191,7 @@ while :; do
   ops_alive="$(proc_alive "$OPS_PROC_PATTERN")"
 
   if [[ "$ENABLE_RUNTIME_METRICS" == "true" ]]; then
-    ./.venv/bin/python -m auto_trader.monitor \
+    "$PYTHON_BIN" -m auto_trader.monitor \
       --runtime-state-path "$RUNTIME_STATE" \
       --gateway-state-path data/exchange/gateway_state.json \
       --risk-eval-path data/risk/risk_eval.parquet \

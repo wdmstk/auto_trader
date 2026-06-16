@@ -5,6 +5,16 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
 PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python3)"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python)"
+  else
+    echo "python interpreter not found" >&2
+    exit 127
+  fi
+fi
 DATA_ROOT="${DATA_ROOT:-data}"
 OUT_DIR="${OUT_DIR:-data/validation/symbol_candidate_exploration}"
 SCAN_OUT_DIR="${SCAN_OUT_DIR:-$OUT_DIR/timeframe_scan}"

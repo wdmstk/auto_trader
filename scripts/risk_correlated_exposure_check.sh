@@ -5,6 +5,16 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
 PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python3)"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python)"
+  else
+    echo "python interpreter not found" >&2
+    exit 127
+  fi
+fi
 OUTPUT_DIR="${OUTPUT_DIR:-data/validation}"
 INPUT_PATH="${INPUT_PATH:-$OUTPUT_DIR/risk_corr_scenario_input.parquet}"
 EVAL_PATH="${EVAL_PATH:-$OUTPUT_DIR/risk_corr_scenario_eval.parquet}"
