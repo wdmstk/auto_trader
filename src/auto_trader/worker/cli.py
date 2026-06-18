@@ -8,14 +8,12 @@ from pathlib import Path
 import yaml
 
 from auto_trader.regime.classifier import RegimeConfig
+from auto_trader.utils import parse_csv
 from auto_trader.worker.runner import LiveTradingWorker, WorkerConfig
 
 
 def _csv_text(value: str) -> tuple[str, ...]:
-    text = str(value).strip()
-    if not text:
-        return ()
-    return tuple(item.strip() for item in text.split(",") if item.strip())
+    return parse_csv(value)
 
 
 def _env_bool(name: str, default: str = "0") -> bool:

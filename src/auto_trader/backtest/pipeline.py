@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -8,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from auto_trader.backtest.simulator import BacktestConfig, run_backtest
+from auto_trader.utils import write_json_file
 
 
 def _infer_ohlcv_context(path: Path) -> tuple[str, str]:
@@ -62,7 +62,7 @@ def _write_run_metadata(
         "config": asdict(config or BacktestConfig()),
     }
     metadata_path = output_dir / "metadata.json"
-    metadata_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_json_file(metadata_path, payload)
     return metadata_path
 
 

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, cast
+
+from auto_trader.utils import load_json_object, parse_csv, safe_float
 
 
 def build_trade_route_selection(
@@ -159,12 +160,12 @@ def _select_seed_routes(
                 "timeframe": str(route["timeframe"]),
                 "expected_regime": str(route["expected_regime"]),
                 "candidate_status": candidate_status,
-                "pf_mean": _num(row.get("pf_mean", 0.0)),
-                "expectancy_bps_mean": _num(row.get("expectancy_bps_mean", 0.0)),
-                "period_pnl_mean": _num(row.get("period_pnl_mean", 0.0)),
-                "max_dd_mean": _num(row.get("max_dd_mean", 0.0)),
-                "closed_trades_mean": _num(row.get("closed_trades_mean", 0.0)),
-                "candidate_score": _num(row.get("candidate_score", 0.0)),
+                "pf_mean": safe_float(row.get("pf_mean", 0.0)),
+                "expectancy_bps_mean": safe_float(row.get("expectancy_bps_mean", 0.0)),
+                "period_pnl_mean": safe_float(row.get("period_pnl_mean", 0.0)),
+                "max_dd_mean": safe_float(row.get("max_dd_mean", 0.0)),
+                "closed_trades_mean": safe_float(row.get("closed_trades_mean", 0.0)),
+                "candidate_score": safe_float(row.get("candidate_score", 0.0)),
                 "statistical_status": statistical_route_status,
                 "qualification_report_path": qualification_report_path,
                 "route_policy": ("" if statistical_route_status == "pass" else "test-only / statistical-fail"),
@@ -192,12 +193,12 @@ def _dropped_route_from_row(
         }
     route.update(
         {
-            "pf_mean": _num(row.get("pf_mean", 0.0)),
-            "expectancy_bps_mean": _num(row.get("expectancy_bps_mean", 0.0)),
-            "period_pnl_mean": _num(row.get("period_pnl_mean", 0.0)),
-            "max_dd_mean": _num(row.get("max_dd_mean", 0.0)),
-            "closed_trades_mean": _num(row.get("closed_trades_mean", 0.0)),
-            "candidate_score": _num(row.get("candidate_score", 0.0)),
+            "pf_mean": safe_float(row.get("pf_mean", 0.0)),
+            "expectancy_bps_mean": safe_float(row.get("expectancy_bps_mean", 0.0)),
+            "period_pnl_mean": safe_float(row.get("period_pnl_mean", 0.0)),
+            "max_dd_mean": safe_float(row.get("max_dd_mean", 0.0)),
+            "closed_trades_mean": safe_float(row.get("closed_trades_mean", 0.0)),
+            "candidate_score": safe_float(row.get("candidate_score", 0.0)),
             "qualification_report_path": qualification_report_path,
             "route_policy": "production-drop",
             "dropped_reason": reason,
@@ -217,12 +218,12 @@ def _selection_route_from_row(
         return None
     route.update(
         {
-            "pf_mean": _num(row.get("pf_mean", 0.0)),
-            "expectancy_bps_mean": _num(row.get("expectancy_bps_mean", 0.0)),
-            "period_pnl_mean": _num(row.get("period_pnl_mean", 0.0)),
-            "max_dd_mean": _num(row.get("max_dd_mean", 0.0)),
-            "closed_trades_mean": _num(row.get("closed_trades_mean", 0.0)),
-            "candidate_score": _num(row.get("candidate_score", 0.0)),
+            "pf_mean": safe_float(row.get("pf_mean", 0.0)),
+            "expectancy_bps_mean": safe_float(row.get("expectancy_bps_mean", 0.0)),
+            "period_pnl_mean": safe_float(row.get("period_pnl_mean", 0.0)),
+            "max_dd_mean": safe_float(row.get("max_dd_mean", 0.0)),
+            "closed_trades_mean": safe_float(row.get("closed_trades_mean", 0.0)),
+            "candidate_score": safe_float(row.get("candidate_score", 0.0)),
             "statistical_status": "pass",
             "qualification_report_path": qualification_report_path,
             "route_policy": "",
@@ -429,50 +430,25 @@ def _route_from_row(
 
 
 def _csv_symbols(values: Any) -> list[str]:
-    if isinstance(values, list):
-        source = values
-    elif isinstance(values, tuple):
-        source = list(values)
-    elif isinstance(values, str):
-        source = [item.strip() for item in values.split(",") if item.strip()]
-    else:
-        source = []
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for value in source:
-        symbol = str(value).strip().upper()
-        if symbol and symbol not in seen:
-            seen.add(symbol)
-            ordered.append(symbol)
-    return ordered
+    return list(parse_csv(values, upper=True))
 
 
 def _route_sort_key(row: dict[str, Any]) -> tuple[int, float, float, float, float, str, str]:
     priority = {"core": 2, "probe": 1, "watchlist": 0}.get(str(row.get("candidate_status", "")), 0)
     return (
         priority,
-        _num(row.get("candidate_score", 0.0)),
-        _num(row.get("expectancy_bps_mean", 0.0)),
-        _num(row.get("pf_mean", 0.0)),
-        _num(row.get("period_pnl_mean", 0.0)),
+        safe_float(row.get("candidate_score", 0.0)),
+        safe_float(row.get("expectancy_bps_mean", 0.0)),
+        safe_float(row.get("pf_mean", 0.0)),
+        safe_float(row.get("period_pnl_mean", 0.0)),
         str(row.get("strategy", "")),
         str(row.get("symbol", "")),
     )
 
 
-def _num(value: object) -> float:
-    try:
-        return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return 0.0
-
-
 def _row_route_key(row: dict[str, Any]) -> str:
-    return f"{str(row.get('strategy', '')).strip()}:" f"{str(row.get('symbol', '')).strip()}:" f"{str(row.get('timeframe', '')).strip()}"
+    return f"{str(row.get('strategy', '')).strip()}:{str(row.get('symbol', '')).strip()}:{str(row.get('timeframe', '')).strip()}"
 
 
 def _load_obj(payload: str | Path | dict[str, Any]) -> dict[str, Any]:
-    if isinstance(payload, str | Path):
-        loaded = json.loads(Path(payload).read_text(encoding="utf-8"))
-        return cast(dict[str, Any], loaded) if isinstance(loaded, dict) else {}
-    return payload if isinstance(payload, dict) else {}
+    return load_json_object(payload)

@@ -117,10 +117,3 @@ def _label_group(g: pd.DataFrame, cfg: LabelConfig) -> pd.DataFrame:
     out["label_version"] = cfg.label_version
     out["generated_at"] = datetime.now(UTC)
     return out
-
-
-def _safe_float(value: object) -> float:
-    try:
-        return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return 0.0

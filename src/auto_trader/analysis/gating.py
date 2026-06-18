@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
 import pandas as pd
+
+from auto_trader.utils import load_json_rows, write_json_file
 
 
 @dataclass(frozen=True)
@@ -77,9 +78,7 @@ def write_gating_artifacts(
         timeframe=timeframe,
         thresholds=thresholds,
     )
-    json_out = Path(json_path)
-    json_out.parent.mkdir(parents=True, exist_ok=True)
-    json_out.write_text(json.dumps(recommendation, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_json_file(json_path, recommendation)
 
     if env_path is not None:
         env_out = Path(env_path)
@@ -143,13 +142,4 @@ def _recommend_for_strategy(
 
 
 def _load_rows(summary: str | Path | dict[str, Any]) -> list[dict[str, Any]]:
-    if isinstance(summary, str) or isinstance(summary, Path):
-        path = Path(summary)
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    else:
-        payload = summary
-    if isinstance(payload, dict):
-        rows = payload.get("rows", [])
-        if isinstance(rows, list):
-            return [r for r in rows if isinstance(r, dict)]
-    return []
+    return load_json_rows(summary)

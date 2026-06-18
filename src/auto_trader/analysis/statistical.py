@@ -9,6 +9,8 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
+from auto_trader.utils import load_json_rows, write_json_file
+
 
 @dataclass(frozen=True)
 class StatisticalThresholds:
@@ -82,9 +84,7 @@ def build_statistical_qualification(
         "passed_route_keys": [str(r["route_key"]) for r in route_results if r["status"] == "pass"],
     }
     if report_path is not None:
-        out = Path(report_path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(report, ensure_ascii=True, indent=2), encoding="utf-8")
+        write_json_file(report_path, report)
     return report
 
 
@@ -272,8 +272,7 @@ def _input_manifest(rows: list[dict[str, Any]], root: Path) -> list[dict[str, st
 
 def _freeze_or_validate_manifest(path: Path, current: dict[str, Any]) -> tuple[str, list[str]]:
     if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(current, ensure_ascii=True, indent=2), encoding="utf-8")
+        write_json_file(path, current)
         return "pass", []
     try:
         frozen = json.loads(path.read_text(encoding="utf-8"))
@@ -335,10 +334,4 @@ def _is_point_candidate(row: dict[str, Any], thresholds: StatisticalThresholds) 
 
 
 def _load_rows(summary: str | Path | dict[str, Any]) -> list[dict[str, Any]]:
-    payload: Any
-    if isinstance(summary, str | Path):
-        payload = json.loads(Path(summary).read_text(encoding="utf-8"))
-    else:
-        payload = summary
-    rows = payload.get("rows", []) if isinstance(payload, dict) else []
-    return [row for row in rows if isinstance(row, dict)]
+    return load_json_rows(summary)

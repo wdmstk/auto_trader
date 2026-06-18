@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from auto_trader.utils import write_json_file
+
 
 @dataclass(frozen=True)
 class StageResult:
@@ -89,7 +91,7 @@ def _finalize(stages: list[StageResult], out_dir: Path) -> dict[str, object]:
     }
     report_path = out_dir / "smoke_report.json"
     events_path = out_dir / "smoke_events.jsonl"
-    report_path.write_text(json.dumps(report, ensure_ascii=True), encoding="utf-8")
+    write_json_file(report_path, report, indent=None)
     with events_path.open("w", encoding="utf-8") as f:
         for stage in stages:
             f.write(json.dumps(asdict(stage), ensure_ascii=True) + "\n")

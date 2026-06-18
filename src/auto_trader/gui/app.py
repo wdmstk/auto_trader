@@ -27,6 +27,7 @@ from auto_trader.exchange.rest_client import BinanceRestTransport, RestClientCon
 from auto_trader.gui.overlay import build_overlay_frame, build_regime_segments
 from auto_trader.gui.state import ControlEvent, append_control_event, emergency_badge, is_stale
 from auto_trader.stateio import atomic_write_json, read_json_with_recovery
+from auto_trader.utils import safe_float as _safe_float
 from auto_trader.worker.state import WorkerState
 
 DATA_DIR = Path("data")
@@ -219,19 +220,6 @@ def _read_latest_jsonl_row(path: Path) -> dict[str, object]:
     except Exception:
         return {}
     return {}
-
-
-def _safe_float(v: object, default: float = 0.0) -> float:
-    if isinstance(v, bool):
-        return float(int(v))
-    if isinstance(v, int | float):
-        return float(v)
-    if isinstance(v, str):
-        try:
-            return float(v)
-        except ValueError:
-            return default
-    return default
 
 
 def _read_json_object(path: Path) -> dict[str, object]:
@@ -1274,7 +1262,7 @@ def _render_runtime_metrics_panel() -> None:
         st.success("Health: OK")
     for msg in messages:
         st.caption(msg)
-    st.caption(f"runtime_trading_enabled={runtime_trading}, runtime_emergency_stop={emergency_stop}, " f"timestamp={latest.get('timestamp', '-')}")
+    st.caption(f"runtime_trading_enabled={runtime_trading}, runtime_emergency_stop={emergency_stop}, timestamp={latest.get('timestamp', '-')}")
     st.json(latest)
 
 
@@ -2577,7 +2565,7 @@ def _status_banner(
         "critical",
     }:
         metrics_level = _freshness_level(latest_metrics.get("timestamp", ""))
-        warnings.append(f"Runtime metrics are {metrics_level}. Start `auto-trader-monitor.service` " "or rerun `python -m auto_trader.monitor --watch`.")
+        warnings.append(f"Runtime metrics are {metrics_level}. Start `auto-trader-monitor.service` or rerun `python -m auto_trader.monitor --watch`.")
     if not risk_df.empty and "timestamp" in risk_df.columns:
         ts = pd.to_datetime(risk_df.iloc[-1]["timestamp"], utc=True).to_pydatetime()
         if is_stale(ts, datetime.now(UTC), max_delay_sec=DATA_STALE_WARN_SEC):
@@ -2634,9 +2622,7 @@ def _operator_summary(
         next_action = "Maintain watch and keep weekly revalidation on schedule."
 
     focus = (
-        f"core routes={candidate_rollup['core_count']} "
-        f"probe routes={candidate_rollup['probe_count']} "
-        f"watchlist routes={candidate_rollup['watchlist_count']}"
+        f"core routes={candidate_rollup['core_count']} probe routes={candidate_rollup['probe_count']} watchlist routes={candidate_rollup['watchlist_count']}"
     )
     limit_metrics = candidate_rollup.get("limit_metrics", {})
     limit_fill_rate = 0.0
@@ -3047,7 +3033,7 @@ def _render_trading_tab(
     candidate_report: dict[str, object],
 ) -> None:
     st.subheader("Trading")
-    st.caption("Trading focuses on live routes, worker state, and block reasons. " "Overview carries the heavier portfolio and risk snapshot.")
+    st.caption("Trading focuses on live routes, worker state, and block reasons. Overview carries the heavier portfolio and risk snapshot.")
     summary = _operator_summary(
         runtime_state=_load_runtime_state(),
         worker_state=worker_state,
@@ -3061,14 +3047,14 @@ def _render_trading_tab(
     summary_cols[1].metric("Decision", summary["decision_status"])
     summary_cols[2].metric("Next action", summary["next_action"])
     st.caption(
-        f"health={summary['health_level']}, limit_fill_rate={summary['limit_fill_rate']:.3f}, " f"limit_taker_like_rate={summary['limit_taker_like_rate']:.3f}"
+        f"health={summary['health_level']}, limit_fill_rate={summary['limit_fill_rate']:.3f}, limit_taker_like_rate={summary['limit_taker_like_rate']:.3f}"
     )
     for reason in summary["reasons"]:
         st.caption(f"- {reason}")
 
     worker_frame = _worker_last_results_frame(worker_state)
     if worker_frame.empty:
-        st.info("No worker results yet. Waiting for the worker to complete and persist " "at least one cycle.")
+        st.info("No worker results yet. Waiting for the worker to complete and persist at least one cycle.")
     else:
         worker_frame["why_not_trading"] = worker_frame.apply(lambda row: _worker_status_reason(row.to_dict()), axis=1)
         cols = [
@@ -3093,7 +3079,7 @@ def _render_trading_tab(
     if route_frame.empty:
         route_frame = _candidate_trade_routes_frame(candidate_report)
         if not route_frame.empty:
-            st.caption("Worker cycle results are not available yet. Showing configured " "live routes from the current route-selection manifest.")
+            st.caption("Worker cycle results are not available yet. Showing configured live routes from the current route-selection manifest.")
     if route_frame.empty:
         st.info("No live trade routes yet.")
     else:
@@ -3195,7 +3181,7 @@ def _render_charts_tab(
     selected_row = next((row for row in core_rows if str(row.get("symbol", "")) == overlay_symbol), core_rows[0])
     overlay_timeframe = str(selected_row.get("timeframe", "1m")).strip() or "1m"
     overlay_strategy = str(selected_row.get("strategy", "trend")).strip() or "trend"
-    st.caption(f"Selected core setup: symbol={overlay_symbol}, timeframe={overlay_timeframe}, " f"strategy={overlay_strategy}")
+    st.caption(f"Selected core setup: symbol={overlay_symbol}, timeframe={overlay_timeframe}, strategy={overlay_strategy}")
 
     regime_df = _read_optional(DATA_DIR / "regime" / f"{overlay_symbol}_{overlay_timeframe}_regime.parquet")
     signal_df = _read_optional(DATA_DIR / "signals" / f"{overlay_symbol}_{overlay_timeframe}_{overlay_strategy}_signals.parquet")
@@ -3583,7 +3569,7 @@ def _render_live_logs_tab(*, runtime_metrics_path: Path) -> None:
             st.success("Health: OK")
         for msg in messages:
             st.caption(msg)
-        st.caption(f"runtime_trading_enabled={runtime_trading}, runtime_emergency_stop={emergency_stop}, " f"timestamp={latest_metrics.get('timestamp', '-')}")
+        st.caption(f"runtime_trading_enabled={runtime_trading}, runtime_emergency_stop={emergency_stop}, timestamp={latest_metrics.get('timestamp', '-')}")
         st.json(latest_metrics)
 
     st.subheader("Execution Events")
@@ -3730,7 +3716,7 @@ def _render_analysis_workspace() -> None:
     candidate_report = _load_candidate_report()
     weekly_candidate_report = _load_weekly_candidate_report()
 
-    st.caption("This workspace does not auto-refresh. " "Rerun manually after generating new analysis artifacts.")
+    st.caption("This workspace does not auto-refresh. Rerun manually after generating new analysis artifacts.")
     charts_tab, analysis_tab, audit_tab = st.tabs(["Charts", "Analysis", "Audit"])
     with charts_tab:
         _render_charts_tab(
@@ -3789,9 +3775,7 @@ def _legacy_main() -> None:
     c3.metric("Exposure", _latest_value(risk_df, "portfolio_exposure_pct", "-"))
     c4.metric("MaxDD", dd)
     c5.metric("API", "CONNECTED")
-    st.caption(
-        f"vol_weighted_exposure_pct={_latest_value(risk_df, 'vol_weighted_exposure_pct', '-')}, " f"size_scale={_latest_value(risk_df, 'size_scale', '-')}"
-    )
+    st.caption(f"vol_weighted_exposure_pct={_latest_value(risk_df, 'vol_weighted_exposure_pct', '-')}, size_scale={_latest_value(risk_df, 'size_scale', '-')}")
 
     st.subheader("Stale Monitor")
     if not risk_df.empty and "timestamp" in risk_df.columns:
@@ -3934,7 +3918,7 @@ def main() -> None:
     st.set_page_config(page_title="Auto Trader Ops Console", layout="wide")
     _inject_ui_stability_styles()
     st.title("Auto Trader Operations Dashboard")
-    st.caption("Live Monitor auto-refreshes every 10 seconds. " "Analysis Workspace refreshes only on manual rerun.")
+    st.caption("Live Monitor auto-refreshes every 10 seconds. Analysis Workspace refreshes only on manual rerun.")
     _render_sidebar_controls()
     live_tab, analysis_tab = st.tabs(["Live Monitor", "Analysis Workspace"])
     with live_tab:

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from auto_trader.data.binance_client import BinanceKlineClient
+from auto_trader.utils import write_json_file
 
 DEFAULT_EXCLUDED_BASE_ASSETS: frozenset[str] = frozenset(
     {
@@ -52,9 +53,7 @@ class SymbolExplorationClient(Protocol):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Resolve new Binance USDT symbols for exploratory revalidation."
-    )
+    parser = argparse.ArgumentParser(description="Resolve new Binance USDT symbols for exploratory revalidation.")
     parser.add_argument("--base-url", default="https://api.binance.com")
     parser.add_argument("--data-root", default="data")
     parser.add_argument("--limit", type=int, default=20)
@@ -180,9 +179,7 @@ def write_symbol_exploration_artifacts(
     json_path: str | Path,
     env_path: str | Path | None = None,
 ) -> None:
-    json_out = Path(json_path)
-    json_out.parent.mkdir(parents=True, exist_ok=True)
-    json_out.write_text(json.dumps(report, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_json_file(json_path, report)
 
     if env_path is None:
         return
@@ -204,12 +201,8 @@ def write_symbol_exploration_artifacts(
 def main() -> int:
     args = build_parser().parse_args()
     client = BinanceKlineClient(base_url=args.base_url)
-    excluded_symbols = [
-        item.strip() for item in str(args.exclude_symbols).split(",") if item.strip()
-    ]
-    excluded_base_assets = [
-        item.strip() for item in str(args.exclude_base_assets).split(",") if item.strip()
-    ]
+    excluded_symbols = [item.strip() for item in str(args.exclude_symbols).split(",") if item.strip()]
+    excluded_base_assets = [item.strip() for item in str(args.exclude_base_assets).split(",") if item.strip()]
     report = resolve_symbol_exploration(
         client=client,
         data_root=args.data_root,

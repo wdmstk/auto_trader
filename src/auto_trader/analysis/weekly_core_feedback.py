@@ -6,12 +6,12 @@ import re
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
+
+from auto_trader.utils import load_json_object, write_json_file
 
 DEFAULT_WEEKLY_SCRIPT_PATH = Path("scripts/weekly_strategy_revalidation.sh")
-DEFAULT_REPORT_PATH = Path(
-    "data/validation/symbol_candidate_exploration/timeframe_scan/candidate_report.json"
-)
+DEFAULT_REPORT_PATH = Path("data/validation/symbol_candidate_exploration/timeframe_scan/candidate_report.json")
 DEFAULT_OUT_DIR = Path("data/validation/symbol_candidate_exploration")
 DEFAULT_OUT_JSON = DEFAULT_OUT_DIR / "weekly_core_feedback.json"
 DEFAULT_OUT_ENV = DEFAULT_OUT_DIR / "weekly_core_feedback.env"
@@ -19,9 +19,7 @@ DEFAULT_OUT_MD = DEFAULT_OUT_DIR / "weekly_core_feedback.md"
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Build an explicit weekly override from candidate core routes."
-    )
+    parser = argparse.ArgumentParser(description="Build an explicit weekly override from candidate core routes.")
     parser.add_argument("--report-path", default=str(DEFAULT_REPORT_PATH))
     parser.add_argument("--weekly-script-path", default=str(DEFAULT_WEEKLY_SCRIPT_PATH))
     parser.add_argument("--json-path", default=str(DEFAULT_OUT_JSON))
@@ -71,13 +69,7 @@ def build_weekly_core_feedback(
 
     return {
         "generated_at": datetime.now(UTC).isoformat(),
-        "report_path": str(
-            Path(report_path)
-            if report_path is not None
-            else Path(report)
-            if isinstance(report, str | Path)
-            else Path("")
-        ),
+        "report_path": str(Path(report_path) if report_path is not None else Path(report) if isinstance(report, str | Path) else Path("")),
         "weekly_script_path": str(Path(weekly_script_path)),
         "baseline": baseline,
         "core": {
@@ -113,9 +105,7 @@ def write_weekly_core_feedback(
         report_path=report_path,
     )
 
-    json_out = Path(json_path)
-    json_out.parent.mkdir(parents=True, exist_ok=True)
-    json_out.write_text(json.dumps(feedback, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_json_file(json_path, feedback)
 
     env_out = Path(env_path)
     env_out.parent.mkdir(parents=True, exist_ok=True)
@@ -192,9 +182,7 @@ def _normalize_route(row: dict[str, Any]) -> dict[str, str] | None:
     timeframe = str(row.get("timeframe", "")).strip()
     if not symbol or strategy not in {"trend", "range"} or not timeframe:
         return None
-    expected_regime = str(row.get("expected_regime", "")).strip() or (
-        "TREND" if strategy == "trend" else "RANGE"
-    )
+    expected_regime = str(row.get("expected_regime", "")).strip() or ("TREND" if strategy == "trend" else "RANGE")
     return {
         "symbol": symbol,
         "strategy": strategy,
@@ -240,10 +228,7 @@ def _ordered_unique(values: Iterable[str]) -> list[str]:
 
 
 def _load_obj(payload: str | Path | dict[str, Any]) -> dict[str, Any]:
-    if isinstance(payload, str | Path):
-        loaded = json.loads(Path(payload).read_text(encoding="utf-8"))
-        return cast(dict[str, Any], loaded) if isinstance(loaded, dict) else {}
-    return payload if isinstance(payload, dict) else {}
+    return load_json_object(payload)
 
 
 def _render_env(feedback: dict[str, Any]) -> str:
@@ -281,9 +266,7 @@ def _render_markdown(feedback: dict[str, Any]) -> str:
         "## Core Routes",
     ]
     for route in core["trade_routes"]:
-        lines.append(
-            f"- {route['route_key']} ({route['candidate_status']}, {route['expected_regime']})"
-        )
+        lines.append(f"- {route['route_key']} ({route['candidate_status']}, {route['expected_regime']})")
     lines.extend(
         [
             "",
@@ -293,9 +276,7 @@ def _render_markdown(feedback: dict[str, Any]) -> str:
     shadow_routes = feedback["shadow_routes"]
     if shadow_routes:
         for route in shadow_routes:
-            lines.append(
-                f"- {route['route_key']} ({route['candidate_status']}, {route['expected_regime']})"
-            )
+            lines.append(f"- {route['route_key']} ({route['candidate_status']}, {route['expected_regime']})")
     else:
         lines.append("- -")
     lines.extend(

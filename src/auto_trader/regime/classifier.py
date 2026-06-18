@@ -6,6 +6,8 @@ from typing import Literal
 
 import pandas as pd
 
+from auto_trader.utils import safe_float
+
 Regime = Literal["RANGE", "TREND", "SPIKE", "SUSTAINED"]
 
 
@@ -127,8 +129,8 @@ def _classify_group(g: pd.DataFrame, cfg: RegimeConfig) -> pd.DataFrame:
 
         desired_base: Literal["RANGE", "TREND"] = active_regime
         vol_regime: Regime | None = None
-        atr_i = _safe_float(atr_z.iloc[i])
-        ret_i = _safe_float(ret_z.iloc[i])
+        atr_i = safe_float(atr_z.iloc[i])
+        ret_i = safe_float(ret_z.iloc[i])
         if bool(high_vol_mask.iloc[i]):
             hv_run_count += 1
             vol_regime = "SPIKE"
@@ -199,7 +201,7 @@ def _classify_group(g: pd.DataFrame, cfg: RegimeConfig) -> pd.DataFrame:
 
 
 def _vol_state(atr_z: float, ret_z: float) -> str:
-    z = max(_safe_float(atr_z), _safe_float(ret_z))
+    z = max(safe_float(atr_z), safe_float(ret_z))
     if z >= 3.0:
         return "extreme"
     if z >= 1.5:
@@ -219,21 +221,11 @@ def _confidence_for_regime(
     bb_width_pct: float,
 ) -> float:
     if regime in {"SPIKE", "SUSTAINED"}:
-        return min(1.0, max(_safe_float(atr_z), _safe_float(ret_z)) / 5.0)
+        return min(1.0, max(safe_float(atr_z), safe_float(ret_z)) / 5.0)
     if regime == "TREND":
         score = (breakout_persistence + momentum_persistence + min(1.0, trend_efficiency * 2.0)) / 3.0
         return score
     # RANGE
-    width_score = max(0.0, 1.0 - (_safe_float(bb_width_pct) / 100.0))
+    width_score = max(0.0, 1.0 - (safe_float(bb_width_pct) / 100.0))
     mean_rev = min(1.0, abs(mean_reversion_distance) / 2.0)
     return (width_score + mean_rev) / 2.0
-
-
-def _safe_float(value: object) -> float:
-    try:
-        x = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return 0.0
-    if pd.isna(x):
-        return 0.0
-    return x

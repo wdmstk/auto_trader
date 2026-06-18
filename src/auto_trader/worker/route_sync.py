@@ -4,6 +4,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, cast
 
+from auto_trader.utils import parse_csv
+
 
 @dataclass(frozen=True)
 class TradeRouteSpec:
@@ -190,17 +192,4 @@ def _normalize_symbols(value: object) -> tuple[str, ...] | None:
 
 
 def _csv_symbols(value: object) -> tuple[str, ...]:
-    if isinstance(value, list | tuple):
-        source = value
-    elif isinstance(value, str):
-        source = [item.strip() for item in value.split(",") if item.strip()]
-    else:
-        source = []
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for item in source:
-        symbol = str(item).strip()
-        if symbol and symbol not in seen:
-            seen.add(symbol)
-            ordered.append(symbol)
-    return tuple(ordered)
+    return parse_csv(value)
