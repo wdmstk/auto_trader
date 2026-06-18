@@ -61,6 +61,28 @@ class RuntimeConfig(BaseModel):
     emergency_stop_enabled: bool = True
 
 
+class ExecutionConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enable_reconciliation: bool = False
+    reconciliation_state_path: str = "data/execution/reconciliation_state.json"
+
+
+class StrategyConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    range: dict[str, Any] = {}
+    trend: dict[str, Any] = {}
+
+
+class WorkerConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    trend_symbols: str = ""
+    range_symbols: str = ""
+    strategy_timeframe: str = "15m"
+    cache_enabled: bool = False
+    cache_dir: str = "data/cache/market_data"
+    cache_ttl_seconds: int = 60
+
+
 class LoggingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     level: LoggingLevel = LoggingLevel.INFO
@@ -73,6 +95,9 @@ class Settings(BaseModel):
     exchange: ExchangeConfig
     risk: RiskConfig
     runtime: RuntimeConfig
+    execution: ExecutionConfig = ExecutionConfig()
+    strategy: StrategyConfig = StrategyConfig()
+    worker: WorkerConfig = WorkerConfig()
     logging: LoggingConfig
 
     @model_validator(mode="after")
@@ -81,9 +106,7 @@ class Settings(BaseModel):
             required = ["BINANCE_API_KEY", "BINANCE_API_SECRET"]
             missing = [key for key in required if not os.getenv(key)]
             if missing:
-                raise ValueError(
-                    "production mode requires credentials: " + ", ".join(sorted(missing))
-                )
+                raise ValueError("production mode requires credentials: " + ", ".join(sorted(missing)))
         return self
 
 

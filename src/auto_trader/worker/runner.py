@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -14,9 +15,11 @@ import yaml
 from auto_trader.exchange.cli import _resolve_api_credentials
 from auto_trader.exchange.gateway import GatewayConfig, OrderGateway
 from auto_trader.exchange.idempotency import build_client_order_id
-from auto_trader.exchange.models import OrderRequest
+from auto_trader.exchange.models import OrderEvent, OrderRequest
 from auto_trader.exchange.rest_client import BinanceRestTransport, RestClientConfig
 from auto_trader.exchange.ws_client import BinanceWsExecutionClient, ExecutionStreamEvent
+from auto_trader.execution import GatewayIntegrationLayer
+from auto_trader.execution.models import ReconciliationConfig
 from auto_trader.features.engine import FeatureConfig, compute_features
 from auto_trader.position.manager import PositionConfig, PositionManager
 from auto_trader.position.models import FillEvent, PositionState, build_route_key
@@ -37,6 +40,8 @@ from auto_trader.worker.market_data import (
 )
 from auto_trader.worker.route_sync import resolve_worker_routes
 from auto_trader.worker.state import WorkerState
+
+logger = logging.getLogger(__name__)
 
 OrderMode = Literal["market", "limit"]
 
@@ -118,6 +123,11 @@ class WorkerConfig:
     feature_config: FeatureConfig = FeatureConfig()
     regime_config: RegimeConfig = RegimeConfig()
     position_config: PositionConfig = PositionConfig()
+    enable_execution_reconciliation: bool = False
+    reconciliation_state_path: str = "data/execution/reconciliation_state.json"
+    cache_enabled: bool = False
+    cache_dir: str = "data/cache/market_data"
+    cache_ttl_seconds: int = 60
 
 
 @dataclass(frozen=True)
@@ -136,6 +146,12 @@ class EffectiveRiskConfig:
     max_correlated_exposure_pct: float
     max_vol_weighted_exposure_pct: float
     max_risk_contribution_pct: float
+
+
+@dataclass(frozen=True)
+class ExecutionConfig:
+    enable_reconciliation: bool = False
+    reconciliation_state_path: str = "data/execution/reconciliation_state.json"
 
 
 class LiveTradingWorker:
@@ -163,6 +179,9 @@ class LiveTradingWorker:
             BinanceKlineClientConfig(
                 base_url=config.market_base_url,
                 klines_path=config.market_klines_path,
+                cache_enabled=config.cache_enabled,
+                cache_dir=config.cache_dir,
+                cache_ttl_seconds=config.cache_ttl_seconds,
             )
         )
         self.sleeper = sleeper
@@ -202,6 +221,27 @@ class LiveTradingWorker:
         self.worker_state = self._load_worker_state()
         self.execution_client = BinanceWsExecutionClient()
         self.gateway = self._build_gateway(transport=transport)
+
+        # Load execution configuration from settings
+        exec_config = self._load_execution_config()
+
+        # Initialize ExecutionReconciler if enabled
+        self.execution_integration_layer: GatewayIntegrationLayer | None = None
+        if exec_config.enable_reconciliation:
+            recon_config = ReconciliationConfig(
+                reconciliation_interval_sec=30,
+                event_cache_size=10000,
+                alert_on_mismatch=True,
+            )
+            self.execution_integration_layer = GatewayIntegrationLayer(
+                gateway=self.gateway,
+                config=recon_config,
+                fill_event_callback=self._handle_reconciler_fill_event,
+                state_path=exec_config.reconciliation_state_path,
+            )
+            logger.info("ExecutionReconciler enabled and initialized")
+        else:
+            logger.info("ExecutionReconciler disabled (using legacy flow)")
 
     def run_watch(self) -> int:
         iterations = 0
@@ -244,6 +284,7 @@ class LiveTradingWorker:
                 "range_symbols": list(self._active_range_symbols),
                 "trade_routes": [route.to_dict() for route in self._active_routes.values()],
             },
+            "cache_metrics": self.market_client.get_cache_metrics(),
         }
         mark_prices: dict[str, float] = {}
         try:
@@ -582,11 +623,20 @@ class LiveTradingWorker:
             order_type=order_type,
             limit_price=normalized_limit_price,
         )
-        event = self.gateway.submit(
-            req,
-            allow_runtime_gate=allow_runtime_gate,
-            allow_policy_gate=allow_runtime_gate or action in {"exit", "emergency_close"},
-        )
+        # Use ExecutionReconciler if enabled
+        if self.execution_integration_layer is not None:
+            event, fill_event = self.execution_integration_layer.submit_with_reconciliation(
+                req,
+                allow_runtime_gate=allow_runtime_gate,
+                allow_policy_gate=allow_runtime_gate or action in {"exit", "emergency_close"},
+            )
+            # FillEvent is handled via callback, so we don't process it here
+        else:
+            event = self.gateway.submit(
+                req,
+                allow_runtime_gate=allow_runtime_gate,
+                allow_policy_gate=allow_runtime_gate or action in {"exit", "emergency_close"},
+            )
         block_reason_codes = []
         if isinstance(risk_eval, dict):
             raw_block_reason_codes = risk_eval.get("block_reason_codes", [])
@@ -682,11 +732,24 @@ class LiveTradingWorker:
             return False
 
         delta_filled_qty = max(0.0, cumulative_filled_qty - previous_cumulative)
-        reconciled = self._apply_execution_fill_delta(
-            order_row=order_row,
-            event=event,
-            delta_filled_qty=delta_filled_qty,
-        )
+
+        # Use ExecutionReconciler if enabled
+        if self.execution_integration_layer is not None:
+            # Convert ExecutionStreamEvent to OrderEvent
+            order_event = self._convert_execution_stream_to_order_event(event, order_row)
+            # Process through reconciler (FillEvent is handled via callback)
+            _ = self.execution_integration_layer.process_existing_order_event(order_event)
+            # FillEvent is handled via callback, position is updated there
+            # For tracking purposes, we use current position or None
+            current_position = self.position_manager.get(route_key)
+            reconciled = current_position
+        else:
+            # Use traditional flow
+            reconciled = self._apply_execution_fill_delta(
+                order_row=order_row,
+                event=event,
+                delta_filled_qty=delta_filled_qty,
+            )
         if reconciled is None or reconciled.qty <= 0.0:
             self.position_manager.remove_position(route_key)
             reconciled_qty = 0.0
@@ -824,6 +887,72 @@ class LiveTradingWorker:
                 timeframe=str(order_row.get("timeframe", "")).strip() or "15m",
                 route_key=route_key,
             )
+        )
+
+    def _handle_reconciler_fill_event(self, fill_event: FillEvent) -> None:
+        """Handle FillEvent generated by ExecutionReconciler."""
+        try:
+            self.position_manager.apply_fill(fill_event)
+            self.position_store.save(self.position_manager.all_positions())
+            logger.info(f"Applied reconciler FillEvent: {fill_event.route_key} qty={fill_event.qty} price={fill_event.price}")
+        except Exception as exc:
+            logger.error(f"Failed to apply reconciler FillEvent: {exc}")
+
+    def _convert_execution_stream_to_order_event(self, event: ExecutionStreamEvent, order_row: dict[str, object]) -> OrderEvent:
+        """
+        Convert WebSocket ExecutionStreamEvent to Gateway OrderEvent.
+
+        Args:
+            event: WebSocket execution event
+            order_row: Order metadata from order events log
+
+        Returns:
+            OrderEvent for processing by ExecutionReconciler
+        """
+        # Map ExecutionStreamEvent status to OrderEvent status
+        # ExecutionStreamEvent status: new, partially_filled, filled, canceled, rejected, etc.
+        # OrderEvent status: created, sent, ack, partial_filled, filled, rejected, canceled
+        status_mapping: dict[str, str] = {
+            "new": "created",
+            "partially_filled": "partial_filled",
+            "filled": "filled",
+            "canceled": "canceled",
+            "rejected": "rejected",
+            "expired": "canceled",
+        }
+        mapped_status = status_mapping.get(event.status, "created")
+
+        # Extract order metadata
+        qty = cast(float, order_row.get("qty", 0.0) or 0.0)
+        # For execution events, use the filled_qty from the event for accuracy
+        # This is important for partial fills
+        if event.status in {"partially_filled", "filled"}:
+            qty = event.filled_qty
+        side = str(order_row.get("side", "")).strip().lower() or event.side
+        order_type = str(order_row.get("order_type", "")).strip().lower() or "market"
+        limit_price = None
+        if order_row.get("limit_price") is not None:
+            try:
+                limit_price = float(order_row["limit_price"])  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                limit_price = None
+
+        # Create OrderEvent
+        return OrderEvent(
+            order_id=event.order_id,
+            client_order_id=event.client_order_id,
+            symbol=event.symbol,
+            side=cast(Literal["buy", "sell"], side),
+            qty=qty,
+            status=cast(Literal["created", "sent", "ack", "partial_filled", "filled", "rejected", "canceled"], mapped_status),
+            reason=f"ws_update:{event.status}",
+            requested_at=event.event_ts,
+            sent_at=event.event_ts,
+            ack_at=event.event_ts if mapped_status in {"ack", "partial_filled", "filled"} else None,
+            filled_at=event.event_ts if mapped_status in {"partial_filled", "filled"} else None,
+            latency_ms=None,
+            order_type=cast(Literal["market", "limit"], order_type),
+            limit_price=limit_price,
         )
 
     def _limit_price(self, order_mode: OrderMode, mark_price: float, side: str) -> float | None:
@@ -1109,6 +1238,25 @@ class LiveTradingWorker:
             max_correlated_exposure_pct=50.0,
             max_vol_weighted_exposure_pct=60.0,
             max_risk_contribution_pct=55.0,
+        )
+
+    def _load_execution_config(self) -> ExecutionConfig:
+        """Load execution configuration from settings."""
+        settings_path = self._configured_settings_path()
+        if settings_path:
+            try:
+                payload = yaml.safe_load(Path(settings_path).read_text(encoding="utf-8")) or {}
+                execution = payload.get("execution", {}) if isinstance(payload, dict) else {}
+                return ExecutionConfig(
+                    enable_reconciliation=bool(execution.get("enable_reconciliation", False)),
+                    reconciliation_state_path=str(execution.get("reconciliation_state_path", self.config.reconciliation_state_path)),
+                )
+            except Exception:
+                logger.warning(f"Failed to load execution config from {settings_path}, using defaults")
+        # Return default config if no settings file or load failed
+        return ExecutionConfig(
+            enable_reconciliation=self.config.enable_execution_reconciliation,
+            reconciliation_state_path=self.config.reconciliation_state_path,
         )
 
     def _normalized_execution_mode(self) -> str:
