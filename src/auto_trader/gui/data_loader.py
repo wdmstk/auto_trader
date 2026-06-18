@@ -48,6 +48,23 @@ FUTURES_TESTNET_ACCOUNT_PATH = "/fapi/v2/account"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 JOB_STATE_PATH = DATA_DIR / "runtime" / "gui_refresh_job.json"
 _GUI_ENV_LOADED = False
+_ALLOWED_DATA_ROOTS: tuple[Path, ...] = (
+    REPO_ROOT / "data",
+    Path("data").resolve(),
+)
+
+
+def _is_safe_data_path(path_str: str) -> bool:
+    """Validate that a user-supplied path stays within allowed data directories."""
+    try:
+        resolved = Path(path_str).resolve()
+    except (ValueError, OSError):
+        return False
+    return any(
+        resolved == root or str(resolved).startswith(str(root) + os.sep)
+        for root in _ALLOWED_DATA_ROOTS
+    )
+
 
 @st.cache_data(ttl=10, show_spinner=False)
 def _read_optional_cached(path_str: str) -> pd.DataFrame:

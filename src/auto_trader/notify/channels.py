@@ -5,11 +5,23 @@ import smtplib
 from collections.abc import Callable
 from email.message import EmailMessage
 from urllib.error import URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from auto_trader.notify.models import AlertMessage, SendResult
 
 HttpSender = Callable[[Request, float], tuple[int, str]]
+
+
+def _validate_webhook_url(url: str) -> None:
+    """Reject non-HTTPS webhook URLs to prevent accidental plaintext or SSRF."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("https",):
+        raise ValueError(f"webhook URL must use HTTPS scheme, got: {parsed.scheme!r}")
+    if not parsed.hostname:
+        raise ValueError("webhook URL has no hostname")
+
+
 EmailSender = Callable[[str, int, EmailMessage], tuple[bool, str]]
 
 
@@ -30,6 +42,7 @@ class SlackNotifier(Notifier):
         sender: HttpSender | None = None,
         timeout_sec: float = 5.0,
     ) -> None:
+        _validate_webhook_url(webhook_url)
         self.webhook_url = webhook_url
         self.sender = sender or _default_http_sender
         self.timeout_sec = timeout_sec
@@ -56,6 +69,7 @@ class WebhookNotifier(Notifier):
         sender: HttpSender | None = None,
         timeout_sec: float = 5.0,
     ) -> None:
+        _validate_webhook_url(endpoint_url)
         self.endpoint_url = endpoint_url
         self.headers = headers or {}
         self.sender = sender or _default_http_sender
@@ -172,6 +186,7 @@ def _default_http_sender(req: Request, timeout_sec: float) -> tuple[int, str]:
 def _default_email_sender(host: str, port: int, msg: EmailMessage) -> tuple[bool, str]:
     try:
         with smtplib.SMTP(host=host, port=port, timeout=5) as smtp:
+            smtp.starttls()
             smtp.send_message(msg)
         return True, ""
     except Exception:

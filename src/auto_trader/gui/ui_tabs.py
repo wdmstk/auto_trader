@@ -34,6 +34,7 @@ from auto_trader.gui.data_loader import (
     _discover_available_symbols,
     _discover_backtest_runs,
     _format_job_state,
+    _is_safe_data_path,
     _limit_evidence_frame,
     _live_pnl_frame,
     _live_pnl_summary,
@@ -1112,6 +1113,9 @@ def _render_live_logs_tab(*, runtime_metrics_path: Path) -> None:
         value=str(runtime_metrics_path),
         key="live_logs_runtime_metrics_path",
     )
+    if not _is_safe_data_path(metrics_path_text):
+        st.error("Path must be within the project data directory.")
+        return
     latest_metrics = _read_latest_jsonl_row(Path(metrics_path_text))
     if not latest_metrics:
         st.info("No runtime metrics found. Run `python -m auto_trader.monitor --watch ...` first.")
