@@ -464,17 +464,13 @@ def _render_controls() -> None:
     st.subheader("Emergency Controls", help="These actions require confirmation")
     col3, col4, col5 = st.columns(3)
     emergency_buttons = [
-        ("EMERGENCY_STOP", col3, "⛔ EMERGENCY STOP - This will immediately halt all trading activity", "danger"),
-        ("EMERGENCY_CANCEL", col4, "🔄 EMERGENCY CANCEL - This will cancel the emergency stop state", "warning"),
-        ("CLOSE_ALL", col5, "❌ CLOSE ALL - This will close all positions immediately", "danger"),
+        ("EMERGENCY_STOP", col3, "⛔ EMERGENCY STOP - This will immediately halt all trading activity"),
+        ("EMERGENCY_CANCEL", col4, "🔄 EMERGENCY CANCEL - This will cancel the emergency stop state"),
+        ("CLOSE_ALL", col5, "❌ CLOSE ALL - This will close all positions immediately"),
     ]
 
-    for action, col, help_text, button_type in emergency_buttons:
-        # Streamlit supports 'danger' and 'warning' types but mypy stubs don't include them
-        button_kwargs: dict[str, object] = {"use_container_width": True, "help": help_text}
-        if button_type in ("danger", "warning"):
-            button_kwargs["type"] = button_type
-        if col.button(action, **button_kwargs):
+    for action, col, help_text in emergency_buttons:
+        if col.button(action, type="primary", use_container_width=True, help=help_text):
             # Show confirmation dialog for emergency operations
             if st.session_state.get(f"confirmed_{action}", False):
                 now = datetime.now(UTC)
