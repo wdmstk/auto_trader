@@ -8,6 +8,8 @@ from pathlib import Path
 import yaml
 
 from auto_trader.regime.classifier import RegimeConfig
+from auto_trader.strategy.range_strategy import RangeStrategyConfig
+from auto_trader.strategy.trend_strategy import TrendStrategyConfig
 from auto_trader.worker.runner import LiveTradingWorker, WorkerConfig
 
 
@@ -219,6 +221,78 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=int(os.getenv("HIGH_VOL_COOLDOWN_BARS", "1")),
     )
+    # Range strategy parameters
+    p.add_argument(
+        "--range-rsi-min",
+        type=float,
+        default=float(os.getenv("RANGE_RSI_MIN", "35.0")),
+    )
+    p.add_argument(
+        "--range-rsi-max",
+        type=float,
+        default=float(os.getenv("RANGE_RSI_MAX", "55.0")),
+    )
+    p.add_argument(
+        "--range-wick-ratio-min",
+        type=float,
+        default=float(os.getenv("RANGE_WICK_RATIO_MIN", "0.3")),
+    )
+    p.add_argument(
+        "--range-mean-reversion-distance-max",
+        type=float,
+        default=float(os.getenv("RANGE_MEAN_REVERSION_DISTANCE_MAX", "0.0")),
+    )
+    p.add_argument(
+        "--range-min-entry-score",
+        type=float,
+        default=float(os.getenv("RANGE_MIN_ENTRY_SCORE", "0.5")),
+    )
+    p.add_argument(
+        "--range-require-reversal-candle",
+        type=lambda x: x.lower() in ("true", "1", "yes"),
+        default=_env_bool("RANGE_REQUIRE_REVERSAL_CANDLE", "0"),
+    )
+    # Trend strategy parameters
+    p.add_argument(
+        "--trend-breakout-persistence-min",
+        type=float,
+        default=float(os.getenv("TREND_BREAKOUT_PERSISTENCE_MIN", "0.5")),
+    )
+    p.add_argument(
+        "--trend-momentum-persistence-min",
+        type=float,
+        default=float(os.getenv("TREND_MOMENTUM_PERSISTENCE_MIN", "0.4")),
+    )
+    p.add_argument(
+        "--trend-pullback-shallowness-min",
+        type=float,
+        default=float(os.getenv("TREND_PULLBACK_SHALLOWNESS_MIN", "0.4")),
+    )
+    p.add_argument(
+        "--trend-higher-high-persistence-min",
+        type=float,
+        default=float(os.getenv("TREND_HIGHER_HIGH_PERSISTENCE_MIN", "0.4")),
+    )
+    p.add_argument(
+        "--trend-min-entry-score",
+        type=float,
+        default=float(os.getenv("TREND_MIN_ENTRY_SCORE", "0.75")),
+    )
+    # Cache configuration
+    p.add_argument(
+        "--cache-enabled",
+        action="store_true",
+        default=_env_bool("CACHE_ENABLED", "0"),
+    )
+    p.add_argument(
+        "--cache-dir",
+        default=os.getenv("CACHE_DIR", "data/cache/market_data"),
+    )
+    p.add_argument(
+        "--cache-ttl-seconds",
+        type=int,
+        default=int(os.getenv("CACHE_TTL_SECONDS", "60")),
+    )
     return p
 
 
@@ -273,6 +347,24 @@ def main() -> int:
             high_vol_sustained_min_bars=args.high_vol_sustained_min_bars,
             min_regime_hold_bars=args.min_regime_hold_bars,
             high_vol_cooldown_bars=args.high_vol_cooldown_bars,
+        ),
+        cache_enabled=bool(args.cache_enabled),
+        cache_dir=args.cache_dir,
+        cache_ttl_seconds=args.cache_ttl_seconds,
+        range_strategy=RangeStrategyConfig(
+            rsi_min=args.range_rsi_min,
+            rsi_max=args.range_rsi_max,
+            wick_ratio_min=args.range_wick_ratio_min,
+            mean_reversion_distance_max=args.range_mean_reversion_distance_max,
+            min_entry_score=args.range_min_entry_score,
+            require_reversal_candle=args.range_require_reversal_candle,
+        ),
+        trend_strategy=TrendStrategyConfig(
+            breakout_persistence_min=args.trend_breakout_persistence_min,
+            momentum_persistence_min=args.trend_momentum_persistence_min,
+            pullback_shallowness_min=args.trend_pullback_shallowness_min,
+            higher_high_persistence_min=args.trend_higher_high_persistence_min,
+            min_entry_score=args.trend_min_entry_score,
         ),
     )
     worker = LiveTradingWorker(config=config)

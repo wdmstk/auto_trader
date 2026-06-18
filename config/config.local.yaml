@@ -16,6 +16,33 @@ risk:
 runtime:
   emergency_stop_enabled: true
 
+execution:
+  enable_reconciliation: true
+  reconciliation_state_path: data/execution/reconciliation_state.json
+
 logging:
   level: INFO
   jsonl_path: logs/auto_trader.local.jsonl
+
+strategy:
+  range:
+    rsi_min: 30.0
+    rsi_max: 60.0
+    wick_ratio_min: 0.2
+    mean_reversion_distance_max: 0.0
+    min_entry_score: 0.5
+    require_reversal_candle: false
+  trend:
+    breakout_persistence_min: 0.5
+    momentum_persistence_min: 0.4
+    pullback_shallowness_min: 0.4
+    higher_high_persistence_min: 0.4
+    min_entry_score: 0.5
+
+worker:
+  trend_symbols: SOLUSDT,ETHUSDT,XRPUSDT
+  range_symbols: SOLUSDT,XRPUSDT
+  strategy_timeframe: 15m
+  cache_enabled: false
+  cache_dir: data/cache/market_data
+  cache_ttl_seconds: 60

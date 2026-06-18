@@ -65,6 +65,37 @@ def _inject_ui_stability_styles() -> None:
         [data-testid="stSidebar"] {
             opacity: 1 !important;
         }
+
+        /* Improve visual hierarchy and spacing */
+        .stMetric {
+            background-color: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            padding: 10px;
+            margin: 5px 0;
+        }
+
+        /* Enhanced button styling for emergency controls */
+        div[data-testid="stButton"] > button[kind="danger"] {
+            background-color: #ef4444;
+            color: white;
+            border: 2px solid #dc2626;
+        }
+
+        div[data-testid="stButton"] > button[kind="warning"] {
+            background-color: #f59e0b;
+            color: white;
+            border: 2px solid #d97706;
+        }
+
+        /* Improve data frame readability */
+        .dataframe {
+            font-size: 0.9em;
+        }
+
+        /* Better expander styling */
+        .streamlit-expanderHeader {
+            font-weight: 600;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -357,18 +388,64 @@ def _worker_state_key_parts(key: str) -> tuple[str, str, str]:
     return "", "", ""
 
 
+def _render_persistent_status_banner(
+    *,
+    runtime_state: dict[str, object],
+    worker_state: WorkerState,
+    runtime_metrics: dict[str, object],
+    risk_df: pd.DataFrame,
+) -> None:
+    """Render a persistent status banner that shows current system state prominently."""
+
+    # Determine current state level
+    emergency_stop = bool(runtime_state.get("emergency_stop", False))
+    trading_enabled = bool(runtime_state.get("trading_enabled", False))
+
+    # Get latest regime for additional context
+    latest_regime = "UNKNOWN"
+    if not risk_df.empty and "regime" in risk_df.columns:
+        latest_regime = str(risk_df.iloc[-1]["regime"])
+
+    # Determine banner color and message based on state
+    if emergency_stop:
+        banner_color = "🔴"  # Red for emergency
+        state_message = "EMERGENCY STOP ACTIVE - Trading halted"
+        st.error(f"{banner_color} {state_message}")
+    elif latest_regime in {"HIGH_VOL", "SUSTAINED"}:
+        banner_color = "🟠"  # Orange for high volatility
+        state_message = f"HIGH VOLATILITY DETECTED - Regime: {latest_regime}"
+        st.warning(f"{banner_color} {state_message}")
+    elif latest_regime == "SPIKE":
+        banner_color = "🟡"  # Yellow for spike
+        state_message = f"PRICE SPIKE DETECTED - Regime: {latest_regime}"
+        st.warning(f"{banner_color} {state_message}")
+    elif not trading_enabled:
+        banner_color = "🔵"  # Blue for trading disabled
+        state_message = "TRADING DISABLED - System in standby mode"
+        st.info(f"{banner_color} {state_message}")
+    else:
+        banner_color = "🟢"  # Green for normal operation
+        state_message = f"NORMAL OPERATION - Regime: {latest_regime}, Trading: ENABLED"
+        st.success(f"{banner_color} {state_message}")
+
+    # Add timestamp and additional context
+    if runtime_state.get("updated_at"):
+        updated_time = runtime_state["updated_at"]
+        st.caption(f"State updated at: {updated_time} | Worker: {worker_state.updated_at}")
+
+
 def _render_controls() -> None:
     st.subheader("Controls")
-    col1, col2, col3, col4, col5 = st.columns(5)
-    buttons = [
+
+    # Separate normal controls from emergency controls for better visual hierarchy
+    col1, col2 = st.columns(2)
+    normal_buttons = [
         ("START", col1),
         ("STOP", col2),
-        ("EMERGENCY_STOP", col3),
-        ("EMERGENCY_CANCEL", col4),
-        ("CLOSE_ALL", col5),
     ]
-    for action, col in buttons:
-        if col.button(action, type="primary" if "EMERGENCY" in action else "secondary"):
+
+    for action, col in normal_buttons:
+        if col.button(action, type="primary", use_container_width=True):
             now = datetime.now(UTC)
             append_control_event(
                 CONTROL_LOG,
@@ -380,6 +457,38 @@ def _render_controls() -> None:
                 ),
             )
             st.success(f"{action} recorded")
+
+    st.markdown("---")  # Visual separator
+
+    # Emergency controls with confirmation dialogs
+    st.subheader("Emergency Controls", help="These actions require confirmation")
+    col3, col4, col5 = st.columns(3)
+    emergency_buttons = [
+        ("EMERGENCY_STOP", col3, "⛔ EMERGENCY STOP - This will immediately halt all trading activity", "danger"),
+        ("EMERGENCY_CANCEL", col4, "🔄 EMERGENCY CANCEL - This will cancel the emergency stop state", "warning"),
+        ("CLOSE_ALL", col5, "❌ CLOSE ALL - This will close all positions immediately", "danger"),
+    ]
+
+    for action, col, help_text, button_type in emergency_buttons:
+        if col.button(action, type=button_type, use_container_width=True, help=help_text):
+            # Show confirmation dialog for emergency operations
+            if st.session_state.get(f"confirmed_{action}", False):
+                now = datetime.now(UTC)
+                append_control_event(
+                    CONTROL_LOG,
+                    ControlEvent(
+                        action=action,  # type: ignore[arg-type]
+                        requested_at=now,
+                        applied_at=now,
+                        result="accepted",
+                    ),
+                )
+                st.success(f"{action} recorded")
+                st.session_state[f"confirmed_{action}"] = False
+            else:
+                st.session_state[f"confirmed_{action}"] = True
+                st.warning(f"⚠️ CONFIRMATION REQUIRED: {help_text}")
+                st.button(f"Confirm {action}", type="primary", key=f"confirm_{action}")
 
 
 def _render_candlestick_overlay(overlay: pd.DataFrame) -> None:
@@ -2718,6 +2827,14 @@ def _render_overview_tab(
     candidate_report: dict[str, object],
     weekly_report: Mapping[str, object] | None = None,
 ) -> None:
+    # Render persistent status banner at the top for immediate visibility
+    _render_persistent_status_banner(
+        runtime_state=runtime_state,
+        worker_state=worker_state,
+        runtime_metrics=runtime_metrics,
+        risk_df=risk_df,
+    )
+
     _render_status_cards(
         runtime_state=runtime_state,
         worker_state=worker_state,
@@ -2754,12 +2871,23 @@ def _render_overview_tab(
 
     if not risk_df.empty and "timestamp" in risk_df.columns:
         ts = pd.to_datetime(risk_df.iloc[-1]["timestamp"], utc=True).to_pydatetime()
+        now = datetime.now(UTC)
+        age_seconds = (now - ts).total_seconds()
+
         if is_stale(ts, datetime.now(UTC), max_delay_sec=DATA_STALE_WARN_SEC):
-            st.warning("Risk data is stale")
+            # Enhanced stale data warning with visual indicators
+            st.error(f"🚨 RISK DATA IS STALE - Last update: {age_seconds:.1f}s ago (threshold: {DATA_STALE_WARN_SEC}s)")
+
+            if age_seconds > DATA_STALE_CRIT_SEC:
+                st.error("🔴 CRITICAL: Data is significantly stale - system may be operating on outdated information")
+            else:
+                st.warning("🟠 WARNING: Data is stale - verify data pipeline is functioning")
         else:
-            st.info("Risk data is fresh")
+            # Fresh data indication with age information
+            freshness_emoji = "🟢" if age_seconds < 15 else "🟡"
+            st.success(f"{freshness_emoji} Risk data is fresh - Last update: {age_seconds:.1f}s ago")
     else:
-        st.warning("Risk data unavailable")
+        st.warning("🟡 Risk data unavailable - verify data pipeline")
 
     health_level, health_messages = _status_banner(
         runtime_state=runtime_state,
@@ -2781,20 +2909,51 @@ def _render_overview_tab(
         candidate_report=candidate_report,
     )
     st.subheader("Decision summary")
-    summary_cols = st.columns(3)
-    summary_cols[0].metric(
-        "Current state",
-        "Trading ON" if runtime_state.get("trading_enabled", False) else "Trading OFF",
-    )
-    summary_cols[1].metric("Route focus", summary["focus"])
-    summary_cols[2].metric("Next action", summary["next_action"])
-    st.caption(
-        f"health={summary['health_level']}, decision={summary['decision_status']}, "
-        f"limit_fill_rate={summary['limit_fill_rate']:.3f}, "
-        f"limit_taker_like_rate={summary['limit_taker_like_rate']:.3f}"
-    )
-    for reason in summary["reasons"]:
-        st.caption(f"- {reason}")
+
+    # Enhanced decision summary with better visual hierarchy
+    summary_container = st.container()
+    with summary_container:
+        # Add visual emphasis based on health level
+        health_level = summary.get("health_level", "unknown")
+        if health_level == "critical":
+            st.markdown("🚨 **CRITICAL DECISION REQUIRED**")
+        elif health_level == "warning":
+            st.markdown("⚠️ **ATTENTION REQUIRED**")
+        else:
+            st.markdown("✅ **SYSTEM NOMINAL**")
+
+        # Main decision metrics with larger, more prominent display
+        summary_cols = st.columns(3)
+
+        # Current state with visual indicator
+        trading_state = "Trading ON" if runtime_state.get("trading_enabled", False) else "Trading OFF"
+        state_emoji = "🟢" if runtime_state.get("trading_enabled", False) else "🔴"
+        summary_cols[0].metric(f"{state_emoji} Current state", trading_state)
+
+        # Route focus with context
+        focus_emoji = "🎯" if summary.get("focus") else "❓"
+        summary_cols[1].metric(f"{focus_emoji} Route focus", summary["focus"])
+
+        # Next action with priority indicator
+        next_action = summary["next_action"]
+        action_emoji = "⚡" if health_level in ["critical", "warning"] else "🔄"
+        summary_cols[2].metric(f"{action_emoji} Next action", next_action)
+
+        # Detailed metrics in expandable section
+        with st.expander("📊 Detailed decision metrics", expanded=False):
+            st.caption(
+                f"health={summary['health_level']}, decision={summary['decision_status']}, "
+                f"limit_fill_rate={summary['limit_fill_rate']:.3f}, "
+                f"limit_taker_like_rate={summary['limit_taker_like_rate']:.3f}"
+            )
+
+            # Display reasons with better formatting
+            if summary["reasons"]:
+                st.markdown("**Decision reasons:**")
+                for reason in summary["reasons"]:
+                    st.markdown(f"• {reason}")
+            else:
+                st.info("No specific reasons recorded")
 
     st.subheader("Runtime snapshot")
     snapshot = pd.DataFrame(
@@ -3068,17 +3227,38 @@ def _render_trading_tab(
 
     worker_frame = _worker_last_results_frame(worker_state)
     if worker_frame.empty:
-        st.info("No worker results yet. Waiting for the worker to complete and persist " "at least one cycle.")
+        st.info("⏳ No worker results yet. Waiting for the worker to complete and persist at least one cycle.")
     else:
         worker_frame["why_not_trading"] = worker_frame.apply(lambda row: _worker_status_reason(row.to_dict()), axis=1)
+
+        # Add visual status indicators
+        def _get_status_emoji(status: str) -> str:
+            status_lower = str(status).lower()
+            if "active" in status_lower or "trading" in status_lower:
+                return "🟢"
+            elif "blocked" in status_lower or "error" in status_lower:
+                return "🔴"
+            elif "warning" in status_lower or "pending" in status_lower:
+                return "🟡"
+            else:
+                return "⚪"
+
+        # Add emoji indicators for key columns
+        if "status" in worker_frame.columns:
+            worker_frame = worker_frame.copy()
+            worker_frame["status_display"] = worker_frame["status"].apply(lambda x: f"{_get_status_emoji(x)} {x}")
+
+        if "risk_blocked" in worker_frame.columns:
+            worker_frame["risk_blocked_display"] = worker_frame["risk_blocked"].apply(lambda x: "🚫 BLOCKED" if x else "✅ CLEAR")
+
         cols = [
             "symbol",
-            "status",
+            "status_display" if "status_display" in worker_frame.columns else "status",
             "why_not_trading",
             "trade_status",
             "gateway_status",
             "gateway_reason",
-            "risk_blocked",
+            "risk_blocked_display" if "risk_blocked_display" in worker_frame.columns else "risk_blocked",
             "entry_signal",
             "exit_signal",
             "add_signal",
@@ -3086,35 +3266,79 @@ def _render_trading_tab(
             "reason_codes",
         ]
         available = [col for col in cols if col in worker_frame.columns]
-        st.dataframe(worker_frame[available], use_container_width=True)
+
+        # Display with better formatting
+        st.dataframe(
+            worker_frame[available],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        # Add summary statistics
+        total_routes = len(worker_frame)
+        blocked_count = len(worker_frame[worker_frame.get("risk_blocked", False)])
+        active_count = total_routes - blocked_count
+
+        st.caption(f"📊 Route summary: {active_count} active / {blocked_count} blocked / {total_routes} total")
 
     st.subheader("Live trade routes")
     route_frame = _worker_trade_routes_frame(worker_state)
     if route_frame.empty:
         route_frame = _candidate_trade_routes_frame(candidate_report)
         if not route_frame.empty:
-            st.caption("Worker cycle results are not available yet. Showing configured " "live routes from the current route-selection manifest.")
+            st.caption("📋 Worker cycle results are not available yet. Showing configured live routes from the current route-selection manifest.")
     if route_frame.empty:
-        st.info("No live trade routes yet.")
+        st.info("⏳ No live trade routes yet.")
     else:
+        # Add visual indicators for route types
+        def _get_route_type_emoji(status: str) -> str:
+            status_lower = str(status).lower()
+            if "primary" in status_lower or "core" in status_lower:
+                return "⭐"
+            elif "shadow" in status_lower or "backup" in status_lower:
+                return "🔄"
+            elif "probe" in status_lower:
+                return "🔍"
+            else:
+                return "📊"
+
+        if "candidate_status" in route_frame.columns:
+            route_frame = route_frame.copy()
+            route_frame["route_type_display"] = route_frame["candidate_status"].apply(lambda x: f"{_get_route_type_emoji(x)} {x}")
+
+        # Add status indicators
+        if "risk_blocked" in route_frame.columns:
+            route_frame["blocking_status"] = route_frame["risk_blocked"].apply(lambda x: "🚫" if x else "✅")
+
         route_cols = [
             col
             for col in [
                 "symbol",
                 "strategy",
                 "timeframe",
+                "route_type_display" if "route_type_display" in route_frame.columns else "candidate_status",
                 "expected_regime",
-                "candidate_status",
                 "status",
                 "trade_status",
                 "signal_regime",
                 "entry_signal",
                 "exit_signal",
-                "risk_blocked",
+                "blocking_status" if "blocking_status" in route_frame.columns else "risk_blocked",
             ]
             if col in route_frame.columns
         ]
-        st.dataframe(route_frame[route_cols], use_container_width=True)
+
+        st.dataframe(
+            route_frame[route_cols],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        # Add route type summary
+        if "candidate_status" in route_frame.columns:
+            status_counts = route_frame["candidate_status"].value_counts()
+            summary_text = " | ".join([f"{count} {status}" for status, count in status_counts.items()])
+            st.caption(f"📊 Route composition: {summary_text}")
 
     st.subheader("Last processed bars")
     if not worker_state.last_processed_bars:
