@@ -73,6 +73,16 @@ class StrategyConfig(BaseModel):
     trend: dict[str, Any] = {}
 
 
+class WorkerConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    trend_symbols: str = ""
+    range_symbols: str = ""
+    strategy_timeframe: str = "15m"
+    cache_enabled: bool = False
+    cache_dir: str = "data/cache/market_data"
+    cache_ttl_seconds: int = 60
+
+
 class LoggingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     level: LoggingLevel = LoggingLevel.INFO
@@ -87,6 +97,7 @@ class Settings(BaseModel):
     runtime: RuntimeConfig
     execution: ExecutionConfig = ExecutionConfig()
     strategy: StrategyConfig = StrategyConfig()
+    worker: WorkerConfig = WorkerConfig()
     logging: LoggingConfig
 
     @model_validator(mode="after")
