@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -14,6 +15,8 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from auto_trader.exchange.models import OrderRequest
+
+logger = logging.getLogger(__name__)
 
 HttpSender = Callable[[Request, float], str]
 
@@ -99,12 +102,14 @@ class BinanceRestTransport:
             return False, "", "network_error"
         except TimeoutError:
             return False, "", "timeout"
-        except Exception:
-            return False, "", "rest_error"
+        except Exception as exc:
+            logger.warning("send_order unexpected error: %s", exc)
+            return False, "", f"rest_error:{exc.__class__.__name__}"
 
         try:
             parsed = json.loads(raw)
-        except Exception:
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            logger.warning("send_order invalid response: %s body=%s", exc, raw[:200])
             return False, "", "invalid_response"
 
         order_id = str(parsed.get("orderId", ""))
@@ -133,12 +138,14 @@ class BinanceRestTransport:
             return [], "network_error"
         except TimeoutError:
             return [], "timeout"
-        except Exception:
-            return [], "rest_error"
+        except Exception as exc:
+            logger.warning("fetch_account_positions unexpected error: %s", exc)
+            return [], f"rest_error:{exc.__class__.__name__}"
 
         try:
             parsed = json.loads(raw)
-        except Exception:
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            logger.warning("fetch_account_positions invalid response: %s body=%s", exc, raw[:200])
             return [], "invalid_response"
         if not isinstance(parsed, dict):
             return [], "invalid_response"
@@ -231,6 +238,7 @@ def _sync_timestamp_offset_ms(config: RestClientConfig, sender: HttpSender) -> i
         local_time = int(time.time() * 1000)
         return server_time - local_time
     except Exception:
+        logger.warning("time_sync failed, using zero offset", exc_info=True)
         return 0
 
 
@@ -246,6 +254,7 @@ def _fetch_symbol_precision(
         raw = sender(req, config.timeout_sec)
         payload = json.loads(raw)
     except Exception:
+        logger.warning("fetch_symbol_precision failed for %s", symbol, exc_info=True)
         return SymbolPrecision()
     symbols = payload.get("symbols", [])
     if not isinstance(symbols, list):

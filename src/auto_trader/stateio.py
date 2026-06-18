@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import time
@@ -8,6 +9,8 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import TypeVar
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
@@ -109,13 +112,15 @@ def read_json_with_recovery(path: str | Path) -> dict[str, object]:
         if isinstance(payload, dict):
             return payload
     except Exception:
-        pass
+        logger.warning("state file unreadable at %s, trying backup", target, exc_info=True)
     try:
         payload = json.loads(backup.read_text(encoding="utf-8"))
         if isinstance(payload, dict):
+            logger.info("recovered state from backup %s", backup)
             return payload
     except Exception:
-        pass
+        if target.exists() or backup.exists():
+            logger.warning("state recovery failed for %s (backup also unreadable)", target, exc_info=True)
     return {}
 
 
