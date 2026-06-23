@@ -248,6 +248,29 @@ journalctl --user -u auto-trader-risk-refresh.service -f
 > `positions.parquet` は `order_events.jsonl` の ACK 取引から再構成できる。
 > その後 `risk_input` を再生成し、最後に `risk_eval` を更新する。
 
+### LivePnL 用 OHLCV 更新
+GUI の LivePnL 計算で使用する最新価格を取得するための定期更新です。
+専用ディレクトリ `data/live_pnl/ohlcv/` に保存し、既存の `data/parquet/` との整合性問題を回避します。
+
+テンプレート:
+- [auto-trader-ohlcv-refresh.user.service.example](/home/komug/projects/auto_trader/ops/systemd/auto-trader-ohlcv-refresh.user.service.example:1)
+- [auto-trader-ohlcv-refresh.user.timer.example](/home/komug/projects/auto_trader/ops/systemd/auto-trader-ohlcv-refresh.user.timer.example:1)
+
+```bash
+cp ops/systemd/auto-trader-ohlcv-refresh.user.service.example ~/.config/systemd/user/auto-trader-ohlcv-refresh.service
+cp ops/systemd/auto-trader-ohlcv-refresh.user.timer.example ~/.config/systemd/user/auto-trader-ohlcv-refresh.timer
+systemctl --user daemon-reload
+systemctl --user enable --now auto-trader-ohlcv-refresh.timer
+systemctl --user status auto-trader-ohlcv-refresh.timer
+systemctl --user start auto-trader-ohlcv-refresh.service
+journalctl --user -u auto-trader-ohlcv-refresh.service -f
+```
+
+> LivePnL 専用ディレクトリ構成:
+> - `data/live_pnl/ohlcv/{symbol}_{timeframe}.parquet` - LivePnL 用最新価格
+> - GUI はこのディレクトリを優先し、なければ `data/parquet/` をフォールバック
+> - 既存の signals/regime データとの整合性チェックに影響しない
+
 ## cron サンプル
 常駐でなく1分毎実行する場合:
 
@@ -262,6 +285,7 @@ journalctl --user -u auto-trader-risk-refresh.service -f
 - 緊急停止時に `emergency_stop=true` になること
 - `control_state.json.lock` が長時間残留していないこと
 - `control_state.json.bak` が存在し、更新追従していること
+- `data/live_pnl/ohlcv/` のファイルが5分間隔で更新されていること（LivePnL用）
 
 ## 実行頻度の目安
 
@@ -277,6 +301,9 @@ journalctl --user -u auto-trader-risk-refresh.service -f
 - `auto-trader-risk-refresh.timer`
   - `positions -> risk_input -> risk_eval` を定期再計算する
   - stale 回避目的では 20〜30 秒程度が目安
+- `auto-trader-ohlcv-refresh.timer`
+  - LivePnL 計算用の最新価格を定期取得する
+  - デフォルトは5分間隔、`data/live_pnl/ohlcv/` に保存
 
 ### 日次
 - `python -m auto_trader.backtest ...`

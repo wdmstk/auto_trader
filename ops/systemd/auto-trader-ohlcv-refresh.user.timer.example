@@ -1,0 +1,11 @@
+[Unit]
+Description=Auto Trader OHLCV Refresh Timer for Positions (User)
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=5min
+AccuracySec=1s
+Unit=auto-trader-ohlcv-refresh.service
+
+[Install]
+WantedBy=timers.target

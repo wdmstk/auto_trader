@@ -95,7 +95,8 @@ from auto_trader.gui.utils import (
 from auto_trader.stateio import read_json_with_recovery
 from auto_trader.worker.state import WorkerState
 
-AUTO_REFRESH_SEC = 10.0
+AUTO_REFRESH_SEC = 10.0  # Default, can be overridden by passing refresh_interval to render functions
+
 
 def _render_status_cards(
     *,
@@ -222,7 +223,7 @@ def _render_overview_tab(
         risk_df=risk_df,
         risk_input_df=risk_input_df,
     )
-    with st.expander("Health details", expanded=health_level != "ok"):
+    with st.expander("Health details", expanded=False):
         for message in health_messages:
             st.write(f"- {message}")
 
@@ -265,7 +266,7 @@ def _render_overview_tab(
         action_emoji = "⚡" if health_level in ["critical", "warning"] else "🔄"
         summary_cols[2].metric(f"{action_emoji} Next action", next_action)
 
-        # Detailed metrics in expandable section
+        # Detailed metrics in expandable section (collapsed by default for performance)
         with st.expander("📊 Detailed decision metrics", expanded=False):
             st.caption(
                 f"health={summary['health_level']}, decision={summary['decision_status']}, "
@@ -298,230 +299,234 @@ def _render_overview_tab(
     st.dataframe(snapshot, width="stretch")
 
     st.subheader("Live PnL")
-    live_pnl_frame = _live_pnl_frame(position_df)
-    if live_pnl_frame.empty:
-        st.info("No open positions yet.")
-    else:
-        live_pnl_cols = [
-            col
-            for col in [
-                "symbol",
-                "side",
-                "qty",
-                "avg_entry",
-                "mark_price",
-                "source_price",
-                "unrealized_pnl",
-                "unrealized_pnl_pct",
-                "position_value",
+    with st.expander("Show positions", expanded=False):
+        live_pnl_frame = _live_pnl_frame(position_df)
+        if live_pnl_frame.empty:
+            st.info("No open positions yet.")
+        else:
+            live_pnl_cols = [
+                col
+                for col in [
+                    "symbol",
+                    "side",
+                    "qty",
+                    "avg_entry",
+                    "mark_price",
+                    "source_price",
+                    "unrealized_pnl",
+                    "unrealized_pnl_pct",
+                    "position_value",
+                ]
+                if col in live_pnl_frame.columns
             ]
-            if col in live_pnl_frame.columns
-        ]
-        st.dataframe(live_pnl_frame[live_pnl_cols], width="stretch", hide_index=True)
+            st.dataframe(live_pnl_frame[live_pnl_cols], width="stretch", hide_index=True)
 
     _render_exchange_position_sync(position_df)
 
-    candidate_rows = _candidate_frame(candidate_report)
-    candidate_watchlist = _candidate_frame(candidate_report, "watchlist")
-    best_rows = candidate_report.get("best_by_symbol_strategy", [])
-    candidate_status_map: dict[str, str] = {}
-    if isinstance(best_rows, list):
-        for row in best_rows:
-            if isinstance(row, dict):
-                row_map = cast(dict[str, object], row)
-                candidate_status_map[str(row_map.get("symbol", ""))] = str(row_map.get("candidate_status", ""))
-    active_symbols = _active_worker_symbols(worker_state)
-    candidate_rows_raw = candidate_report.get("rows", [])
-    candidate_symbols_set: set[str] = set()
-    if isinstance(candidate_rows_raw, list):
-        for row in candidate_rows_raw:
-            if isinstance(row, dict):
-                row_map = cast(dict[str, object], row)
-                symbol = str(row_map.get("symbol", ""))
-                if symbol:
-                    candidate_symbols_set.add(symbol)
-    candidate_symbols = sorted(candidate_symbols_set)
-    watchlist_symbols = (
-        sorted(candidate_watchlist["symbol"].astype(str).unique().tolist()) if not candidate_watchlist.empty and "symbol" in candidate_watchlist.columns else []
-    )
-    regime_symbols = sorted(set(active_symbols) | set(candidate_symbols))
-    show_core = st.checkbox("Show core", value=True, key="overview_symbols_show_core")
-    show_watchlist = st.checkbox("Show watchlist", value=False, key="overview_symbols_show_watchlist")
-    show_probe = st.checkbox("Show probe", value=False, key="overview_symbols_show_probe")
-    status_filter: set[str] = set()
-    if show_core:
-        status_filter.add("core")
-    if show_watchlist:
-        status_filter.add("watchlist")
-    if show_probe:
-        status_filter.add("probe")
-
-    def _filter_status(frame: pd.DataFrame) -> pd.DataFrame:
-        if frame.empty:
-            return frame
-        if not status_filter:
-            return frame.iloc[0:0].copy()
-        return frame[frame["candidate_status"].isin(status_filter)].copy()
-
-    def _render_strategy_table(strategy: str, title: str) -> None:
-        table = _strategy_symbol_table(
-            candidate_rows=candidate_rows,
-            strategy=strategy,
-            worker_state=worker_state,
-            risk_df=risk_df,
-            candidate_status_map=candidate_status_map,
-            active_symbols=set(active_symbols),
-            watchlist_symbols=set(watchlist_symbols),
+    with st.expander("Strategy performance tables", expanded=False):
+        candidate_rows = _candidate_frame(candidate_report)
+        candidate_watchlist = _candidate_frame(candidate_report, "watchlist")
+        best_rows = candidate_report.get("best_by_symbol_strategy", [])
+        candidate_status_map: dict[str, str] = {}
+        if isinstance(best_rows, list):
+            for row in best_rows:
+                if isinstance(row, dict):
+                    row_map = cast(dict[str, object], row)
+                    candidate_status_map[str(row_map.get("symbol", ""))] = str(row_map.get("candidate_status", ""))
+        active_symbols = _active_worker_symbols(worker_state)
+        candidate_rows_raw = candidate_report.get("rows", [])
+        candidate_symbols_set: set[str] = set()
+        if isinstance(candidate_rows_raw, list):
+            for row in candidate_rows_raw:
+                if isinstance(row, dict):
+                    row_map = cast(dict[str, object], row)
+                    symbol = str(row_map.get("symbol", ""))
+                    if symbol:
+                        candidate_symbols_set.add(symbol)
+        candidate_symbols = sorted(candidate_symbols_set)
+        watchlist_symbols = (
+            sorted(candidate_watchlist["symbol"].astype(str).unique().tolist())
+            if not candidate_watchlist.empty and "symbol" in candidate_watchlist.columns
+            else []
         )
-        table = _filter_status(table)
-        st.subheader(title)
-        if table.empty:
-            st.info("No symbol rows match the current candidate-status filters.")
-            return
-        display_cols = [
-            col
-            for col in [
-                "symbol",
-                "route",
-                "candidate_status",
-                "strategy",
-                "timeframe",
-                "pf_mean",
-                "expectancy_bps_mean",
-                "max_dd_mean",
-                "closed_trades_mean",
-                "regime",
-                "regime_timeframe",
-                "why_not_trading",
-                "risk_blocked",
-                "entry_signal",
-                "pass_filter",
-                "last_processed_bar",
-                "exposure_pct",
-                "dd_pct",
-                "size_scale",
-                "cycle_state",
-                "trade_status",
-            ]
-            if col in table.columns
-        ]
-        st.dataframe(table[display_cols], width="stretch", hide_index=True)
+        regime_symbols = sorted(set(active_symbols) | set(candidate_symbols))
+        show_core = st.checkbox("Show core", value=True, key="overview_symbols_show_core")
+        show_watchlist = st.checkbox("Show watchlist", value=False, key="overview_symbols_show_watchlist")
+        show_probe = st.checkbox("Show probe", value=False, key="overview_symbols_show_probe")
+        status_filter: set[str] = set()
+        if show_core:
+            status_filter.add("core")
+        if show_watchlist:
+            status_filter.add("watchlist")
+        if show_probe:
+            status_filter.add("probe")
 
-    _render_strategy_table("trend", "Trend performance")
-    _render_strategy_table("range", "Range performance")
+        def _filter_status(frame: pd.DataFrame) -> pd.DataFrame:
+            if frame.empty:
+                return frame
+            if not status_filter:
+                return frame.iloc[0:0].copy()
+            return frame[frame["candidate_status"].isin(status_filter)].copy()
+
+        def _render_strategy_table(strategy: str, title: str) -> None:
+            table = _strategy_symbol_table(
+                candidate_rows=candidate_rows,
+                strategy=strategy,
+                worker_state=worker_state,
+                risk_df=risk_df,
+                candidate_status_map=candidate_status_map,
+                active_symbols=set(active_symbols),
+                watchlist_symbols=set(watchlist_symbols),
+            )
+            table = _filter_status(table)
+            st.subheader(title)
+            if table.empty:
+                st.info("No symbol rows match the current candidate-status filters.")
+                return
+            display_cols = [
+                col
+                for col in [
+                    "symbol",
+                    "route",
+                    "candidate_status",
+                    "strategy",
+                    "timeframe",
+                    "pf_mean",
+                    "expectancy_bps_mean",
+                    "max_dd_mean",
+                    "closed_trades_mean",
+                    "regime",
+                    "regime_timeframe",
+                    "why_not_trading",
+                    "risk_blocked",
+                    "entry_signal",
+                    "pass_filter",
+                    "last_processed_bar",
+                    "exposure_pct",
+                    "dd_pct",
+                    "size_scale",
+                    "cycle_state",
+                    "trade_status",
+                ]
+                if col in table.columns
+            ]
+            st.dataframe(table[display_cols], width="stretch", hide_index=True)
+
+        _render_strategy_table("trend", "Trend performance")
+        _render_strategy_table("range", "Range performance")
 
     limit_frame = _limit_evidence_frame(candidate_report)
-    st.subheader("Limit evidence")
-    if limit_frame.empty:
-        st.info("No limit evidence available in the current candidate report.")
-    else:
-        st.dataframe(limit_frame, width="stretch", hide_index=True)
+    with st.expander("Limit evidence", expanded=False):
+        if limit_frame.empty:
+            st.info("No limit evidence available in the current candidate report.")
+        else:
+            st.dataframe(limit_frame, width="stretch", hide_index=True)
     _render_range_probe_candidates(candidate_report)
 
-    st.subheader("Regime by symbol")
-    if not regime_symbols:
-        st.info("No symbols available for regime view.")
-    else:
-        regime_view = regime_snapshot[regime_snapshot["symbol"].isin(regime_symbols)].copy()
-        if regime_view.empty:
-            st.info("No regime parquet files found for watchlist or active symbols.")
+    with st.expander("Regime by symbol", expanded=False):
+        if not regime_symbols:
+            st.info("No symbols available for regime view.")
         else:
-            show_active = st.checkbox("Show active", value=True, key="regime_show_active")
-            show_watchlist = st.checkbox("Show watchlist", value=False, key="regime_show_watchlist")
-            purpose_rows = []
-            active_set = set(active_symbols)
-            watchlist_set = set(watchlist_symbols)
-            for _, row in regime_view.iterrows():
-                symbol = str(row.get("symbol", ""))
-                if symbol in active_set and symbol in watchlist_set:
-                    purpose = "active+watchlist"
-                elif symbol in active_set:
-                    purpose = "active"
-                elif symbol in watchlist_set:
-                    purpose = "watchlist"
+            regime_view = regime_snapshot[regime_snapshot["symbol"].isin(regime_symbols)].copy()
+            if regime_view.empty:
+                st.info("No regime parquet files found for watchlist or active symbols.")
+            else:
+                show_active = st.checkbox("Show active", value=True, key="regime_show_active")
+                show_watchlist = st.checkbox("Show watchlist", value=False, key="regime_show_watchlist")
+                purpose_rows = []
+                active_set = set(active_symbols)
+                watchlist_set = set(watchlist_symbols)
+                for _, row in regime_view.iterrows():
+                    symbol = str(row.get("symbol", ""))
+                    if symbol in active_set and symbol in watchlist_set:
+                        purpose = "active+watchlist"
+                    elif symbol in active_set:
+                        purpose = "active"
+                    elif symbol in watchlist_set:
+                        purpose = "watchlist"
+                    else:
+                        purpose = "candidate"
+                    purpose_rows.append({**cast(dict[str, object], row.to_dict()), "purpose": purpose})
+                regime_display = pd.DataFrame(purpose_rows)
+                enabled_purposes = {
+                    purpose
+                    for purpose, enabled in (
+                        ("active", show_active),
+                        ("active+watchlist", show_active or show_watchlist),
+                        ("watchlist", show_watchlist),
+                        ("candidate", False),
+                    )
+                    if enabled
+                }
+                if enabled_purposes:
+                    regime_display = regime_display[regime_display["purpose"].isin(enabled_purposes)].copy()
                 else:
-                    purpose = "candidate"
-                purpose_rows.append({**cast(dict[str, object], row.to_dict()), "purpose": purpose})
-            regime_display = pd.DataFrame(purpose_rows)
-            enabled_purposes = {
-                purpose
-                for purpose, enabled in (
-                    ("active", show_active),
-                    ("active+watchlist", show_active or show_watchlist),
-                    ("watchlist", show_watchlist),
-                    ("candidate", False),
-                )
-                if enabled
-            }
-            if enabled_purposes:
-                regime_display = regime_display[regime_display["purpose"].isin(enabled_purposes)].copy()
-            else:
-                regime_display = regime_display.iloc[0:0].copy()
-            loaded_symbols = set(regime_view["symbol"].astype(str))
-            regime_display = regime_display[["symbol", "timeframe", "purpose", "regime", "age", "updated_at"]].copy()
-            if regime_display.empty:
-                st.info("No regime rows match the current filters.")
-            else:
-                st.dataframe(regime_display, width="stretch", hide_index=True)
-            missing = sorted(set(regime_symbols) - loaded_symbols)
-            if missing:
-                st.warning(f"Missing regime files for: {', '.join(missing)}")
+                    regime_display = regime_display.iloc[0:0].copy()
+                loaded_symbols = set(regime_view["symbol"].astype(str))
+                regime_display = regime_display[["symbol", "timeframe", "purpose", "regime", "age", "updated_at"]].copy()
+                if regime_display.empty:
+                    st.info("No regime rows match the current filters.")
+                else:
+                    st.dataframe(regime_display, width="stretch", hide_index=True)
+                missing = sorted(set(regime_symbols) - loaded_symbols)
+                if missing:
+                    st.warning(f"Missing regime files for: {', '.join(missing)}")
 
-    st.subheader("Data sources")
-    runtime_env_path = DATA_DIR / "validation" / "weekly_autotune" / "route_selection_runtime.env"
-    runtime_route_path = _route_selection_path()
-    weekly_report_path = _weekly_revalidation_report_path()
-    source_rows = [
-        _source_snapshot(
-            name="runtime_state",
-            path=DATA_DIR / "runtime" / "control_state.json",
-            timestamp_column=None,
-        ),
-        _source_snapshot(
-            name="worker_state",
-            path=DATA_DIR / "runtime" / "worker_state.json",
-            timestamp_column=None,
-        ),
-        _source_snapshot(
-            name="positions",
-            path=DATA_DIR / "positions" / "positions.parquet",
-            frame=position_df,
-            timestamp_column="updated_at" if "updated_at" in position_df.columns else None,
-        ),
-        _source_snapshot(
-            name="runtime_metrics",
-            path=DEFAULT_RUNTIME_METRICS_PATH,
-            timestamp_column=None,
-        ),
-        _source_snapshot(
-            name="risk_eval",
-            path=DATA_DIR / "risk" / "risk_eval.parquet",
-            frame=risk_df,
-            timestamp_column="timestamp" if "timestamp" in risk_df.columns else None,
-        ),
-        _source_snapshot(
-            name="risk_input",
-            path=DATA_DIR / "risk" / "risk_input.parquet",
-            frame=risk_input_df,
-            timestamp_column="timestamp" if "timestamp" in risk_input_df.columns else None,
-        ),
-        _source_snapshot(
-            name="route_selection_runtime_env",
-            path=runtime_env_path,
-            timestamp_column=None,
-        ),
-        _source_snapshot(
-            name="weekly_revalidation_report",
-            path=weekly_report_path,
-            timestamp_column=None,
-        ),
-        _source_snapshot(
-            name="runtime_route_selection",
-            path=runtime_route_path,
-            timestamp_column=None,
-        ),
-    ]
-    st.dataframe(pd.DataFrame(source_rows), width="stretch")
+    with st.expander("Data sources", expanded=False):
+        runtime_env_path = DATA_DIR / "validation" / "weekly_autotune" / "route_selection_runtime.env"
+        runtime_route_path = _route_selection_path()
+        weekly_report_path = _weekly_revalidation_report_path()
+        source_rows = [
+            _source_snapshot(
+                name="runtime_state",
+                path=DATA_DIR / "runtime" / "control_state.json",
+                timestamp_column=None,
+            ),
+            _source_snapshot(
+                name="worker_state",
+                path=DATA_DIR / "runtime" / "worker_state.json",
+                timestamp_column=None,
+            ),
+            _source_snapshot(
+                name="positions",
+                path=DATA_DIR / "positions" / "positions.parquet",
+                frame=position_df,
+                timestamp_column="updated_at" if "updated_at" in position_df.columns else None,
+            ),
+            _source_snapshot(
+                name="runtime_metrics",
+                path=DEFAULT_RUNTIME_METRICS_PATH,
+                timestamp_column=None,
+            ),
+            _source_snapshot(
+                name="risk_eval",
+                path=DATA_DIR / "risk" / "risk_eval.parquet",
+                frame=risk_df,
+                timestamp_column="timestamp" if "timestamp" in risk_df.columns else None,
+            ),
+            _source_snapshot(
+                name="risk_input",
+                path=DATA_DIR / "risk" / "risk_input.parquet",
+                frame=risk_input_df,
+                timestamp_column="timestamp" if "timestamp" in risk_input_df.columns else None,
+            ),
+            _source_snapshot(
+                name="route_selection_runtime_env",
+                path=runtime_env_path,
+                timestamp_column=None,
+            ),
+            _source_snapshot(
+                name="weekly_revalidation_report",
+                path=weekly_report_path,
+                timestamp_column=None,
+            ),
+            _source_snapshot(
+                name="runtime_route_selection",
+                path=runtime_route_path,
+                timestamp_column=None,
+            ),
+        ]
+        st.dataframe(pd.DataFrame(source_rows), width="stretch")
 
 
 def _render_trading_tab(
@@ -1266,20 +1271,24 @@ def _render_sidebar_controls() -> None:
 
 @_fragment(AUTO_REFRESH_SEC)
 def _render_live_monitor() -> None:
+    # Load common data that all tabs need
     runtime_state = _load_runtime_state()
     worker_state = _load_worker_state()
-    gateway_state = read_json_with_recovery(DATA_DIR / "exchange" / "gateway_state.json")
-    gateway_state = gateway_state if isinstance(gateway_state, dict) else {}
-    risk_df = _read_optional(DATA_DIR / "risk" / "risk_eval.parquet")
-    risk_input_df = _read_optional(DATA_DIR / "risk" / "risk_input.parquet")
-    position_df = _read_optional(DATA_DIR / "positions" / "positions.parquet")
-    regime_snapshot = _load_regime_snapshot()
-    runtime_metrics = _load_runtime_metrics(DEFAULT_RUNTIME_METRICS_PATH)
-    candidate_report = _load_candidate_report()
-    weekly_candidate_report = _load_weekly_candidate_report()
 
     overview_tab, trading_tab, live_logs_tab = st.tabs(["Overview", "Trading", "Live Logs"])
+
     with overview_tab:
+        # Load data only when overview tab is active
+        gateway_state = read_json_with_recovery(DATA_DIR / "exchange" / "gateway_state.json")
+        gateway_state = gateway_state if isinstance(gateway_state, dict) else {}
+        risk_df = _read_optional(DATA_DIR / "risk" / "risk_eval.parquet")
+        risk_input_df = _read_optional(DATA_DIR / "risk" / "risk_input.parquet")
+        position_df = _read_optional(DATA_DIR / "positions" / "positions.parquet")
+        regime_snapshot = _load_regime_snapshot()
+        runtime_metrics = _load_runtime_metrics(DEFAULT_RUNTIME_METRICS_PATH)
+        candidate_report = _load_candidate_report()
+        weekly_candidate_report = _load_weekly_candidate_report()
+
         _render_overview_tab(
             runtime_state=runtime_state,
             worker_state=worker_state,
@@ -1292,14 +1301,23 @@ def _render_live_monitor() -> None:
             candidate_report=weekly_candidate_report or candidate_report,
             weekly_report=weekly_candidate_report,
         )
+
     with trading_tab:
+        # Load data only when trading tab is active
+        position_df = _read_optional(DATA_DIR / "positions" / "positions.parquet")
+        risk_df = _read_optional(DATA_DIR / "risk" / "risk_eval.parquet")
+        candidate_report = _load_candidate_report()
+        weekly_candidate_report = _load_weekly_candidate_report()
+
         _render_trading_tab(
             worker_state=worker_state,
             position_df=position_df,
             risk_df=risk_df,
             candidate_report=weekly_candidate_report or candidate_report,
         )
+
     with live_logs_tab:
+        # Load data only when live logs tab is active
         _render_live_logs_tab(runtime_metrics_path=DEFAULT_RUNTIME_METRICS_PATH)
 
 
@@ -1323,4 +1341,3 @@ def _render_analysis_workspace() -> None:
         _render_analysis_tab(portfolio_df=portfolio_df, backtest_runs=backtest_runs)
     with audit_tab:
         _render_audit_tab(weekly_report=weekly_candidate_report)
-

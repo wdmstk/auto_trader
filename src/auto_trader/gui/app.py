@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # mypy: disable-error-code=misc
 import sys
+import time
 import types
 from datetime import UTC, datetime
 
@@ -259,13 +260,25 @@ def main() -> None:
     st.set_page_config(page_title="Auto Trader Ops Console", layout="wide")
     _inject_ui_stability_styles()
     st.title("Auto Trader Operations Dashboard")
-    st.caption("Live Monitor auto-refreshes every 10 seconds. Analysis Workspace refreshes only on manual rerun.")
+
+    # Add refresh interval control in sidebar
+    with st.sidebar:
+        refresh_interval = st.slider(
+            "Auto-refresh interval (seconds)", min_value=5, max_value=120, value=30, step=5, help="Lower values = more frequent updates but higher CPU usage"
+        )
+
+    st.caption(f"Live Monitor auto-refreshes every {refresh_interval} seconds. " "Analysis Workspace refreshes only on manual rerun.")
     _render_sidebar_controls()
     live_tab, analysis_tab = st.tabs(["Live Monitor", "Analysis Workspace"])
     with live_tab:
         _render_live_monitor()
     with analysis_tab:
         _render_analysis_workspace()
+
+    # Auto-rerun with custom interval for live monitor
+    if st.session_state.get("active_tab") == "Live Monitor":
+        time.sleep(refresh_interval)
+        st.rerun()
 
 
 if __name__ == "__main__":
