@@ -5,7 +5,6 @@ import hashlib
 # mypy: disable-error-code=misc
 import importlib
 import json
-import math
 import os
 import subprocess
 import sys
@@ -26,6 +25,23 @@ from auto_trader.analysis.trade_routes import resolve_live_trade_routes
 from auto_trader.exchange.rest_client import BinanceRestTransport, RestClientConfig
 from auto_trader.gui.overlay import build_overlay_frame, build_regime_segments
 from auto_trader.gui.state import ControlEvent, append_control_event, emergency_badge, is_stale
+from auto_trader.gui.utils import (
+    age_seconds as _age_seconds,
+    csv_list as _csv_list,
+    downsample_for_chart as _downsample_for_chart,
+    format_age as _format_age,
+    freshness_level as _freshness_level,
+    latest_value as _latest_value,
+    now_iso as _now_iso,
+    parse_datetime as _parse_datetime,
+    regime_mix_label as _regime_mix_label,
+    safe_float as _safe_float,
+    safe_number as _safe_number,
+    signal_gate_summary as _signal_gate_summary,
+    tail_text as _tail_text,
+    worker_state_key_parts as _worker_state_key_parts,
+    worker_status_reason as _worker_status_reason,
+)
 from auto_trader.stateio import atomic_write_json, read_json_with_recovery
 from auto_trader.worker.state import WorkerState
 
@@ -252,19 +268,6 @@ def _read_latest_jsonl_row(path: Path) -> dict[str, object]:
     return {}
 
 
-def _safe_float(v: object, default: float = 0.0) -> float:
-    if isinstance(v, bool):
-        return float(int(v))
-    if isinstance(v, int | float):
-        return float(v)
-    if isinstance(v, str):
-        try:
-            return float(v)
-        except ValueError:
-            return default
-    return default
-
-
 def _read_json_object(path: Path) -> dict[str, object]:
     if not path.exists():
         return {}
@@ -369,23 +372,6 @@ def _runtime_health_messages(latest: dict[str, object]) -> tuple[str, list[str]]
     if warnings:
         return "warning", warnings
     return "ok", ["Runtime metrics are within normal ranges."]
-
-
-def _latest_value(df: pd.DataFrame, col: str, default: str = "-") -> str:
-    if df.empty or col not in df.columns:
-        return default
-    return str(df.iloc[-1][col])
-
-
-def _worker_state_key_parts(key: str) -> tuple[str, str, str]:
-    parts = [part for part in str(key).split(":") if part]
-    if len(parts) >= 3:
-        return parts[0], parts[1], parts[2]
-    if len(parts) == 2:
-        return parts[0], parts[1], ""
-    if len(parts) == 1:
-        return "", parts[0], ""
-    return "", "", ""
 
 
 def _render_persistent_status_banner(
@@ -649,27 +635,6 @@ def _render_candlestick_overlay(overlay: pd.DataFrame) -> None:
     st.caption("Blue up arrow = Buy/entry, orange down arrow = Sell/exit, purple cross = risk block.")
 
 
-def _downsample_for_chart(df: pd.DataFrame, max_points: int) -> pd.DataFrame:
-    if max_points <= 0 or len(df) <= max_points:
-        return df
-    special_mask = pd.Series(False, index=df.index)
-    for col in ("entry_signal", "exit_signal", "risk_blocked"):
-        if col in df.columns:
-            special_mask |= pd.to_numeric(df[col], errors="coerce").fillna(0).astype(bool)
-    special = df[special_mask].copy()
-    remaining = df[~special_mask].copy()
-    budget = max_points - len(special)
-    if budget <= 0:
-        sampled = special.tail(max_points).copy()
-    else:
-        step = max(1, math.ceil(len(remaining) / budget)) if len(remaining) > budget else 1
-        sampled = pd.concat([special, remaining.iloc[::step].copy()], axis=0)
-    if sampled.index[-1] != df.index[-1]:
-        sampled = pd.concat([sampled, df.tail(1)], axis=0)
-    sampled = sampled[~sampled.index.duplicated(keep="last")].sort_index()
-    return sampled
-
-
 def _load_symbol_regime(
     symbol: str,
     preferred_timeframe: str | None = None,
@@ -770,10 +735,6 @@ def _resolve_futures_testnet_credentials() -> tuple[str, str]:
         os.getenv("BINANCE_FUTURES_TESTNET_API_KEY", ""),
         os.getenv("BINANCE_FUTURES_TESTNET_API_SECRET", ""),
     )
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
 
 
 def _ensure_gui_env_loaded() -> None:
@@ -1438,56 +1399,6 @@ def _fragment(run_every_sec: float) -> Callable[[Callable[_P, _T]], Callable[_P,
         return _identity
     fragment_func = cast(Any, fragment(run_every=run_every_sec))
     return cast(Callable[[Callable[_P, _T]], Callable[_P, _T]], fragment_func)
-
-
-def _parse_datetime(value: object) -> datetime | None:
-    if isinstance(value, datetime):
-        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-    if value is None:
-        return None
-    try:
-        parsed = pd.to_datetime(cast(Any, value), utc=True, errors="coerce")
-    except Exception:
-        return None
-    if pd.isna(parsed):
-        return None
-    return cast(datetime, parsed.to_pydatetime())
-
-
-def _age_seconds(value: object, now: datetime | None = None) -> float | None:
-    parsed = _parse_datetime(value)
-    if parsed is None:
-        return None
-    ref = now or datetime.now(UTC)
-    return max((ref - parsed).total_seconds(), 0.0)
-
-
-def _format_age(value: object, now: datetime | None = None) -> str:
-    age = _age_seconds(value, now=now)
-    if age is None:
-        return "unknown"
-    if age < 60:
-        return f"{age:.0f}s"
-    if age < 3600:
-        return f"{age / 60.0:.1f}m"
-    return f"{age / 3600.0:.1f}h"
-
-
-def _freshness_level(
-    value: object,
-    *,
-    now: datetime | None = None,
-    warn_sec: int = DATA_STALE_WARN_SEC,
-    crit_sec: int = DATA_STALE_CRIT_SEC,
-) -> str:
-    age = _age_seconds(value, now=now)
-    if age is None:
-        return "missing"
-    if age >= crit_sec:
-        return "critical"
-    if age >= warn_sec:
-        return "warning"
-    return "ok"
 
 
 def _read_jsonl_table(path_str: str, tail_rows: int = 200) -> pd.DataFrame:
@@ -2240,24 +2151,6 @@ def _strategy_symbol_table(
     return out.sort_values(["candidate_status", "symbol"], ascending=[True, True]).reset_index(drop=True)
 
 
-def _regime_mix_label(regime_snapshot: pd.DataFrame) -> str:
-    if regime_snapshot.empty or "regime" not in regime_snapshot.columns:
-        return "UNKNOWN"
-    regimes = [str(value) for value in regime_snapshot["regime"].tolist() if str(value)]
-    if not regimes:
-        return "UNKNOWN"
-    unique = sorted(set(regimes))
-    if len(unique) == 1:
-        return unique[0]
-    if "SUSTAINED" in unique or "HIGH_VOL" in unique:
-        return "HIGH_VOL MIX"
-    if "SPIKE" in unique:
-        return "SPIKE MIX"
-    if "TREND" in unique and "RANGE" in unique:
-        return "MIXED"
-    return "MIXED"
-
-
 def _load_job_state() -> dict[str, object]:
     payload = read_json_with_recovery(JOB_STATE_PATH)
     return payload if isinstance(payload, dict) else {}
@@ -2265,13 +2158,6 @@ def _load_job_state() -> dict[str, object]:
 
 def _save_job_state(payload: dict[str, object]) -> None:
     atomic_write_json(JOB_STATE_PATH, payload)
-
-
-def _tail_text(text: str, limit: int = 20) -> str:
-    lines = [line for line in text.splitlines() if line.strip()]
-    if len(lines) <= limit:
-        return "\n".join(lines)
-    return "\n".join(lines[-limit:])
 
 
 def _run_refresh_job() -> dict[str, object]:
@@ -2392,17 +2278,6 @@ def _format_job_state(job_state: Mapping[str, object]) -> pd.DataFrame:
                     }
                 )
     return pd.DataFrame(rows)
-
-
-def _safe_number(value: object) -> float | None:
-    if isinstance(value, bool):
-        return float(int(value))
-    if isinstance(value, int | float):
-        return float(value)
-    try:
-        return float(value)  # type: ignore[arg-type]
-    except Exception:
-        return None
 
 
 def _source_snapshot(
@@ -2565,49 +2440,6 @@ def _candidate_trade_routes_frame(candidate_report: Mapping[str, object]) -> pd.
     return pd.DataFrame(rows).sort_values(["strategy", "symbol", "timeframe"]).reset_index(drop=True)
 
 
-def _worker_status_reason(row: Mapping[str, object]) -> str:
-    status = str(row.get("status", ""))
-    trade_status = str(row.get("trade_status", ""))
-    if trade_status in {"entry", "exit", "add"}:
-        return "発注済み"
-    mapping = {
-        "already_processed": "同一確定足を処理済み",
-        "no_signal": "シグナル未成立",
-        "missing_data": "マーケットデータ不足",
-        "not_enabled": "対象外シンボル",
-        "disabled": "シンボル無効",
-        "risk_blocked": "リスク制限で停止",
-        "qty_zero": "ロットが0",
-        "no_action": "発注条件未成立",
-    }
-    return mapping.get(status, status or "unknown")
-
-
-def _signal_gate_summary(row: Mapping[str, object]) -> str:
-    trade_status = str(row.get("trade_status", ""))
-    if trade_status in {"entry", "exit", "add"}:
-        return "発注済み"
-    parts: list[str] = []
-    if "entry_signal" in row:
-        parts.append("entry成立" if bool(row.get("entry_signal", False)) else "entry未成立")
-    if "exit_signal" in row and bool(row.get("exit_signal", False)):
-        parts.append("exit成立")
-    if "add_signal" in row and bool(row.get("add_signal", False)):
-        parts.append("add成立")
-    if "pass_filter" in row and not bool(row.get("pass_filter", False)):
-        parts.append("filter未通過")
-    if "risk_blocked" in row and bool(row.get("risk_blocked", False)):
-        parts.append("risk制限")
-    reason_codes = str(row.get("reason_codes", "")).strip()
-    if reason_codes:
-        parts.append(reason_codes)
-    if "gateway_status" in row and str(row.get("gateway_status", "")).strip():
-        parts.append(str(row.get("gateway_status", "")))
-    if not parts:
-        return "signal snapshot unavailable"
-    return "; ".join(parts)
-
-
 def _candidate_rollup(candidate_report: Mapping[str, object]) -> dict[str, object]:
     core = _csv_list(candidate_report.get("core_symbols", []))
     probe = _csv_list(candidate_report.get("probe_symbols", []))
@@ -2633,12 +2465,6 @@ def _candidate_rollup(candidate_report: Mapping[str, object]) -> dict[str, objec
         "limit_metrics": dict(limit_metrics),
         "status": str(candidate_report.get("status", "unknown")),
     }
-
-
-def _csv_list(values: object) -> list[str]:
-    if not isinstance(values, list):
-        return []
-    return [str(v).strip().upper() for v in values if str(v).strip()]
 
 
 def _limit_evidence_frame(candidate_report: Mapping[str, object]) -> pd.DataFrame:
