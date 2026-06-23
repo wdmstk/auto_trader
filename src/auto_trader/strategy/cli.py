@@ -43,6 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--range-w-vol", type=float, default=1.0)
     p.add_argument("--range-w-reversal-bonus", type=float, default=0.5)
     p.add_argument("--range-exit-atr-trail-multiplier", type=float, default=2.0)
+    p.add_argument("--range-sr-support-distance-max", type=float, default=1.5)
+    p.add_argument("--range-sr-min-level-strength", type=int, default=2)
+    p.add_argument("--range-sr-resistance-exit-atr", type=float, default=0.5)
+    p.add_argument("--range-w-sr-proximity", type=float, default=2.0)
+    p.add_argument("--range-w-sr-strength", type=float, default=1.5)
     p.add_argument("--trend-min-entry-score", type=float, default=1.0)
     p.add_argument("--trend-breakout-persistence-min", type=float, default=0.6)
     p.add_argument("--trend-momentum-persistence-min", type=float, default=0.5)
@@ -94,6 +99,11 @@ def main() -> int:
                 w_vol=args.range_w_vol,
                 w_reversal_bonus=args.range_w_reversal_bonus,
                 exit_atr_trail_multiplier=args.range_exit_atr_trail_multiplier,
+                sr_support_distance_max=args.range_sr_support_distance_max,
+                sr_min_level_strength=args.range_sr_min_level_strength,
+                sr_resistance_exit_atr=args.range_sr_resistance_exit_atr,
+                w_sr_proximity=args.range_w_sr_proximity,
+                w_sr_strength=args.range_w_sr_strength,
             ),
         )
     else:

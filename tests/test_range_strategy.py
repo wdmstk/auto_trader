@@ -10,7 +10,8 @@ from auto_trader.strategy.range_strategy import RangeStrategyConfig, generate_ra
 
 def _build_inputs(
     *,
-    include_new_features: bool = True,
+    include_sr_features: bool = True,
+    include_legacy_features: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     base = datetime(2026, 1, 1, tzinfo=UTC)
     feats: list[dict[str, object]] = []
@@ -27,11 +28,17 @@ def _build_inputs(
             "mean_reversion_distance": -0.5 if i in (1, 2) else 0.01,
             "reversal_candle_flag": 1 if i in (1, 2) else 0,
         }
-        if include_new_features:
+        if include_sr_features:
+            row["sr_support_distance"] = 0.5 if i in (1, 2) else 5.0
+            row["sr_resistance_distance"] = 3.0 if i in (1, 2) else 0.2
+            row["sr_level_strength"] = 3.0 if i in (1, 2) else 0.0
+            row["atr"] = 100.0
+        if include_legacy_features:
             row["bb_position"] = 0.1 if i in (1, 2) else 0.6
             row["volume_spike"] = 1 if i in (1, 2) else 0
             row["price_vs_recent_low"] = 0.5 if i in (1, 2) else 3.0
-            row["atr"] = 100.0
+            if "atr" not in row:
+                row["atr"] = 100.0
         feats.append(row)
         regimes.append(
             {
@@ -80,13 +87,13 @@ def test_high_vol_sets_block_reason() -> None:
     assert "RG_BLOCK_HIGH_VOL" in codes
 
 
-def test_entry_works_without_new_features() -> None:
-    """Backward compatibility: entry works when new feature columns are absent."""
-    f, r, k = _build_inputs(include_new_features=False)
+def test_entry_works_without_sr_features() -> None:
+    """Backward compatibility: entry works when S/R feature columns are absent."""
+    f, r, k = _build_inputs(include_sr_features=False, include_legacy_features=True)
     out = generate_range_signals(features_df=f, regime_df=r, risk_df=k)
-    # With only RSI+wick+MR scoring (no bb_pos, vol_spike), score can still be enough
-    # rsi_ok=1, wick_ok=1, mr_ok=1, bb_pos=1(default), vol=0, rev=1
-    # score = (1+1+1.5+2+0+0.5)/7 = 6/7 ≈ 0.857 >= 0.6
+    # Falls back to legacy BB scoring
+    # rsi_ok=1, wick_ok=1, mr_ok=1(w=1.5), bb_pos_ok=1(w=2.0), vol_ok=1(w=1.0), rev_ok=1(w=0.5)
+    # score = 7/7 = 1.0 >= 0.5
     assert bool(out.loc[1, "entry_signal"]) is True
 
 
@@ -133,83 +140,138 @@ def test_range_max_hold_bars_forces_exit() -> None:
     assert "RG_EXIT_MAX_HOLD" in codes
 
 
-def test_min_entry_score_filters_effectively() -> None:
-    """min_entry_score now actually filters entries (unlike old all-AND logic)."""
+def test_sr_proximity_filters_entries() -> None:
+    """Entries blocked when price is far from support level."""
     f, r, k = _build_inputs()
-    # With high score threshold, entry should be blocked
+    # Make support distance very large -> sr_near_support = False
+    f["sr_support_distance"] = 10.0
+    # With strict threshold, entry should be blocked
+    # rsi_ok=1(w=1), wick_ok=1(w=1), sr_prox=0(w=2), sr_str=1(w=1.5), vol=1(w=1), rev=1(w=0.5)
+    # score = (1+1+0+1.5+1+0.5)/7 = 5/7 ≈ 0.714
+    out_strict = generate_range_signals(
+        features_df=f,
+        regime_df=r,
+        risk_df=k,
+        config=RangeStrategyConfig(sr_support_distance_max=1.5, min_entry_score=0.8),
+    )
+    assert bool(out_strict.loc[1, "entry_signal"]) is False
+
+
+def test_sr_strength_filters_entries() -> None:
+    """Entries blocked when S/R level is too weak."""
+    f, r, k = _build_inputs()
+    # Make strength 1 (below default min of 2)
+    f["sr_level_strength"] = 1.0
+    # rsi_ok=1(w=1), wick_ok=1(w=1), sr_prox=1(w=2), sr_str=0(w=1.5), vol=1(w=1), rev=1(w=0.5)
+    # score = (1+1+2+0+1+0.5)/7 = 5.5/7 ≈ 0.786
+    out = generate_range_signals(
+        features_df=f,
+        regime_df=r,
+        risk_df=k,
+        config=RangeStrategyConfig(sr_min_level_strength=2, min_entry_score=0.9),
+    )
+    assert bool(out.loc[1, "entry_signal"]) is False
+
+    # With lower threshold, should pass
+    out_low = generate_range_signals(
+        features_df=f,
+        regime_df=r,
+        risk_df=k,
+        config=RangeStrategyConfig(sr_min_level_strength=2, min_entry_score=0.5),
+    )
+    assert bool(out_low.loc[1, "entry_signal"]) is True
+
+
+def test_sr_entry_has_reason_code() -> None:
+    """Entry near S/R level includes the SR support reason code."""
+    f, r, k = _build_inputs()
+    out = generate_range_signals(features_df=f, regime_df=r, risk_df=k)
+    codes = cast(list[str], out.loc[1, "signal_reason_codes"])
+    assert "RG_ENTRY_SR_SUPPORT" in codes
+    assert "RG_ENTRY_SCORE_OK" in codes
+
+
+def test_sr_resistance_exit() -> None:
+    """Position should exit when price approaches resistance level."""
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    feats: list[dict[str, object]] = []
+    regimes: list[dict[str, object]] = []
+    for i in range(5):
+        ts = base + timedelta(minutes=i)
+        feats.append({
+            "symbol": "BTCUSDT",
+            "timeframe": "1m",
+            "timestamp": ts,
+            "rsi": 45.0,
+            "wick_ratio": 0.7,
+            "mean_reversion_distance": -0.5,
+            "reversal_candle_flag": 1,
+            "sr_support_distance": 0.5,
+            "sr_resistance_distance": 0.3 if i == 2 else 3.0,
+            "sr_level_strength": 3.0,
+            "volume_spike": 1,
+            "atr": 100.0,
+        })
+        regimes.append({
+            "symbol": "BTCUSDT",
+            "timeframe": "1m",
+            "timestamp": ts,
+            "regime": "RANGE",
+            "is_trade_allowed": True,
+            "confidence": 0.8,
+        })
+
+    f = pd.DataFrame(feats)
+    r = pd.DataFrame(regimes)
+    out = generate_range_signals(
+        features_df=f,
+        regime_df=r,
+        config=RangeStrategyConfig(
+            sr_resistance_exit_atr=0.5,
+            exit_mean_reversion_neutral_abs=0.01,
+        ),
+    )
+    # i=0: entry (all conditions met, no position)
+    assert bool(out.loc[0, "entry_signal"]) is True
+    # i=2: resistance exit (sr_resistance_distance=0.3 <= 0.5)
+    codes = cast(list[str], out.loc[2, "signal_reason_codes"])
+    assert "RG_EXIT_SR_RESISTANCE" in codes
+
+
+def test_min_entry_score_filters_with_sr() -> None:
+    """min_entry_score effectively filters with S/R-based scoring."""
+    f, r, k = _build_inputs()
+    # Remove volume spike so score doesn't reach max
+    f["volume_spike"] = 0
+    # rsi_ok=1(w=1), wick_ok=1(w=1), sr_prox=1(w=2), sr_str=1(w=1.5), vol=0(w=1), rev=1(w=0.5)
+    # score = (1+1+2+1.5+0+0.5)/7 = 6/7 ≈ 0.857
     out_high = generate_range_signals(
         features_df=f,
         regime_df=r,
         risk_df=k,
         config=RangeStrategyConfig(min_entry_score=0.99),
     )
-    # With low score threshold, entry should pass
     out_low = generate_range_signals(
         features_df=f,
         regime_df=r,
         risk_df=k,
         config=RangeStrategyConfig(min_entry_score=0.5),
     )
+    assert bool(out_high.loc[1, "entry_signal"]) is False
     assert bool(out_low.loc[1, "entry_signal"]) is True
-    # At 0.99 threshold, only perfect score passes
-    # i=1 has all signals: rsi=1, wick=1, mr=1.5, bb_pos=2, vol=1, rev=0.5 = 7/7 = 1.0
-    # so even 0.99 passes for the ideal case
-    assert bool(out_high.loc[1, "entry_signal"]) is True
-
-    # Now test with partial signals - remove volume spike
-    f2 = f.copy()
-    f2["volume_spike"] = 0
-    out_partial_high = generate_range_signals(
-        features_df=f2,
-        regime_df=r,
-        risk_df=k,
-        config=RangeStrategyConfig(min_entry_score=0.99),
-    )
-    out_partial_low = generate_range_signals(
-        features_df=f2,
-        regime_df=r,
-        risk_df=k,
-        config=RangeStrategyConfig(min_entry_score=0.5),
-    )
-    # Without volume: (1+1+1.5+2+0+0.5)/7 = 6/7 ≈ 0.857 < 0.99
-    assert bool(out_partial_high.loc[1, "entry_signal"]) is False
-    assert bool(out_partial_low.loc[1, "entry_signal"]) is True
 
 
-def test_bb_position_filters_entries() -> None:
-    """Entries blocked when price is not in BB lower zone."""
-    f, r, k = _build_inputs()
-    f["bb_position"] = 0.8  # Above BB middle - not a good entry zone
-    # bb_pos_ok = False, so score drops: (1+1+1.5+0+1+0.5)/7 = 5/7 ≈ 0.714
-    # Still >= 0.6 default, but check with higher threshold
-    out_strict = generate_range_signals(
+def test_legacy_bb_scoring_when_no_sr_columns() -> None:
+    """When S/R columns are absent, falls back to BB-based scoring."""
+    f, r, k = _build_inputs(include_sr_features=False, include_legacy_features=True)
+    # bb_position=0.8 -> bb_pos_ok=False for default 0.35 threshold
+    f["bb_position"] = 0.8
+    # Legacy score: rsi=1(w=1), wick=1(w=1), mr=1(w=1.5), bb_pos=0(w=2), vol=1(w=1), rev=1(w=0.5)
+    # = (1+1+1.5+0+1+0.5)/7 = 5/7 ≈ 0.714
+    out = generate_range_signals(
         features_df=f,
         regime_df=r,
         risk_df=k,
-        config=RangeStrategyConfig(bb_position_max=0.35, min_entry_score=0.8),
+        config=RangeStrategyConfig(min_entry_score=0.8),
     )
-    assert bool(out_strict.loc[1, "entry_signal"]) is False
-
-
-def test_volume_spike_contributes_to_score() -> None:
-    """Volume spike adds to entry score."""
-    f, r, k = _build_inputs()
-    # Remove volume spike
-    f["volume_spike"] = 0
-    out_no_vol = generate_range_signals(
-        features_df=f,
-        regime_df=r,
-        risk_df=k,
-        config=RangeStrategyConfig(min_entry_score=0.9),
-    )
-    # Add volume spike
-    f["volume_spike"] = 1
-    out_with_vol = generate_range_signals(
-        features_df=f,
-        regime_df=r,
-        risk_df=k,
-        config=RangeStrategyConfig(min_entry_score=0.9),
-    )
-    # Without vol: 6/7 = 0.857 < 0.9, With vol: 7/7 = 1.0 >= 0.9
-    assert bool(out_no_vol.loc[1, "entry_signal"]) is False
-    assert bool(out_with_vol.loc[1, "entry_signal"]) is True
+    assert bool(out.loc[1, "entry_signal"]) is False

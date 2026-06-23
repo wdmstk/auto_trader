@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -17,20 +18,28 @@ class RangeStrategyConfig:
     exit_mean_reversion_neutral_abs: float = 0.15
     default_position_size_ratio: float = 0.1
     require_reversal_candle: bool = False
-    min_entry_score: float = 0.6
+    min_entry_score: float = 0.5
     reentry_cooldown_bars: int = 0
     max_hold_bars: int = 16
     enabled_symbols: tuple[str, ...] = ()
-    bb_position_max: float = 0.35
     volume_spike_threshold: float = 1.3
-    price_vs_recent_low_max: float = 1.5
+    exit_atr_trail_multiplier: float = 2.0
+    # S/R parameters
+    sr_support_distance_max: float = 1.5
+    sr_min_level_strength: int = 2
+    sr_resistance_exit_atr: float = 0.5
+    # Weights
     w_rsi: float = 1.0
     w_wick: float = 1.0
-    w_mr: float = 1.5
-    w_bb_pos: float = 2.0
+    w_sr_proximity: float = 2.0
+    w_sr_strength: float = 1.5
     w_vol: float = 1.0
     w_reversal_bonus: float = 0.5
-    exit_atr_trail_multiplier: float = 2.0
+    # Legacy (kept for backward compat with old CLI/config)
+    bb_position_max: float = 0.35
+    price_vs_recent_low_max: float = 1.5
+    w_mr: float = 1.5
+    w_bb_pos: float = 2.0
 
 
 def generate_range_signals(
@@ -55,20 +64,42 @@ def generate_range_signals(
     mr_values = merged["mean_reversion_distance"].astype(float).to_numpy(copy=False)
     reversal_values = merged["reversal_candle_flag"].fillna(0).astype(int).to_numpy(copy=False)
 
-    bb_pos_col = "bb_position" if "bb_position" in merged.columns else None
-    bb_pos_values = merged["bb_position"].astype(float).to_numpy(copy=False) if bb_pos_col else None
-    vol_spike_col = "volume_spike" if "volume_spike" in merged.columns else None
-    vol_spike_values = merged["volume_spike"].fillna(0).astype(int).to_numpy(copy=False) if vol_spike_col else None
-    price_low_col = "price_vs_recent_low" if "price_vs_recent_low" in merged.columns else None
-    price_low_values = merged["price_vs_recent_low"].astype(float).to_numpy(copy=False) if price_low_col else None
-    atr_col = "atr" if "atr" in merged.columns else None
-    atr_values = merged["atr"].astype(float).to_numpy(copy=False) if atr_col else None
+    has_sr = "sr_support_distance" in merged.columns
+    sr_sup_values = (
+        merged["sr_support_distance"].astype(float).to_numpy(copy=False) if has_sr else None
+    )
+    sr_res_values = (
+        merged["sr_resistance_distance"].astype(float).to_numpy(copy=False)
+        if "sr_resistance_distance" in merged.columns
+        else None
+    )
+    sr_str_values = (
+        merged["sr_level_strength"].astype(float).to_numpy(copy=False)
+        if "sr_level_strength" in merged.columns
+        else None
+    )
+
+    vol_spike_values = (
+        merged["volume_spike"].fillna(0).astype(int).to_numpy(copy=False)
+        if "volume_spike" in merged.columns
+        else None
+    )
+    atr_values = (
+        merged["atr"].astype(float).to_numpy(copy=False) if "atr" in merged.columns else None
+    )
+
+    # Fallback columns for legacy mode (no S/R features)
+    bb_pos_values = (
+        merged["bb_position"].astype(float).to_numpy(copy=False)
+        if "bb_position" in merged.columns
+        else None
+    )
 
     enabled_symbols = set(cfg.enabled_symbols)
 
     entry_signal: list[bool] = []
     exit_signal: list[bool] = []
-    risk_blocked: list[bool] = []
+    risk_blocked_out: list[bool] = []
     regimes: list[str] = []
     pass_filters: list[bool] = []
     reason_codes: list[list[str]] = []
@@ -79,7 +110,14 @@ def generate_range_signals(
     in_position_state: dict[tuple[str, str], bool] = {}
     trail_high: dict[tuple[str, str], float] = {}
 
-    total_weight = cfg.w_rsi + cfg.w_wick + cfg.w_mr + cfg.w_bb_pos + cfg.w_vol + cfg.w_reversal_bonus
+    use_sr = has_sr
+    if use_sr:
+        total_weight = (
+            cfg.w_rsi + cfg.w_wick + cfg.w_sr_proximity + cfg.w_sr_strength
+            + cfg.w_vol + cfg.w_reversal_bonus
+        )
+    else:
+        total_weight = cfg.w_rsi + cfg.w_wick + cfg.w_mr + cfg.w_bb_pos + cfg.w_vol + cfg.w_reversal_bonus
 
     for i in range(n_rows):
         reasons: list[str] = []
@@ -108,30 +146,45 @@ def generate_range_signals(
 
         rsi_ok = cfg.rsi_min <= float(rsi_values[i]) <= cfg.rsi_max
         wick_ok = float(wick_values[i]) >= cfg.wick_ratio_min
-        mr_ok = float(mr_values[i]) <= cfg.mean_reversion_distance_max
         rev_ok = int(reversal_values[i]) == 1
 
-        bb_pos_ok = True
-        if bb_pos_values is not None:
-            bb_pos_ok = float(bb_pos_values[i]) <= cfg.bb_position_max
         vol_ok = False
         if vol_spike_values is not None:
             vol_ok = int(vol_spike_values[i]) == 1
-        price_low_ok = True
-        if price_low_values is not None:
-            price_low_ok = float(price_low_values[i]) <= cfg.price_vs_recent_low_max
 
-        score = (
-            cfg.w_rsi * int(rsi_ok)
-            + cfg.w_wick * int(wick_ok)
-            + cfg.w_mr * int(mr_ok)
-            + cfg.w_bb_pos * int(bb_pos_ok)
-            + cfg.w_vol * int(vol_ok)
-            + cfg.w_reversal_bonus * int(rev_ok)
-        ) / total_weight
+        if use_sr and sr_sup_values is not None and sr_str_values is not None:
+            sup_dist = float(sr_sup_values[i])
+            sr_near_support = (not math.isnan(sup_dist)) and sup_dist <= cfg.sr_support_distance_max
+            strength_val = float(sr_str_values[i])
+            sr_strong = strength_val >= cfg.sr_min_level_strength
+
+            score = (
+                cfg.w_rsi * int(rsi_ok)
+                + cfg.w_wick * int(wick_ok)
+                + cfg.w_sr_proximity * int(sr_near_support)
+                + cfg.w_sr_strength * int(sr_strong)
+                + cfg.w_vol * int(vol_ok)
+                + cfg.w_reversal_bonus * int(rev_ok)
+            ) / total_weight
+        else:
+            # Legacy fallback: BB-based scoring
+            mr_ok = float(mr_values[i]) <= cfg.mean_reversion_distance_max
+            bb_pos_ok = True
+            if bb_pos_values is not None:
+                bb_pos_ok = float(bb_pos_values[i]) <= cfg.bb_position_max
+
+            score = (
+                cfg.w_rsi * int(rsi_ok)
+                + cfg.w_wick * int(wick_ok)
+                + cfg.w_mr * int(mr_ok)
+                + cfg.w_bb_pos * int(bb_pos_ok)
+                + cfg.w_vol * int(vol_ok)
+                + cfg.w_reversal_bonus * int(rev_ok)
+            ) / total_weight
+
         score_ok = score >= cfg.min_entry_score
 
-        entry = allow_entry_gate and symbol_enabled and (not in_position) and (cd <= 0) and score_ok and price_low_ok
+        entry = allow_entry_gate and symbol_enabled and (not in_position) and (cd <= 0) and score_ok
         if entry:
             entry_reasons = ["RG_ENTRY_SCORE_OK"]
             if rsi_ok:
@@ -140,14 +193,15 @@ def generate_range_signals(
                 entry_reasons.append("RG_ENTRY_WICK_CONFIRM")
             if rev_ok:
                 entry_reasons.append("RG_ENTRY_REVERSAL_CANDLE")
-            if bb_pos_ok:
-                entry_reasons.append("RG_ENTRY_BB_LOWER_ZONE")
+            if use_sr:
+                entry_reasons.append("RG_ENTRY_SR_SUPPORT")
             if vol_ok:
                 entry_reasons.append("RG_ENTRY_VOLUME_SPIKE")
             reasons.extend(entry_reasons)
         elif allow_entry_gate and symbol_enabled and (not in_position) and (cd <= 0) and (not score_ok):
             reasons.append("RG_BLOCK_SCORE_LOW")
 
+        # Exit conditions
         exit_mr = abs(float(mr_values[i])) <= cfg.exit_mean_reversion_neutral_abs
         exit_regime = regime not in {"RANGE", "SPIKE"}
         exit_max_hold = cfg.max_hold_bars > 0 and in_position and held_bars >= cfg.max_hold_bars
@@ -163,7 +217,14 @@ def generate_range_signals(
             if current_close <= trail_stop and held_bars > 1:
                 exit_atr_trail = True
 
-        exit_sig = exit_mr or exit_regime or exit_max_hold or exit_atr_trail
+        # S/R resistance exit: take profit near resistance
+        exit_sr_resistance = False
+        if in_position and sr_res_values is not None and cfg.sr_resistance_exit_atr > 0:
+            res_dist = float(sr_res_values[i])
+            if not math.isnan(res_dist) and res_dist <= cfg.sr_resistance_exit_atr and held_bars > 0:
+                exit_sr_resistance = True
+
+        exit_sig = exit_mr or exit_regime or exit_max_hold or exit_atr_trail or exit_sr_resistance
         if exit_mr:
             reasons.append("RG_EXIT_MEAN_REVERTED")
         if exit_regime:
@@ -172,6 +233,8 @@ def generate_range_signals(
             reasons.append("RG_EXIT_MAX_HOLD")
         if exit_atr_trail:
             reasons.append("RG_EXIT_ATR_TRAIL")
+        if exit_sr_resistance:
+            reasons.append("RG_EXIT_SR_RESISTANCE")
 
         if not reasons:
             reasons.append("RG_EXIT_REGIME_CHANGED")
@@ -195,7 +258,7 @@ def generate_range_signals(
 
         entry_signal.append(bool(entry))
         exit_signal.append(bool(exit_sig))
-        risk_blocked.append(blocked)
+        risk_blocked_out.append(blocked)
         regimes.append(regime)
         pass_filters.append(bool(allow_entry_gate))
         reason_codes.append(sorted(set(reasons)))
@@ -207,7 +270,7 @@ def generate_range_signals(
     out["entry_signal"] = entry_signal
     out["exit_signal"] = exit_signal
     out["signal_reason_codes"] = reason_codes
-    out["risk_blocked"] = risk_blocked
+    out["risk_blocked"] = risk_blocked_out
     out["position_size_ratio"] = size_ratio
     out["generated_at"] = datetime.now(UTC)
     return out
