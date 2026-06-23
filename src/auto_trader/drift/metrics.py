@@ -7,6 +7,8 @@ from typing import cast
 
 import pandas as pd
 
+from auto_trader.utils import write_json_file
+
 
 @dataclass(frozen=True)
 class DriftThresholds:
@@ -45,9 +47,7 @@ def _psi(expected: list[float], actual: list[float], eps: float = 1e-6) -> float
     n = min(len(expected), len(actual))
     e = [max(float(expected[i]), eps) for i in range(n)]
     a = [max(float(actual[i]), eps) for i in range(n)]
-    return float(
-        sum((ai - ei) * __import__("math").log(ai / ei) for ai, ei in zip(a, e, strict=False))
-    )
+    return float(sum((ai - ei) * __import__("math").log(ai / ei) for ai, ei in zip(a, e, strict=False)))
 
 
 def build_baseline_stats(df: pd.DataFrame, *, bins: int = 10) -> dict[str, object]:
@@ -67,8 +67,7 @@ def build_baseline_stats(df: pd.DataFrame, *, bins: int = 10) -> dict[str, objec
 
 
 def save_baseline(path: Path, baseline: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(baseline, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_json_file(path, baseline)
 
 
 def load_baseline(path: Path) -> dict[str, object]:

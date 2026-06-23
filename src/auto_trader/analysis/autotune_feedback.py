@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from auto_trader.utils import load_json_object, safe_float, write_json_file
+
 DEFAULT_SUMMARY_PATH = Path("data/validation/core_route_autotune/auto_tune_summary.json")
 DEFAULT_OUT_DIR = Path("data/validation/core_route_autotune")
 DEFAULT_OUT_JSON = DEFAULT_OUT_DIR / "autotune_core_feedback.json"
@@ -19,9 +21,7 @@ DEFAULT_OUT_FULL_MANIFEST_MD = DEFAULT_OUT_DIR / "autotune_full_route_manifest.m
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Build candidate runtime artifacts from core route autotune summary."
-    )
+    parser = argparse.ArgumentParser(description="Build candidate runtime artifacts from core route autotune summary.")
     parser.add_argument("--summary-path", default=str(DEFAULT_SUMMARY_PATH))
     parser.add_argument("--json-path", default=str(DEFAULT_OUT_JSON))
     parser.add_argument("--env-path", default=str(DEFAULT_OUT_ENV))
@@ -35,19 +35,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def load_summary(path: str | Path) -> dict[str, Any]:
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    return payload if isinstance(payload, dict) else {}
+    return load_json_object(path)
 
 
 def build_autotune_feedback(summary: str | Path | dict[str, Any]) -> dict[str, Any]:
     payload = load_summary(summary) if isinstance(summary, str | Path) else summary
     selection_mode = str(payload.get("selection_mode", "expansion")).strip() or "expansion"
     route_summaries = [row for row in payload.get("route_summaries", []) if isinstance(row, dict)]
-    confirmed = [
-        row
-        for row in route_summaries
-        if str(row.get("final_state", "")) in {"core_confirmed", "core_provisional"}
-    ]
+    confirmed = [row for row in route_summaries if str(row.get("final_state", "")) in {"core_confirmed", "core_provisional"}]
 
     routes: list[dict[str, Any]] = []
     trend_symbols: list[str] = []
@@ -73,11 +68,11 @@ def build_autotune_feedback(summary: str | Path | dict[str, Any]) -> dict[str, A
             "final_state": str(row.get("final_state", "")),
             "candidate_status": str(selected.get("candidate_status", "")),
             "config_label": str(selected.get("config_label", "")),
-            "pf_mean": _safe_float(selected.get("pf_mean", 0.0)),
-            "expectancy_bps_mean": _safe_float(selected.get("expectancy_bps_mean", 0.0)),
-            "period_pnl_mean": _safe_float(selected.get("period_pnl_mean", 0.0)),
-            "max_dd_mean": _safe_float(selected.get("max_dd_mean", 0.0)),
-            "closed_trades_mean": _safe_float(selected.get("closed_trades_mean", 0.0)),
+            "pf_mean": safe_float(selected.get("pf_mean", 0.0)),
+            "expectancy_bps_mean": safe_float(selected.get("expectancy_bps_mean", 0.0)),
+            "period_pnl_mean": safe_float(selected.get("period_pnl_mean", 0.0)),
+            "max_dd_mean": safe_float(selected.get("max_dd_mean", 0.0)),
+            "closed_trades_mean": safe_float(selected.get("closed_trades_mean", 0.0)),
             "params": params,
         }
         routes.append(route_obj)
@@ -115,9 +110,7 @@ def write_autotune_feedback(
 ) -> dict[str, Any]:
     feedback = build_autotune_feedback(summary)
 
-    json_out = Path(json_path)
-    json_out.parent.mkdir(parents=True, exist_ok=True)
-    json_out.write_text(json.dumps(feedback, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_json_file(json_path, feedback)
 
     env_out = Path(env_path)
     env_out.parent.mkdir(parents=True, exist_ok=True)
@@ -128,22 +121,14 @@ def write_autotune_feedback(
     md_out.write_text(render_markdown(feedback), encoding="utf-8")
 
     manifest = build_route_manifest(feedback)
-    manifest_json_out = Path(manifest_json_path)
-    manifest_json_out.parent.mkdir(parents=True, exist_ok=True)
-    manifest_json_out.write_text(
-        json.dumps(manifest, ensure_ascii=True, indent=2), encoding="utf-8"
-    )
+    write_json_file(manifest_json_path, manifest)
 
     manifest_md_out = Path(manifest_md_path)
     manifest_md_out.parent.mkdir(parents=True, exist_ok=True)
     manifest_md_out.write_text(render_manifest_markdown(manifest), encoding="utf-8")
 
     full_manifest = build_full_route_manifest(feedback, base_manifest=base_manifest_path)
-    full_manifest_json_out = Path(full_manifest_json_path)
-    full_manifest_json_out.parent.mkdir(parents=True, exist_ok=True)
-    full_manifest_json_out.write_text(
-        json.dumps(full_manifest, ensure_ascii=True, indent=2), encoding="utf-8"
-    )
+    write_json_file(full_manifest_json_path, full_manifest)
 
     full_manifest_md_out = Path(full_manifest_md_path)
     full_manifest_md_out.parent.mkdir(parents=True, exist_ok=True)
@@ -265,10 +250,7 @@ def render_markdown(feedback: dict[str, Any]) -> str:
         f"- range_enabled_symbols: {', '.join(feedback['range_enabled_symbols']) or '-'}",
     ]
     if str(feedback.get("selection_mode", "")) == "core_refinement":
-        lines.append(
-            "- note: this feedback is a refinement delta; matching baseline core routes "
-            "are replaced in the full manifest."
-        )
+        lines.append("- note: this feedback is a refinement delta; matching baseline core routes are replaced in the full manifest.")
     lines.extend(
         [
             "",
@@ -282,17 +264,14 @@ def render_markdown(feedback: dict[str, Any]) -> str:
         params = route.get("params", {})
         params_text = ", ".join(f"{key}={value}" for key, value in params.items()) or "-"
         lines.append(
-            (
-                "| {route} | {stage} | {pf:.3f} | {exp:.2f} | {pnl:.3f} | "
-                "{dd:.5f} | {trades:.2f} | {params} |"
-            ).format(
+            ("| {route} | {stage} | {pf:.3f} | {exp:.2f} | {pnl:.3f} | {dd:.5f} | {trades:.2f} | {params} |").format(
                 route=str(route.get("route_key", "")),
                 stage=str(route.get("selected_stage", "")),
-                pf=_safe_float(route.get("pf_mean", 0.0)),
-                exp=_safe_float(route.get("expectancy_bps_mean", 0.0)),
-                pnl=_safe_float(route.get("period_pnl_mean", 0.0)),
-                dd=_safe_float(route.get("max_dd_mean", 0.0)),
-                trades=_safe_float(route.get("closed_trades_mean", 0.0)),
+                pf=safe_float(route.get("pf_mean", 0.0)),
+                exp=safe_float(route.get("expectancy_bps_mean", 0.0)),
+                pnl=safe_float(route.get("period_pnl_mean", 0.0)),
+                dd=safe_float(route.get("max_dd_mean", 0.0)),
+                trades=safe_float(route.get("closed_trades_mean", 0.0)),
                 params=params_text,
             )
         )
@@ -321,11 +300,11 @@ def build_route_manifest(feedback: dict[str, Any]) -> dict[str, Any]:
                 "selection_source": "autotune",
                 "selected_stage": str(route.get("selected_stage", "")),
                 "config_label": str(route.get("config_label", "")),
-                "pf_mean": _safe_float(route.get("pf_mean", 0.0)),
-                "expectancy_bps_mean": _safe_float(route.get("expectancy_bps_mean", 0.0)),
-                "period_pnl_mean": _safe_float(route.get("period_pnl_mean", 0.0)),
-                "max_dd_mean": _safe_float(route.get("max_dd_mean", 0.0)),
-                "closed_trades_mean": _safe_float(route.get("closed_trades_mean", 0.0)),
+                "pf_mean": safe_float(route.get("pf_mean", 0.0)),
+                "expectancy_bps_mean": safe_float(route.get("expectancy_bps_mean", 0.0)),
+                "period_pnl_mean": safe_float(route.get("period_pnl_mean", 0.0)),
+                "max_dd_mean": safe_float(route.get("max_dd_mean", 0.0)),
+                "closed_trades_mean": safe_float(route.get("closed_trades_mean", 0.0)),
                 "params": route.get("params", {}),
             }
         )
@@ -365,11 +344,7 @@ def build_full_route_manifest(
             if base_manifest_path.exists():
                 base_manifest_payload = load_summary(base_manifest_path)
 
-    base_selection = (
-        base_manifest_payload.get("selection", {})
-        if isinstance(base_manifest_payload, dict)
-        else {}
-    )
+    base_selection = base_manifest_payload.get("selection", {}) if isinstance(base_manifest_payload, dict) else {}
     base_routes = base_selection.get("trade_routes", []) if isinstance(base_selection, dict) else []
     if isinstance(base_routes, list) and base_routes:
         for route in base_routes:
@@ -404,11 +379,11 @@ def build_full_route_manifest(
                 "selection_source": "baseline_core",
                 "selected_stage": "baseline",
                 "config_label": "baseline",
-                "pf_mean": _safe_float(row.get("pf_mean", 0.0)),
-                "expectancy_bps_mean": _safe_float(row.get("expectancy_bps_mean", 0.0)),
-                "period_pnl_mean": _safe_float(row.get("period_pnl_mean", 0.0)),
-                "max_dd_mean": _safe_float(row.get("max_dd_mean", 0.0)),
-                "closed_trades_mean": _safe_float(row.get("closed_trades_mean", 0.0)),
+                "pf_mean": safe_float(row.get("pf_mean", 0.0)),
+                "expectancy_bps_mean": safe_float(row.get("expectancy_bps_mean", 0.0)),
+                "period_pnl_mean": safe_float(row.get("period_pnl_mean", 0.0)),
+                "max_dd_mean": safe_float(row.get("max_dd_mean", 0.0)),
+                "closed_trades_mean": safe_float(row.get("closed_trades_mean", 0.0)),
                 "params": {},
             }
 
@@ -432,20 +407,8 @@ def build_full_route_manifest(
             str(row.get("timeframe", "")),
         ),
     )
-    trend_enabled_symbols = _unique(
-        [
-            str(row.get("symbol", ""))
-            for row in ordered_routes
-            if str(row.get("strategy", "")) == "trend"
-        ]
-    )
-    range_enabled_symbols = _unique(
-        [
-            str(row.get("symbol", ""))
-            for row in ordered_routes
-            if str(row.get("strategy", "")) == "range"
-        ]
-    )
+    trend_enabled_symbols = _unique([str(row.get("symbol", "")) for row in ordered_routes if str(row.get("strategy", "")) == "trend"])
+    range_enabled_symbols = _unique([str(row.get("symbol", "")) for row in ordered_routes if str(row.get("strategy", "")) == "range"])
     symbol_timeframes: dict[str, str] = {}
     for row in ordered_routes:
         symbol_timeframes.setdefault(str(row.get("symbol", "")), str(row.get("timeframe", "")))
@@ -469,16 +432,8 @@ def build_full_route_manifest(
 def render_manifest_markdown(manifest: dict[str, Any]) -> str:
     selection = manifest.get("selection", {})
     routes = selection.get("trade_routes", []) if isinstance(selection, dict) else []
-    trend_symbols = (
-        ", ".join(selection.get("trend_enabled_symbols", []))
-        if isinstance(selection, dict)
-        else "-"
-    )
-    range_symbols = (
-        ", ".join(selection.get("range_enabled_symbols", []))
-        if isinstance(selection, dict)
-        else "-"
-    )
+    trend_symbols = ", ".join(selection.get("trend_enabled_symbols", [])) if isinstance(selection, dict) else "-"
+    range_symbols = ", ".join(selection.get("range_enabled_symbols", [])) if isinstance(selection, dict) else "-"
     lines = [
         "# Autotune Route Manifest",
         "",
@@ -489,10 +444,7 @@ def render_manifest_markdown(manifest: dict[str, Any]) -> str:
         f"- range_enabled_symbols: {range_symbols}",
     ]
     if str(manifest.get("selection_mode", "")) == "core_refinement":
-        lines.append(
-            "- note: matching baseline core routes are overwritten by "
-            "refinement-selected routes in this manifest."
-        )
+        lines.append("- note: matching baseline core routes are overwritten by refinement-selected routes in this manifest.")
     lines.extend(
         [
             "",
@@ -517,13 +469,6 @@ def render_manifest_markdown(manifest: dict[str, Any]) -> str:
             )
         )
     return "\n".join(lines) + "\n"
-
-
-def _safe_float(value: object) -> float:
-    try:
-        return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return 0.0
 
 
 def _unique(values: list[str]) -> list[str]:

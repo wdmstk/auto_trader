@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, cast
 
 import pandas as pd
 
 from auto_trader.analysis.trade_routes import resolve_live_trade_routes
+from auto_trader.utils import load_json_object, load_json_rows, parse_csv
 
 
 def build_weekly_revalidation_report(
@@ -298,12 +298,7 @@ def _mean(rows: list[dict[str, Any]], key: str) -> float:
 
 
 def _load_rows(summary: str | Path | dict[str, Any]) -> list[dict[str, Any]]:
-    payload = _load_obj(summary)
-    if isinstance(payload, dict):
-        rows = payload.get("rows", [])
-        if isinstance(rows, list):
-            return [row for row in rows if isinstance(row, dict)]
-    return []
+    return load_json_rows(summary)
 
 
 def _load_risk_eval(
@@ -327,31 +322,11 @@ def _load_risk_eval(
 
 
 def _load_obj(payload: str | Path | dict[str, Any] | None) -> dict[str, Any]:
-    if payload is None:
-        return {}
-    if isinstance(payload, str | Path):
-        loaded = json.loads(Path(payload).read_text(encoding="utf-8"))
-        return cast(dict[str, Any], loaded) if isinstance(loaded, dict) else {}
-    return payload if isinstance(payload, dict) else {}
+    return load_json_object(payload)
 
 
 def _csv_symbols(values: Any) -> list[str]:
-    if isinstance(values, list):
-        source = values
-    elif isinstance(values, tuple):
-        source = list(values)
-    elif isinstance(values, str):
-        source = [item.strip() for item in values.split(",") if item.strip()]
-    else:
-        source = []
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for value in source:
-        symbol = str(value).strip()
-        if symbol and symbol not in seen:
-            seen.add(symbol)
-            ordered.append(symbol)
-    return ordered
+    return list(parse_csv(values))
 
 
 def _check_reason(label: str, checks: dict[str, bool], status: str) -> dict[str, Any]:
@@ -1165,7 +1140,7 @@ def _apply_statistical_to_candidate(candidate: dict[str, Any], statistical: dict
             if not isinstance(raw, dict):
                 continue
             row = dict(raw)
-            route_key = f"{str(row.get('strategy', '')).strip()}:" f"{str(row.get('symbol', '')).strip()}:" f"{str(row.get('timeframe', '')).strip()}"
+            route_key = f"{str(row.get('strategy', '')).strip()}:{str(row.get('symbol', '')).strip()}:{str(row.get('timeframe', '')).strip()}"
             row["statistical_status"] = "pass" if statistical_status == "pass" and route_key in passed else "fail"
             if row.get("candidate_status") == "core" and row["statistical_status"] != "pass":
                 row["candidate_status"] = "watchlist"

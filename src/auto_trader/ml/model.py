@@ -8,6 +8,8 @@ from pathlib import Path
 import pandas as pd
 from lightgbm import LGBMClassifier
 
+from auto_trader.utils import write_json_file
+
 KEY_COLS = ["symbol", "timeframe", "timestamp"]
 
 
@@ -147,7 +149,7 @@ def save_model_artifacts(artifacts: ModelArtifacts, artifact_dir: str | Path) ->
         "feature_columns": artifacts.feature_columns,
         "model_filename": model_path.name,
     }
-    meta_path.write_text(json.dumps(meta, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_json_file(meta_path, meta)
     return str(meta_path)
 
 
@@ -234,9 +236,7 @@ def _validate_feature_version(df: pd.DataFrame, expected: str) -> None:
         if expected == "unknown":
             return
         raise ValueError("feature_version missing for model inference")
-    versions = {
-        str(v) for v in df["feature_version"].dropna().astype(str).tolist() if str(v).strip()
-    }
+    versions = {str(v) for v in df["feature_version"].dropna().astype(str).tolist() if str(v).strip()}
     if not versions:
         if expected == "unknown":
             return

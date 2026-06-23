@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
 import pandas as pd
+
+from auto_trader.utils import load_json_rows, write_json_file
 
 
 @dataclass(frozen=True)
@@ -50,8 +51,7 @@ def recommend_symbol_candidates(
     df = _prepare_candidate_frame(df)
     global_report = _build_candidate_report(df, thresholds=t)
     timeframe_reports = [
-        _build_candidate_report(df[df["timeframe"].astype(str) == timeframe].copy(), thresholds=t)
-        | {"timeframe": timeframe}
+        _build_candidate_report(df[df["timeframe"].astype(str) == timeframe].copy(), thresholds=t) | {"timeframe": timeframe}
         for timeframe in _sort_timeframes(df["timeframe"].astype(str).unique().tolist())
         if not df[df["timeframe"].astype(str) == timeframe].empty
     ]
@@ -59,9 +59,7 @@ def recommend_symbol_candidates(
     return {
         "thresholds": t.__dict__,
         **global_report,
-        "timeframes": _sort_timeframes(df["timeframe"].astype(str).unique().tolist())
-        if "timeframe" in df.columns
-        else [],
+        "timeframes": _sort_timeframes(df["timeframe"].astype(str).unique().tolist()) if "timeframe" in df.columns else [],
         "timeframe_reports": timeframe_reports,
     }
 
@@ -73,22 +71,12 @@ def write_candidate_report(
     thresholds: CandidateThresholds | None = None,
 ) -> dict[str, Any]:
     report = recommend_symbol_candidates(summary, thresholds=thresholds)
-    out = Path(json_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(report, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_json_file(json_path, report)
     return report
 
 
 def _load_rows(summary: str | Path | dict[str, Any]) -> list[dict[str, Any]]:
-    if isinstance(summary, str | Path):
-        payload = json.loads(Path(summary).read_text(encoding="utf-8"))
-    else:
-        payload = summary
-    if isinstance(payload, dict):
-        rows = payload.get("rows", [])
-        if isinstance(rows, list):
-            return [r for r in rows if isinstance(r, dict)]
-    return []
+    return load_json_rows(summary)
 
 
 def _prepare_candidate_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -137,10 +125,7 @@ def _build_candidate_report(
         ~core_mask
         & (df["closed_trades_mean"] >= thresholds.min_closed_trades)
         & (df["pf_mean"] >= thresholds.probe_min_pf)
-        & (
-            (df["expectancy_bps_mean"] > thresholds.probe_min_expectancy_bps)
-            | (df["period_pnl_mean"] > thresholds.probe_min_period_pnl)
-        )
+        & ((df["expectancy_bps_mean"] > thresholds.probe_min_expectancy_bps) | (df["period_pnl_mean"] > thresholds.probe_min_period_pnl))
         & (df["max_dd_mean"] <= thresholds.probe_max_drawdown)
     )
 
@@ -154,9 +139,7 @@ def _build_candidate_report(
         + (2.0 * working["closed_trades_mean"].map(lambda v: float(v) ** 0.5))
         - (100.0 * working["max_dd_mean"])
     )
-    working["candidate_priority"] = working["candidate_status"].map(
-        {"core": 0, "probe": 1, "watchlist": 2}
-    )
+    working["candidate_priority"] = working["candidate_status"].map({"core": 0, "probe": 1, "watchlist": 2})
 
     ordered = working.sort_values(
         [
@@ -209,9 +192,7 @@ def _build_candidate_report(
 
     return {
         "rows": ordered.drop(columns=["candidate_priority"]).to_dict(orient="records"),
-        "best_by_symbol_strategy": best_rows.drop(columns=["candidate_priority"]).to_dict(
-            orient="records"
-        ),
+        "best_by_symbol_strategy": best_rows.drop(columns=["candidate_priority"]).to_dict(orient="records"),
         "core_symbols": status_symbols["core"],
         "probe_symbols": status_symbols["probe"],
         "watchlist_symbols": status_symbols["watchlist"],
@@ -257,11 +238,7 @@ def _limit_metrics_summary(df: pd.DataFrame) -> dict[str, float]:
     ]
     out: dict[str, float] = {}
     for col in cols:
-        out[col] = (
-            float(pd.to_numeric(df[col], errors="coerce").fillna(0.0).mean())
-            if col in df.columns
-            else 0.0
-        )
+        out[col] = float(pd.to_numeric(df[col], errors="coerce").fillna(0.0).mean()) if col in df.columns else 0.0
     return out
 
 

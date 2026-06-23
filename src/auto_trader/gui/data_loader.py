@@ -66,6 +66,7 @@ def _is_safe_data_path(path_str: str) -> bool:
     )
 
 
+
 @st.cache_data(ttl=10, show_spinner=False)
 def _read_optional_cached(path_str: str) -> pd.DataFrame:
     path = Path(path_str)
@@ -310,7 +311,6 @@ def _runtime_health_messages(latest: dict[str, object]) -> tuple[str, list[str]]
     if warnings:
         return "warning", warnings
     return "ok", ["Runtime metrics are within normal ranges."]
-
 
 
 def _load_symbol_regime(
@@ -652,7 +652,6 @@ def _cached_exchange_positions_snapshot(refresh_token: int, cache_marker: str) -
     return _fetch_exchange_positions_snapshot()
 
 
-
 def _live_pnl_frame(position_df: pd.DataFrame) -> pd.DataFrame:
     if position_df.empty:
         return pd.DataFrame(
@@ -786,7 +785,6 @@ def _load_walkforward_artifact(symbol: str, timeframe: str, strategy: str, kind:
 def _load_walkforward_metric_map_legacy_removed(strategy: str) -> dict[str, dict[str, float]]:
     # Kept as a stub for compatibility; no longer used.
     return {}
-
 
 
 def _read_jsonl_table(path_str: str, tail_rows: int = 200) -> pd.DataFrame:
@@ -1198,7 +1196,6 @@ def _flatten_candidate_best_rows(report: Mapping[str, object]) -> list[dict[str,
     return rows
 
 
-
 def _load_regime_snapshot(
     regime_dir: Path = DATA_DIR / "regime",
 ) -> pd.DataFrame:
@@ -1278,7 +1275,6 @@ def _candidate_frame(report: Mapping[str, object], status: str | None = None) ->
     if status is not None and "candidate_status" in frame.columns:
         frame = frame[frame["candidate_status"].astype(str) == status].copy()
     return frame.reset_index(drop=True)
-
 
 
 def _candidate_best_by_symbol(report: Mapping[str, object]) -> dict[str, dict[str, object]]:
@@ -1900,4 +1896,3 @@ def _operator_summary(
         "decision_status": str(decision_payload.get("status", candidate_rollup["status"])),
         "candidate_rollup": candidate_rollup,
     }
-

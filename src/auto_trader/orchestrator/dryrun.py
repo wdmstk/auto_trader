@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -10,6 +9,7 @@ from auto_trader.e2e.smoke import run_e2e_smoke
 from auto_trader.notify.config import build_notifiers_from_env
 from auto_trader.notify.models import AlertMessage
 from auto_trader.ops.pipeline import run_alert_pipeline
+from auto_trader.utils import write_json_file
 
 
 @dataclass(frozen=True)
@@ -144,7 +144,7 @@ def _finalize(steps: list[DryRunStep], out_dir: Path) -> dict[str, object]:
         "steps": [asdict(s) for s in steps],
     }
     path = out_dir / "dryrun_report.json"
-    path.write_text(json.dumps(report, ensure_ascii=True), encoding="utf-8")
+    write_json_file(path, report, indent=None)
     return {"overall_status": overall, "report_path": str(path), "steps": report["steps"]}
 
 

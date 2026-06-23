@@ -9,6 +9,7 @@ from typing import Protocol, cast
 
 from auto_trader.gui.state import Action
 from auto_trader.stateio import FileLock
+from auto_trader.utils import write_json_file
 
 
 class ControlActionHandler(Protocol):
@@ -35,11 +36,7 @@ def dispatch_control_events(
     log_path = Path(control_log_path)
     if not log_path.exists():
         return ControlDispatchResult(processed=0, actions=[])
-    quarantine = (
-        Path(quarantine_path)
-        if quarantine_path is not None
-        else log_path.with_name(f"{log_path.stem}.bad{log_path.suffix}")
-    )
+    quarantine = Path(quarantine_path) if quarantine_path is not None else log_path.with_name(f"{log_path.stem}.bad{log_path.suffix}")
 
     lines = log_path.read_text(encoding="utf-8").splitlines()
     cursor = Path(cursor_path) if cursor_path is not None else None
@@ -95,12 +92,11 @@ def _read_cursor(path: Path) -> int:
 
 
 def _write_cursor(path: Path, line_no: int) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "last_processed_line": max(line_no, 0),
         "updated_at": datetime.now(UTC).isoformat(),
     }
-    path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+    write_json_file(path, payload, indent=None)
 
 
 def _append_quarantine(path: Path, line: str, *, reason: str) -> None:

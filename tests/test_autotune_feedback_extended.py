@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 from auto_trader.analysis.autotune_feedback import (
-    _safe_float,
     _unique,
     build_autotune_feedback,
     extract_effective_params,
@@ -97,9 +96,7 @@ def test_parse_config_label_range_matrix_no_match() -> None:
 
 
 def test_parse_config_label_regime_threshold() -> None:
-    result = parse_config_label(
-        "regime_threshold", "adx25_breakouthold2_regimehold1_hvcool5"
-    )
+    result = parse_config_label("regime_threshold", "adx25_breakouthold2_regimehold1_hvcool5")
     assert result == {
         "regime_trend_adx_threshold": 25.0,
         "regime_trend_breakout_persistence_min_bars": 2,
@@ -230,9 +227,11 @@ def test_render_markdown_includes_route_table() -> None:
 
 
 def test_safe_float_returns_zero_for_invalid() -> None:
-    assert _safe_float("not_a_number") == 0.0
-    assert _safe_float(None) == 0.0
-    assert _safe_float(42) == 42.0
+    from auto_trader.utils import safe_float
+
+    assert safe_float("not_a_number") == 0.0
+    assert safe_float(None) == 0.0
+    assert safe_float(42) == 42.0
 
 
 def test_unique_deduplicates_and_uppercases() -> None:
@@ -324,9 +323,7 @@ def test_write_autotune_feedback_writes_all_artifacts(tmp_path: Path) -> None:
                             "config_label": "trend_hold48",
                             "pf_mean": 1.5,
                         },
-                        "stages": [
-                            {"stage": "hold", "best": {"config_label": "trend_hold48"}}
-                        ],
+                        "stages": [{"stage": "hold", "best": {"config_label": "trend_hold48"}}],
                     }
                 ],
             }
