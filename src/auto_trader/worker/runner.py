@@ -1013,6 +1013,7 @@ class LiveTradingWorker:
                     artifact_path=ml_artifact_path,
                 )
             except Exception as exc:
+                logger.error("ml_filter failed for %s/%s: %s", symbol, timeframe, exc, exc_info=True)
                 self.worker_state.last_error = f"ml_filter_error:{exc.__class__.__name__}"
                 return None
         closed_cutoff = pd.to_datetime(base["timestamp"].iloc[-1], utc=True).floor(_pandas_timeframe_rule(timeframe))
@@ -1065,6 +1066,7 @@ class LiveTradingWorker:
         try:
             return WorkerState.load(path)
         except Exception:
+            logger.warning("worker_state corrupt at %s, resetting", path, exc_info=True)
             return WorkerState()
 
     def _latest_risk_input_rows(self) -> pd.DataFrame:
@@ -1074,6 +1076,7 @@ class LiveTradingWorker:
         try:
             frame = pd.read_parquet(path)
         except Exception:
+            logger.warning("risk_input unreadable at %s", path, exc_info=True)
             return pd.DataFrame()
         if frame.empty or "symbol" not in frame.columns:
             return pd.DataFrame()
