@@ -26,12 +26,14 @@ logging:
 
 strategy:
   range:
-    rsi_min: 30.0
-    rsi_max: 60.0
-    wick_ratio_min: 0.2
-    mean_reversion_distance_max: 0.0
-    min_entry_score: 0.5
+    rsi_min: 35.0
+    rsi_max: 50.0
+    wick_ratio_min: 0.3
+    mean_reversion_distance_max: -0.3
+    exit_mean_reversion_neutral_abs: 0.15
+    min_entry_score: 0.75
     require_reversal_candle: false
+    max_hold_bars: 16
   trend:
     breakout_persistence_min: 0.5
     momentum_persistence_min: 0.4
@@ -41,7 +43,7 @@ strategy:
 
 worker:
   trend_symbols: SOLUSDT,ETHUSDT,XRPUSDT
-  range_symbols: SOLUSDT,XRPUSDT
+  range_symbols: BTCUSDT,ETHUSDT
   strategy_timeframe: 15m
   cache_enabled: false
   cache_dir: data/cache/market_data
