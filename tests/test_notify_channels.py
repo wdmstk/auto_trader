@@ -157,7 +157,7 @@ def test_send_http_handles_generic_exception() -> None:
     result = _send_http("test_ch", "CODE", Request("https://test"), sender, 5.0)
     assert result.success is False
     assert result.response_code == 0
-    assert result.error_reason == "send_error"
+    assert result.error_reason == "send_error:RuntimeError"
 
 
 def test_send_http_success_code_200() -> None:

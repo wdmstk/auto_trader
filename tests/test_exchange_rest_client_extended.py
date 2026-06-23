@@ -49,9 +49,7 @@ def test_fetch_account_positions_network_error() -> None:
     def sender(req: Request, timeout: float) -> str:
         raise URLError("network down")
 
-    t = BinanceRestTransport(
-        RestClientConfig(api_key="k", api_secret="s"), sender=sender
-    )
+    t = BinanceRestTransport(RestClientConfig(api_key="k", api_secret="s"), sender=sender)
     rows, reason = t.fetch_account_positions()
     assert rows == []
     assert reason == "network_error"
@@ -61,9 +59,7 @@ def test_fetch_account_positions_timeout() -> None:
     def sender(req: Request, timeout: float) -> str:
         raise TimeoutError("timed out")
 
-    t = BinanceRestTransport(
-        RestClientConfig(api_key="k", api_secret="s"), sender=sender
-    )
+    t = BinanceRestTransport(RestClientConfig(api_key="k", api_secret="s"), sender=sender)
     rows, reason = t.fetch_account_positions()
     assert rows == []
     assert reason == "timeout"
@@ -73,21 +69,17 @@ def test_fetch_account_positions_rest_error() -> None:
     def sender(req: Request, timeout: float) -> str:
         raise RuntimeError("unexpected")
 
-    t = BinanceRestTransport(
-        RestClientConfig(api_key="k", api_secret="s"), sender=sender
-    )
+    t = BinanceRestTransport(RestClientConfig(api_key="k", api_secret="s"), sender=sender)
     rows, reason = t.fetch_account_positions()
     assert rows == []
-    assert reason == "rest_error"
+    assert reason == "rest_error:RuntimeError"
 
 
 def test_fetch_account_positions_invalid_json() -> None:
     def sender(req: Request, timeout: float) -> str:
         return "not json"
 
-    t = BinanceRestTransport(
-        RestClientConfig(api_key="k", api_secret="s"), sender=sender
-    )
+    t = BinanceRestTransport(RestClientConfig(api_key="k", api_secret="s"), sender=sender)
     rows, reason = t.fetch_account_positions()
     assert rows == []
     assert reason == "invalid_response"
@@ -97,9 +89,7 @@ def test_fetch_account_positions_not_dict() -> None:
     def sender(req: Request, timeout: float) -> str:
         return json.dumps([1, 2])
 
-    t = BinanceRestTransport(
-        RestClientConfig(api_key="k", api_secret="s"), sender=sender
-    )
+    t = BinanceRestTransport(RestClientConfig(api_key="k", api_secret="s"), sender=sender)
     rows, reason = t.fetch_account_positions()
     assert rows == []
     assert reason == "invalid_response"
@@ -109,9 +99,7 @@ def test_fetch_account_positions_positions_not_list() -> None:
     def sender(req: Request, timeout: float) -> str:
         return json.dumps({"positions": "not_a_list"})
 
-    t = BinanceRestTransport(
-        RestClientConfig(api_key="k", api_secret="s"), sender=sender
-    )
+    t = BinanceRestTransport(RestClientConfig(api_key="k", api_secret="s"), sender=sender)
     rows, reason = t.fetch_account_positions()
     assert rows == []
     assert reason == "invalid_response"
@@ -127,9 +115,7 @@ def test_fetch_account_positions_http_error() -> None:
             fp=BytesIO(b""),
         )
 
-    t = BinanceRestTransport(
-        RestClientConfig(api_key="k", api_secret="s"), sender=sender
-    )
+    t = BinanceRestTransport(RestClientConfig(api_key="k", api_secret="s"), sender=sender)
     rows, reason = t.fetch_account_positions()
     assert rows == []
     assert "http_error:403" in reason
@@ -155,9 +141,7 @@ def test_fetch_account_positions_sell_side() -> None:
             }
         )
 
-    t = BinanceRestTransport(
-        RestClientConfig(api_key="k", api_secret="s"), sender=sender
-    )
+    t = BinanceRestTransport(RestClientConfig(api_key="k", api_secret="s"), sender=sender)
     rows, reason = t.fetch_account_positions()
     assert reason == "ok"
     assert len(rows) == 1
@@ -170,9 +154,7 @@ def test_send_order_timeout() -> None:
     def sender(req: Request, timeout: float) -> str:
         raise TimeoutError("timed out")
 
-    t = BinanceRestTransport(
-        RestClientConfig(api_key="k", api_secret="s"), sender=sender
-    )
+    t = BinanceRestTransport(RestClientConfig(api_key="k", api_secret="s"), sender=sender)
     ok, order_id, reason = t.send_order(_order())
     assert ok is False
     assert reason == "timeout"
@@ -182,21 +164,17 @@ def test_send_order_rest_error() -> None:
     def sender(req: Request, timeout: float) -> str:
         raise RuntimeError("unexpected")
 
-    t = BinanceRestTransport(
-        RestClientConfig(api_key="k", api_secret="s"), sender=sender
-    )
+    t = BinanceRestTransport(RestClientConfig(api_key="k", api_secret="s"), sender=sender)
     ok, order_id, reason = t.send_order(_order())
     assert ok is False
-    assert reason == "rest_error"
+    assert reason == "rest_error:RuntimeError"
 
 
 def test_send_order_invalid_response_json() -> None:
     def sender(req: Request, timeout: float) -> str:
         return "not json"
 
-    t = BinanceRestTransport(
-        RestClientConfig(api_key="k", api_secret="s"), sender=sender
-    )
+    t = BinanceRestTransport(RestClientConfig(api_key="k", api_secret="s"), sender=sender)
     ok, order_id, reason = t.send_order(_order())
     assert ok is False
     assert reason == "invalid_response"
@@ -206,9 +184,7 @@ def test_send_order_rejected_no_order_id() -> None:
     def sender(req: Request, timeout: float) -> str:
         return json.dumps({"status": "REJECTED"})
 
-    t = BinanceRestTransport(
-        RestClientConfig(api_key="k", api_secret="s"), sender=sender
-    )
+    t = BinanceRestTransport(RestClientConfig(api_key="k", api_secret="s"), sender=sender)
     ok, order_id, reason = t.send_order(_order())
     assert ok is False
     assert order_id == ""
