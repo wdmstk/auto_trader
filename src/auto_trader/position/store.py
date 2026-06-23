@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any, cast
@@ -8,6 +9,8 @@ import pandas as pd
 
 from auto_trader.position.models import PositionState
 from auto_trader.stateio import FileLock, atomic_write_file
+
+logger = logging.getLogger(__name__)
 
 
 class PositionStore:
@@ -77,7 +80,9 @@ def _read_parquet_with_recovery(path: Path) -> pd.DataFrame:
     try:
         return pd.read_parquet(path)
     except Exception:
+        logger.warning("positions parquet unreadable at %s, trying backup", path, exc_info=True)
         if backup.exists():
+            logger.info("recovered positions from backup %s", backup)
             return pd.read_parquet(backup)
     return pd.DataFrame(
         columns=[

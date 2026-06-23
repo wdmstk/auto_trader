@@ -103,7 +103,7 @@ class NotificationService:
             return False
         try:
             prev_dt = datetime.fromisoformat(prev)
-        except Exception:
+        except (ValueError, TypeError):
             return False
         return (now - prev_dt).total_seconds() < self.policy.cooldown_sec
 

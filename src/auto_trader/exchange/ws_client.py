@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -22,7 +25,8 @@ class BinanceWsExecutionClient:
     def parse_message(self, raw_message: str) -> ExecutionStreamEvent | None:
         try:
             data = json.loads(raw_message)
-        except Exception:
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            logger.warning("ws_parse_error: %s raw=%s", exc, raw_message[:200])
             return None
 
         # Supports both wrapped stream payload and direct event payload.

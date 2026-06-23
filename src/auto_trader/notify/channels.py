@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import smtplib
 from collections.abc import Callable
 from email.message import EmailMessage
@@ -9,6 +10,8 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from auto_trader.notify.models import AlertMessage, SendResult
+
+logger = logging.getLogger(__name__)
 
 HttpSender = Callable[[Request, float], tuple[int, str]]
 
@@ -166,14 +169,15 @@ def _send_http(
             response_code=0,
             error_reason="timeout",
         )
-    except Exception:
+    except Exception as exc:
+        logger.warning("notify send_http failed for %s: %s", alert_code, exc)
         return SendResult(
             channel=channel,
             alert_code=alert_code,
             sent_at="",
             success=False,
             response_code=0,
-            error_reason="send_error",
+            error_reason=f"send_error:{exc.__class__.__name__}",
         )
 
 
@@ -189,5 +193,6 @@ def _default_email_sender(host: str, port: int, msg: EmailMessage) -> tuple[bool
             smtp.starttls()
             smtp.send_message(msg)
         return True, ""
-    except Exception:
-        return False, "smtp_error"
+    except Exception as exc:
+        logger.warning("smtp send failed: %s", exc)
+        return False, f"smtp_error:{exc.__class__.__name__}"
