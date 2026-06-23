@@ -28,20 +28,24 @@ BASELINE_CANDIDATE_REPORT_PATH="${BASELINE_CANDIDATE_REPORT_PATH:-$BASELINE_DIR/
 BASELINE_RESULT_LIST_PATH="${BASELINE_RESULT_LIST_PATH:-$BASELINE_DIR/timeframe_comparison_result_list.md}"
 if [[ "$OUTPUT_LAYOUT" == "simple_stage" ]]; then
   RANGE_MATRIX_DIR="$OUT_DIR/cases"
+  RANGE_QUALITY_DIR="$OUT_DIR/cases"
   TREND_MATRIX_DIR="$OUT_DIR/cases"
   TREND_NEXT_STEP_DIR="$OUT_DIR/cases"
   TREND_PROVISIONAL_CORE_DIR="$OUT_DIR/cases"
   TREND_ENTRY_THRESHOLD_DIR="$OUT_DIR/cases"
   HOLD_EXIT_DIR="$OUT_DIR/cases"
   REGIME_THRESHOLD_DIR="$OUT_DIR/cases"
+  RANGE_REGIME_THRESHOLD_DIR="$OUT_DIR/cases"
 else
   RANGE_MATRIX_DIR="$OUT_DIR/range_matrix"
+  RANGE_QUALITY_DIR="$OUT_DIR/range_quality_matrix"
   TREND_MATRIX_DIR="$OUT_DIR/trend_matrix"
   TREND_NEXT_STEP_DIR="$OUT_DIR/trend_next_step_matrix"
   TREND_PROVISIONAL_CORE_DIR="$OUT_DIR/trend_provisional_core_matrix"
   TREND_ENTRY_THRESHOLD_DIR="$OUT_DIR/trend_entry_threshold_matrix"
   HOLD_EXIT_DIR="$OUT_DIR/hold_exit_matrix"
   REGIME_THRESHOLD_DIR="$OUT_DIR/regime_threshold_matrix"
+  RANGE_REGIME_THRESHOLD_DIR="$OUT_DIR/range_regime_threshold_matrix"
 fi
 AGGREGATE_JSON="$OUT_DIR/core_expansion_tuning_summary.json"
 AGGREGATE_MD="$OUT_DIR/core_expansion_tuning_summary.md"
@@ -55,6 +59,10 @@ HOLD_EXIT_JSON="$OUT_DIR/hold_exit_summary.json"
 HOLD_EXIT_MD="$OUT_DIR/hold_exit_summary.md"
 REGIME_THRESHOLD_JSON="$OUT_DIR/regime_threshold_summary.json"
 REGIME_THRESHOLD_MD="$OUT_DIR/regime_threshold_summary.md"
+RANGE_QUALITY_JSON="$OUT_DIR/range_quality_summary.json"
+RANGE_QUALITY_MD="$OUT_DIR/range_quality_summary.md"
+RANGE_REGIME_THRESHOLD_JSON="$OUT_DIR/range_regime_threshold_summary.json"
+RANGE_REGIME_THRESHOLD_MD="$OUT_DIR/range_regime_threshold_summary.md"
 TREND_ENTRY_DIAGNOSTICS_JSON="$OUT_DIR/trend_entry_diagnostics.json"
 TREND_ENTRY_DIAGNOSTICS_MD="$OUT_DIR/trend_entry_diagnostics.md"
 FOLD_BREAKDOWN_MD="$OUT_DIR/fold_breakdown.md"
@@ -69,6 +77,7 @@ LOSS_HOLD_THRESHOLD_MD="$OUT_DIR/loss_hold_threshold.md"
 TUNING_PROFILE="${TUNING_PROFILE:-default}"
 RUN_BASELINE="${RUN_BASELINE:-1}"
 RUN_RANGE_MATRIX="${RUN_RANGE_MATRIX:-0}"
+RUN_RANGE_QUALITY_MATRIX="${RUN_RANGE_QUALITY_MATRIX:-1}"
 RUN_TREND_MATRIX="${RUN_TREND_MATRIX:-0}"
 RUN_TREND_NEXT_STEP_MATRIX="${RUN_TREND_NEXT_STEP_MATRIX:-1}"
 RUN_TREND_PROVISIONAL_CORE_MATRIX="${RUN_TREND_PROVISIONAL_CORE_MATRIX:-0}"
@@ -86,6 +95,8 @@ RUN_BUILD_TREND_PROVISIONAL_CORE_REPORT="${RUN_BUILD_TREND_PROVISIONAL_CORE_REPO
 RUN_BUILD_TREND_ENTRY_THRESHOLD_REPORT="${RUN_BUILD_TREND_ENTRY_THRESHOLD_REPORT:-1}"
 RUN_BUILD_HOLD_EXIT_REPORT="${RUN_BUILD_HOLD_EXIT_REPORT:-1}"
 RUN_BUILD_REGIME_THRESHOLD_REPORT="${RUN_BUILD_REGIME_THRESHOLD_REPORT:-0}"
+RUN_RANGE_REGIME_THRESHOLD_MATRIX="${RUN_RANGE_REGIME_THRESHOLD_MATRIX:-0}"
+RUN_BUILD_RANGE_QUALITY_REPORT="${RUN_BUILD_RANGE_QUALITY_REPORT:-1}"
 LOSS_HOLD_THRESHOLD_MAX_ROUTES="${LOSS_HOLD_THRESHOLD_MAX_ROUTES:-10}"
 LOSS_HOLD_THRESHOLDS_HOURS="${LOSS_HOLD_THRESHOLDS_HOURS:-2,4,6,8,12,24,36,48}"
 
@@ -93,11 +104,18 @@ SYMBOLS_ALL="${SYMBOLS_ALL:-BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,BNBUSDT,ADAUSDT}"
 TIMEFRAMES_ALL="${TIMEFRAMES_ALL:-15m,30m,1h}"
 STRATEGIES_ALL="${STRATEGIES_ALL:-range,trend}"
 
-RANGE_TARGET_SYMBOLS="${RANGE_TARGET_SYMBOLS:-SOLUSDT,XRPUSDT}"
+RANGE_TARGET_SYMBOLS="${RANGE_TARGET_SYMBOLS:-BTCUSDT,ETHUSDT}"
 RANGE_TARGET_TIMEFRAME="${RANGE_TARGET_TIMEFRAME:-30m}"
 RANGE_WICK_RATIO_MIN_LIST="${RANGE_WICK_RATIO_MIN_LIST:-0.2,0.15,0.1}"
 RANGE_REQUIRE_REVERSAL_CANDLE_LIST="${RANGE_REQUIRE_REVERSAL_CANDLE_LIST:-false,true}"
 RANGE_REENTRY_COOLDOWN_BARS_LIST="${RANGE_REENTRY_COOLDOWN_BARS_LIST:-2,1,0}"
+RANGE_QUALITY_SYMBOLS="${RANGE_QUALITY_SYMBOLS:-BTCUSDT,ETHUSDT}"
+RANGE_QUALITY_TIMEFRAMES="${RANGE_QUALITY_TIMEFRAMES:-15m,30m}"
+RANGE_RSI_MIN_LIST="${RANGE_RSI_MIN_LIST:-35,40}"
+RANGE_RSI_MAX_LIST="${RANGE_RSI_MAX_LIST:-50,55}"
+RANGE_MR_DISTANCE_MAX_LIST="${RANGE_MR_DISTANCE_MAX_LIST:--0.3,-0.5,-0.1}"
+RANGE_EXIT_NEUTRAL_ABS_LIST="${RANGE_EXIT_NEUTRAL_ABS_LIST:-0.1,0.15,0.2}"
+RANGE_QUALITY_MIN_ENTRY_SCORE_LIST="${RANGE_QUALITY_MIN_ENTRY_SCORE_LIST:-0.75,1.0}"
 
 TREND_TARGET_SYMBOLS="${TREND_TARGET_SYMBOLS:-ETHUSDT,ADAUSDT}"
 TREND_TARGET_TIMEFRAMES="${TREND_TARGET_TIMEFRAMES:-15m,1h}"
@@ -136,6 +154,10 @@ REGIME_TREND_ADX_THRESHOLD_LIST="${REGIME_TREND_ADX_THRESHOLD_LIST:-25,22,20,18}
 REGIME_TREND_BREAKOUT_PERSISTENCE_MIN_BARS_LIST="${REGIME_TREND_BREAKOUT_PERSISTENCE_MIN_BARS_LIST:-3,2}"
 MIN_REGIME_HOLD_BARS_LIST="${MIN_REGIME_HOLD_BARS_LIST:-3,2,1}"
 HIGH_VOL_COOLDOWN_BARS_LIST="${HIGH_VOL_COOLDOWN_BARS_LIST:-5,3,1}"
+REGIME_RANGE_SYMBOLS="${REGIME_RANGE_SYMBOLS:-BTCUSDT,ETHUSDT}"
+REGIME_RANGE_TIMEFRAMES="${REGIME_RANGE_TIMEFRAMES:-15m,30m}"
+REGIME_RANGE_BB_WIDTH_PERCENTILE_MAX_LIST="${REGIME_RANGE_BB_WIDTH_PERCENTILE_MAX_LIST:-40,50,60}"
+REGIME_RANGE_ADX_MAX_LIST="${REGIME_RANGE_ADX_MAX_LIST:-20,25,30}"
 
 CORE_CANDIDATE_ROUTES="${CORE_CANDIDATE_ROUTES:-range:SOLUSDT:30m,trend:ETHUSDT:15m,trend:ADAUSDT:1h,trend:ETHUSDT:1h,range:XRPUSDT:30m}"
 LOGIC_REVIEW_ROUTES="${LOGIC_REVIEW_ROUTES:-range:BNBUSDT:30m,range:ADAUSDT:15m,range:SOLUSDT:30m,trend:XRPUSDT:1h,trend:ETHUSDT:15m}"
@@ -153,6 +175,8 @@ apply_profile_defaults() {
       ;;
     hold_only)
       RUN_RANGE_MATRIX=0
+      RUN_RANGE_QUALITY_MATRIX=0
+      RUN_RANGE_REGIME_THRESHOLD_MATRIX=0
       RUN_TREND_MATRIX=0
       RUN_TREND_NEXT_STEP_MATRIX=0
       RUN_TREND_PROVISIONAL_CORE_MATRIX=0
@@ -173,6 +197,8 @@ apply_profile_defaults() {
       ;;
     hold_fine)
       RUN_RANGE_MATRIX=0
+      RUN_RANGE_QUALITY_MATRIX=0
+      RUN_RANGE_REGIME_THRESHOLD_MATRIX=0
       RUN_TREND_MATRIX=0
       RUN_TREND_NEXT_STEP_MATRIX=0
       RUN_TREND_PROVISIONAL_CORE_MATRIX=0
@@ -202,6 +228,8 @@ apply_profile_defaults() {
     regime_only)
       RUN_BASELINE=1
       RUN_RANGE_MATRIX=0
+      RUN_RANGE_QUALITY_MATRIX=0
+      RUN_RANGE_REGIME_THRESHOLD_MATRIX=0
       RUN_TREND_MATRIX=0
       RUN_TREND_NEXT_STEP_MATRIX=0
       RUN_TREND_PROVISIONAL_CORE_MATRIX=0
@@ -235,8 +263,8 @@ echo "baseline_dir=$BASELINE_DIR"
 echo "parallel=$PARALLEL case_parallel=$CASE_PARALLEL hold_case_parallel=$HOLD_CASE_PARALLEL regime_case_parallel=$REGIME_CASE_PARALLEL"
 echo "output_layout=$OUTPUT_LAYOUT"
 echo "tuning_profile=$TUNING_PROFILE"
-echo "run_flags: baseline=$RUN_BASELINE range_matrix=$RUN_RANGE_MATRIX trend_matrix=$RUN_TREND_MATRIX trend_next=$RUN_TREND_NEXT_STEP_MATRIX trend_provisional=$RUN_TREND_PROVISIONAL_CORE_MATRIX trend_entry_threshold=$RUN_TREND_ENTRY_THRESHOLD_MATRIX hold_exit=$RUN_HOLD_EXIT_MATRIX regime_threshold=$RUN_REGIME_THRESHOLD_MATRIX"
-echo "report_flags: diagnostics=$RUN_TREND_ENTRY_DIAGNOSTICS fold_breakdown=$RUN_FOLD_BREAKDOWN loss_fold_review=$RUN_LOSS_FOLD_REVIEW loss_fold_trade_detail=$RUN_LOSS_FOLD_TRADE_DETAIL loss_hold_threshold=$RUN_LOSS_HOLD_THRESHOLD aggregate=$RUN_BUILD_AGGREGATE_REPORT trend_next=$RUN_BUILD_TREND_NEXT_STEP_REPORT trend_provisional=$RUN_BUILD_TREND_PROVISIONAL_CORE_REPORT trend_entry_threshold=$RUN_BUILD_TREND_ENTRY_THRESHOLD_REPORT hold_exit=$RUN_BUILD_HOLD_EXIT_REPORT regime_threshold=$RUN_BUILD_REGIME_THRESHOLD_REPORT"
+echo "run_flags: baseline=$RUN_BASELINE range_matrix=$RUN_RANGE_MATRIX range_quality=$RUN_RANGE_QUALITY_MATRIX range_regime=$RUN_RANGE_REGIME_THRESHOLD_MATRIX trend_matrix=$RUN_TREND_MATRIX trend_next=$RUN_TREND_NEXT_STEP_MATRIX trend_provisional=$RUN_TREND_PROVISIONAL_CORE_MATRIX trend_entry_threshold=$RUN_TREND_ENTRY_THRESHOLD_MATRIX hold_exit=$RUN_HOLD_EXIT_MATRIX regime_threshold=$RUN_REGIME_THRESHOLD_MATRIX"
+echo "report_flags: diagnostics=$RUN_TREND_ENTRY_DIAGNOSTICS fold_breakdown=$RUN_FOLD_BREAKDOWN loss_fold_review=$RUN_LOSS_FOLD_REVIEW loss_fold_trade_detail=$RUN_LOSS_FOLD_TRADE_DETAIL loss_hold_threshold=$RUN_LOSS_HOLD_THRESHOLD aggregate=$RUN_BUILD_AGGREGATE_REPORT trend_next=$RUN_BUILD_TREND_NEXT_STEP_REPORT trend_provisional=$RUN_BUILD_TREND_PROVISIONAL_CORE_REPORT trend_entry_threshold=$RUN_BUILD_TREND_ENTRY_THRESHOLD_REPORT hold_exit=$RUN_BUILD_HOLD_EXIT_REPORT regime_threshold=$RUN_BUILD_REGIME_THRESHOLD_REPORT range_quality=$RUN_BUILD_RANGE_QUALITY_REPORT"
 
 wait_for_slot() {
   local -n pids_ref=$1
@@ -324,6 +352,122 @@ run_range_matrix() {
           wait_for_slot pids labels
         fi
       done
+    done
+  done
+  while (( ${#pids[@]} > 0 )); do
+    wait_for_slot pids labels
+  done
+}
+
+run_range_quality_matrix() {
+  local rsi_min rsi_max mr_dist exit_neutral entry_score label out_dir data_root
+  local -a pids=()
+  local -a labels=()
+  for rsi_min in ${RANGE_RSI_MIN_LIST//,/ }; do
+    for rsi_max in ${RANGE_RSI_MAX_LIST//,/ }; do
+      for mr_dist in ${RANGE_MR_DISTANCE_MAX_LIST//,/ }; do
+        for exit_neutral in ${RANGE_EXIT_NEUTRAL_ABS_LIST//,/ }; do
+          for entry_score in ${RANGE_QUALITY_MIN_ENTRY_SCORE_LIST//,/ }; do
+            label="rsi${rsi_min}-${rsi_max}_mr${mr_dist}_exit${exit_neutral}_score${entry_score}"
+            out_dir="$RANGE_QUALITY_DIR/$label"
+            data_root="$out_dir/run_data"
+            (
+              SUMMARY_PATH="$out_dir/timeframe_comparison_summary.json" \
+              CANDIDATE_REPORT_PATH="$out_dir/candidate_report.json" \
+              OUT_DIR="$out_dir" \
+              DATA_ROOT="$data_root" \
+              BASE_DATA_ROOT=data \
+              SYMBOLS="$RANGE_QUALITY_SYMBOLS" \
+              TIMEFRAMES="$RANGE_QUALITY_TIMEFRAMES" \
+              STRATEGIES=range \
+              RANGE_ENABLED_SYMBOLS= \
+              TREND_ENABLED_SYMBOLS= \
+              RANGE_RSI_MIN="$rsi_min" \
+              RANGE_RSI_MAX="$rsi_max" \
+              RANGE_MEAN_REVERSION_DISTANCE_MAX="$mr_dist" \
+              RANGE_EXIT_MEAN_REVERSION_NEUTRAL_ABS="$exit_neutral" \
+              RANGE_MIN_ENTRY_SCORE="$entry_score" \
+              RANGE_WICK_RATIO_MIN=0.3 \
+              RANGE_REQUIRE_REVERSAL_CANDLE=false \
+              RANGE_REENTRY_COOLDOWN_BARS=2 \
+              RANGE_MAX_HOLD_BARS=16 \
+              FEE_RATE="$FEE_RATE" \
+              SLIPPAGE_RATE="$SLIPPAGE_RATE" \
+              SPREAD_RATE="$SPREAD_RATE" \
+              DELAY_BARS="$DELAY_BARS" \
+              PARALLEL="$PARALLEL" \
+              ./scripts/timeframe_comparison.sh
+
+              SUMMARY_PATH="$out_dir/timeframe_comparison_summary.json" \
+              CANDIDATE_REPORT_PATH="$out_dir/candidate_report.json" \
+              OUT_PATH="$out_dir/timeframe_comparison_result_list.md" \
+              DATA_ROOT="$data_root" \
+              ./scripts/timeframe_comparison_results_list.sh
+            ) &
+            pids+=("$!")
+            labels+=("range-quality/$label")
+            if (( ${#pids[@]} >= CASE_PARALLEL )); then
+              wait_for_slot pids labels
+            fi
+          done
+        done
+      done
+    done
+  done
+  while (( ${#pids[@]} > 0 )); do
+    wait_for_slot pids labels
+  done
+}
+
+run_range_regime_threshold_matrix() {
+  local bb_width adx_max label out_dir data_root
+  local -a pids=()
+  local -a labels=()
+  for bb_width in ${REGIME_RANGE_BB_WIDTH_PERCENTILE_MAX_LIST//,/ }; do
+    for adx_max in ${REGIME_RANGE_ADX_MAX_LIST//,/ }; do
+      label="bb_width${bb_width}_adx${adx_max}"
+      out_dir="$RANGE_REGIME_THRESHOLD_DIR/$label"
+      data_root="$out_dir/run_data"
+      (
+        SUMMARY_PATH="$out_dir/timeframe_comparison_summary.json" \
+        CANDIDATE_REPORT_PATH="$out_dir/candidate_report.json" \
+        OUT_DIR="$out_dir" \
+        DATA_ROOT="$data_root" \
+        BASE_DATA_ROOT=data \
+        SYMBOLS="$REGIME_RANGE_SYMBOLS" \
+        TIMEFRAMES="$REGIME_RANGE_TIMEFRAMES" \
+        STRATEGIES=range \
+        RANGE_ENABLED_SYMBOLS= \
+        TREND_ENABLED_SYMBOLS= \
+        RANGE_RSI_MIN=35 \
+        RANGE_RSI_MAX=50 \
+        RANGE_MEAN_REVERSION_DISTANCE_MAX=-0.3 \
+        RANGE_EXIT_MEAN_REVERSION_NEUTRAL_ABS=0.15 \
+        RANGE_MIN_ENTRY_SCORE=0.75 \
+        RANGE_WICK_RATIO_MIN=0.3 \
+        RANGE_REQUIRE_REVERSAL_CANDLE=false \
+        RANGE_REENTRY_COOLDOWN_BARS=2 \
+        RANGE_MAX_HOLD_BARS=16 \
+        REGIME_RANGE_BB_WIDTH_PERCENTILE_MAX="$bb_width" \
+        REGIME_RANGE_ADX_MAX="$adx_max" \
+        FEE_RATE="$FEE_RATE" \
+        SLIPPAGE_RATE="$SLIPPAGE_RATE" \
+        SPREAD_RATE="$SPREAD_RATE" \
+        DELAY_BARS="$DELAY_BARS" \
+        PARALLEL="$PARALLEL" \
+        ./scripts/timeframe_comparison.sh
+
+        SUMMARY_PATH="$out_dir/timeframe_comparison_summary.json" \
+        CANDIDATE_REPORT_PATH="$out_dir/candidate_report.json" \
+        OUT_PATH="$out_dir/timeframe_comparison_result_list.md" \
+        DATA_ROOT="$data_root" \
+        ./scripts/timeframe_comparison_results_list.sh
+      ) &
+      pids+=("$!")
+      labels+=("range-regime/$label")
+      if (( ${#pids[@]} >= REGIME_CASE_PARALLEL )); then
+        wait_for_slot pids labels
+      fi
     done
   done
   while (( ${#pids[@]} > 0 )); do
@@ -1355,6 +1499,128 @@ print(md_out)
 PY
 }
 
+build_range_quality_report() {
+  "$PYTHON_BIN" - "$BASELINE_CANDIDATE_REPORT_PATH" "$RANGE_QUALITY_DIR" "$RANGE_QUALITY_SYMBOLS" "$RANGE_QUALITY_TIMEFRAMES" "$RANGE_QUALITY_JSON" "$RANGE_QUALITY_MD" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from collections import defaultdict
+from datetime import UTC, datetime
+from pathlib import Path
+
+baseline_candidate = Path(sys.argv[1])
+matrix_dir = Path(sys.argv[2])
+symbols = [s.strip() for s in sys.argv[3].split(",") if s.strip()]
+timeframes = [t.strip() for t in sys.argv[4].split(",") if t.strip()]
+json_out = Path(sys.argv[5])
+md_out = Path(sys.argv[6])
+
+target_routes = [f"range:{sym}:{tf}" for sym in symbols for tf in timeframes]
+
+baseline = json.loads(baseline_candidate.read_text(encoding="utf-8"))
+baseline_rows = {
+    f"{row['strategy']}:{row['symbol']}:{row['timeframe']}": row
+    for row in baseline.get("rows", [])
+    if isinstance(row, dict)
+}
+
+def check_count(row: dict) -> int:
+    checks = [
+        float(row.get("pf_mean", 0.0) or 0.0) >= 1.2,
+        float(row.get("expectancy_bps_mean", 0.0) or 0.0) > 0.0,
+        float(row.get("period_pnl_mean", 0.0) or 0.0) > 0.0,
+        float(row.get("max_dd_mean", 0.0) or 0.0) <= 0.08,
+    ]
+    return sum(1 for item in checks if item)
+
+route_rows: dict[str, list[dict]] = defaultdict(list)
+for path in sorted(matrix_dir.glob("*/candidate_report.json")):
+    label = path.parent.name
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    for row in payload.get("rows", []):
+        if not isinstance(row, dict):
+            continue
+        route_key = f"{row['strategy']}:{row['symbol']}:{row['timeframe']}"
+        if route_key not in target_routes:
+            continue
+        enriched = dict(row)
+        enriched["config_label"] = label
+        enriched["core_check_count"] = check_count(row)
+        route_rows[route_key].append(enriched)
+
+for route_key, rows in route_rows.items():
+    rows.sort(
+        key=lambda row: (
+            -int(row["core_check_count"]),
+            -float(row.get("pf_mean", 0.0) or 0.0),
+            -float(row.get("expectancy_bps_mean", 0.0) or 0.0),
+            -float(row.get("period_pnl_mean", 0.0) or 0.0),
+            str(row.get("config_label", "")),
+        )
+    )
+
+payload = {
+    "generated_at": datetime.now(UTC).isoformat(),
+    "baseline_candidate_report": str(baseline_candidate),
+    "target_routes": target_routes,
+    "route_results": route_rows,
+}
+json_out.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+lines = [
+    "# Range Quality Matrix Summary",
+    "",
+    f"- generated_at: {payload['generated_at']}",
+    f"- baseline_candidate_report: {baseline_candidate}",
+    f"- target_routes: {', '.join(target_routes)}",
+    "",
+]
+for route_key in target_routes:
+    baseline_row = baseline_rows.get(route_key, {})
+    lines.append(f"## {route_key}")
+    lines.append("")
+    if baseline_row:
+        lines.append(
+            "- baseline: status={status} pf={pf:.3f} expbps={exp:.2f} pnl={pnl:.3f} dd={dd:.5f} trades={trades:.2f}".format(
+                status=str(baseline_row.get("candidate_status", "-")),
+                pf=float(baseline_row.get("pf_mean", 0.0) or 0.0),
+                exp=float(baseline_row.get("expectancy_bps_mean", 0.0) or 0.0),
+                pnl=float(baseline_row.get("period_pnl_mean", 0.0) or 0.0),
+                dd=float(baseline_row.get("max_dd_mean", 0.0) or 0.0),
+                trades=float(baseline_row.get("closed_trades_mean", 0.0) or 0.0),
+            )
+        )
+    rows = route_rows.get(route_key, [])
+    if not rows:
+        lines.append("- no matrix results")
+        lines.append("")
+        continue
+    lines.append("")
+    lines.append("| Rank | Config | Status | Core Checks | PF | EXPbps | PeriodPnL | DD | Trades |")
+    lines.append("|---:|---|---|---:|---:|---:|---:|---:|---:|")
+    for idx, row in enumerate(rows[:15], start=1):
+        lines.append(
+            "| {rank} | {config} | {status} | {checks} | {pf:.3f} | {exp:.2f} | {pnl:.3f} | {dd:.5f} | {trades:.2f} |".format(
+                rank=idx,
+                config=str(row.get("config_label", "")),
+                status=str(row.get("candidate_status", "")),
+                checks=int(row.get("core_check_count", 0) or 0),
+                pf=float(row.get("pf_mean", 0.0) or 0.0),
+                exp=float(row.get("expectancy_bps_mean", 0.0) or 0.0),
+                pnl=float(row.get("period_pnl_mean", 0.0) or 0.0),
+                dd=float(row.get("max_dd_mean", 0.0) or 0.0),
+                trades=float(row.get("closed_trades_mean", 0.0) or 0.0),
+            )
+        )
+    lines.append("")
+
+md_out.write_text("\n".join(lines), encoding="utf-8")
+print(json_out)
+print(md_out)
+PY
+}
+
 build_trend_provisional_core_report() {
   "$PYTHON_BIN" - "$BASELINE_CANDIDATE_REPORT_PATH" "$TREND_PROVISIONAL_CORE_DIR" "$TREND_PROVISIONAL_CORE_ROUTES" "$TREND_PROVISIONAL_CORE_JSON" "$TREND_PROVISIONAL_CORE_MD" <<'PY'
 from __future__ import annotations
@@ -1485,6 +1751,12 @@ fi
 if [[ "$RUN_RANGE_MATRIX" == "1" ]]; then
   run_range_matrix
 fi
+if [[ "$RUN_RANGE_QUALITY_MATRIX" == "1" ]]; then
+  run_range_quality_matrix
+fi
+if [[ "$RUN_RANGE_REGIME_THRESHOLD_MATRIX" == "1" ]]; then
+  run_range_regime_threshold_matrix
+fi
 if [[ "$RUN_TREND_MATRIX" == "1" ]]; then
   run_trend_matrix
 fi
@@ -1536,6 +1808,9 @@ if [[ "$RUN_BUILD_HOLD_EXIT_REPORT" == "1" ]]; then
 fi
 if [[ "$RUN_BUILD_REGIME_THRESHOLD_REPORT" == "1" ]]; then
   build_regime_threshold_report
+fi
+if [[ "$RUN_BUILD_RANGE_QUALITY_REPORT" == "1" ]]; then
+  build_range_quality_report
 fi
 
 echo "done: $OUT_DIR"
