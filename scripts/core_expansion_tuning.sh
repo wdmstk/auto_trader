@@ -1518,12 +1518,14 @@ md_out = Path(sys.argv[6])
 
 target_routes = [f"range:{sym}:{tf}" for sym in symbols for tf in timeframes]
 
-baseline = json.loads(baseline_candidate.read_text(encoding="utf-8"))
-baseline_rows = {
-    f"{row['strategy']}:{row['symbol']}:{row['timeframe']}": row
-    for row in baseline.get("rows", [])
-    if isinstance(row, dict)
-}
+baseline_rows: dict[str, dict] = {}
+if baseline_candidate.exists():
+    baseline = json.loads(baseline_candidate.read_text(encoding="utf-8"))
+    baseline_rows = {
+        f"{row['strategy']}:{row['symbol']}:{row['timeframe']}": row
+        for row in baseline.get("rows", [])
+        if isinstance(row, dict)
+    }
 
 def check_count(row: dict) -> int:
     checks = [
