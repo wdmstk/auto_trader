@@ -15,6 +15,7 @@ class FeatureConfig:
     ma_window: int = 20
     trend_eff_window: int = 20
     persistence_window: int = 5
+    recent_low_window: int = 20
     min_history_bars: int = 50
     feature_version: str = "v1"
 
@@ -60,6 +61,14 @@ def compute_features(
         bb_mid = g2["close"].rolling(cfg.bb_window).mean()
         bb_std = g2["close"].rolling(cfg.bb_window).std(ddof=0)
         g2["mean_reversion_distance"] = (g2["close"] - bb_mid) / bb_std.replace(0.0, pd.NA)
+        bb_lower = bb_mid - 2 * bb_std
+        bb_upper = bb_mid + 2 * bb_std
+        bb_range = (bb_upper - bb_lower).replace(0.0, pd.NA)
+        g2["bb_position"] = ((g2["close"] - bb_lower) / bb_range).fillna(0.5)
+        recent_low = g2["low"].rolling(cfg.recent_low_window).min()
+        atr_for_norm = g2["atr"] if "atr" in g2.columns else _atr(g2["high"], g2["low"], g2["close"], cfg.atr_window)
+        g2["price_vs_recent_low"] = ((g2["close"] - recent_low) / atr_for_norm.replace(0.0, pd.NA)).fillna(0.0)
+        g2["volume_spike"] = (g2["volume_ratio"].fillna(1.0) > 1.3).astype(int)
         prev_close = g2["close"].shift(1)
         reversal = (g2["close"] > g2["open"]) & (prev_close > g2["close"])
         g2["reversal_candle_flag"] = reversal.astype(int)
@@ -97,6 +106,9 @@ def compute_features(
         "trend_efficiency",
         "wick_ratio",
         "mean_reversion_distance",
+        "bb_position",
+        "price_vs_recent_low",
+        "volume_spike",
         "reversal_candle_flag",
         "momentum_persistence",
         "breakout_persistence",
