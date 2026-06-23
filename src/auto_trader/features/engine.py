@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+import numpy as np
 import pandas as pd
 
 
@@ -16,6 +17,11 @@ class FeatureConfig:
     trend_eff_window: int = 20
     persistence_window: int = 5
     recent_low_window: int = 20
+    sr_pivot_left_bars: int = 5
+    sr_pivot_right_bars: int = 5
+    sr_cluster_atr_mult: float = 0.5
+    sr_max_levels: int = 10
+    sr_level_max_age_bars: int = 500
     min_history_bars: int = 50
     feature_version: str = "v1"
 
@@ -73,6 +79,22 @@ def compute_features(
         reversal = (g2["close"] > g2["open"]) & (prev_close > g2["close"])
         g2["reversal_candle_flag"] = reversal.astype(int)
 
+        # S/R level features
+        sr_features = _compute_sr_features(
+            high=g2["high"].to_numpy(dtype=np.float64, copy=True),
+            low=g2["low"].to_numpy(dtype=np.float64, copy=True),
+            close=g2["close"].to_numpy(dtype=np.float64, copy=True),
+            atr=g2["atr"].to_numpy(dtype=np.float64, copy=True),
+            pivot_left=cfg.sr_pivot_left_bars,
+            pivot_right=cfg.sr_pivot_right_bars,
+            cluster_atr_mult=cfg.sr_cluster_atr_mult,
+            max_levels=cfg.sr_max_levels,
+            max_age=cfg.sr_level_max_age_bars,
+        )
+        g2["sr_support_distance"] = sr_features["sr_support_distance"]
+        g2["sr_resistance_distance"] = sr_features["sr_resistance_distance"]
+        g2["sr_level_strength"] = sr_features["sr_level_strength"]
+
         # TREND features
         returns = g2["close"].pct_change()
         sign = returns.gt(0).astype(int) - returns.lt(0).astype(int)
@@ -110,6 +132,9 @@ def compute_features(
         "price_vs_recent_low",
         "volume_spike",
         "reversal_candle_flag",
+        "sr_support_distance",
+        "sr_resistance_distance",
+        "sr_level_strength",
         "momentum_persistence",
         "breakout_persistence",
         "pullback_shallowness",
@@ -121,6 +146,153 @@ def compute_features(
     out = df[feature_cols].copy()
     out = out.where(out.notna(), float("nan"))
     return out
+
+
+def _compute_sr_features(
+    *,
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    atr: np.ndarray,
+    pivot_left: int,
+    pivot_right: int,
+    cluster_atr_mult: float,
+    max_levels: int,
+    max_age: int,
+) -> dict[str, np.ndarray]:
+    """Compute S/R level features for each bar.
+
+    Returns arrays: sr_support_distance, sr_resistance_distance, sr_level_strength.
+    Distances are ATR-normalized.  NaN when no level found.
+    """
+    n = len(close)
+    sr_support_dist = np.full(n, np.nan)
+    sr_resistance_dist = np.full(n, np.nan)
+    sr_strength = np.full(n, 0.0)
+
+    # levels: list of (price, strength, last_bar_index)
+    levels: list[list[float | int]] = []
+
+    for i in range(n):
+        cur_atr = float(atr[i])
+        if np.isnan(cur_atr) or cur_atr <= 0:
+            continue
+
+        # Detect confirmed pivots (bar at i - pivot_right is the candidate)
+        candidate = i - pivot_right
+        if candidate >= pivot_left:
+            _detect_and_add_pivot(
+                high, low, candidate, pivot_left, pivot_right, levels, cur_atr, cluster_atr_mult,
+            )
+
+        # Expire old levels
+        levels = [
+            lv for lv in levels if (i - int(lv[2])) <= max_age
+        ]
+
+        # Keep strongest levels only
+        if len(levels) > max_levels:
+            levels.sort(key=lambda lv: lv[1], reverse=True)
+            levels = levels[:max_levels]
+
+        if not levels:
+            continue
+
+        cur_close = float(close[i])
+
+        # Find nearest support (levels below close) and resistance (above)
+        best_sup_dist = np.inf
+        best_sup_strength = 0.0
+        best_res_dist = np.inf
+        best_res_strength = 0.0
+
+        for lv in levels:
+            price = float(lv[0])
+            strength = float(lv[1])
+            dist = (cur_close - price) / cur_atr
+
+            if dist >= 0:
+                # Support: level is below current price
+                if dist < best_sup_dist:
+                    best_sup_dist = dist
+                    best_sup_strength = strength
+            else:
+                # Resistance: level is above current price
+                abs_dist = abs(dist)
+                if abs_dist < best_res_dist:
+                    best_res_dist = abs_dist
+                    best_res_strength = strength
+
+        if best_sup_dist < np.inf:
+            sr_support_dist[i] = best_sup_dist
+        if best_res_dist < np.inf:
+            sr_resistance_dist[i] = best_res_dist
+
+        # Use strength of the nearest level (support preferred for range entry)
+        if best_sup_dist <= best_res_dist and best_sup_dist < np.inf:
+            sr_strength[i] = best_sup_strength
+        elif best_res_dist < np.inf:
+            sr_strength[i] = best_res_strength
+
+    return {
+        "sr_support_distance": sr_support_dist,
+        "sr_resistance_distance": sr_resistance_dist,
+        "sr_level_strength": sr_strength,
+    }
+
+
+def _detect_and_add_pivot(
+    high: np.ndarray,
+    low: np.ndarray,
+    candidate: int,
+    pivot_left: int,
+    pivot_right: int,
+    levels: list[list[float | int]],
+    cur_atr: float,
+    cluster_atr_mult: float,
+) -> None:
+    """Check if ``candidate`` bar is a swing high or swing low and add to levels."""
+    n = len(high)
+    left_start = candidate - pivot_left
+    right_end = candidate + pivot_right + 1
+    if left_start < 0 or right_end > n:
+        return
+
+    cand_low = float(low[candidate])
+    cand_high = float(high[candidate])
+
+    window_low = low[left_start:right_end]
+    window_high = high[left_start:right_end]
+
+    is_swing_low = cand_low <= float(np.min(window_low))
+    is_swing_high = cand_high >= float(np.max(window_high))
+
+    cluster_dist = cluster_atr_mult * cur_atr
+
+    if is_swing_low:
+        _merge_or_add_level(levels, cand_low, candidate, cluster_dist)
+    if is_swing_high:
+        _merge_or_add_level(levels, cand_high, candidate, cluster_dist)
+
+
+def _merge_or_add_level(
+    levels: list[list[float | int]],
+    price: float,
+    bar_index: int,
+    cluster_dist: float,
+) -> None:
+    """Merge into existing level if close enough, otherwise add new."""
+    for lv in levels:
+        if abs(float(lv[0]) - price) <= cluster_dist:
+            # Merge: weighted average price, increment strength, update recency
+            old_price = float(lv[0])
+            old_strength = float(lv[1])
+            new_strength = old_strength + 1
+            lv[0] = (old_price * old_strength + price) / new_strength
+            lv[1] = new_strength
+            lv[2] = bar_index
+            return
+    levels.append([price, 1.0, float(bar_index)])
 
 
 def _rsi(close: pd.Series, window: int) -> pd.Series:

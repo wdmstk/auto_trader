@@ -116,6 +116,8 @@ RANGE_RSI_MAX_LIST="${RANGE_RSI_MAX_LIST:-50,55}"
 RANGE_MR_DISTANCE_MAX_LIST="${RANGE_MR_DISTANCE_MAX_LIST:--0.3,-0.5,-0.1}"
 RANGE_EXIT_NEUTRAL_ABS_LIST="${RANGE_EXIT_NEUTRAL_ABS_LIST:-0.1,0.15,0.2}"
 RANGE_QUALITY_MIN_ENTRY_SCORE_LIST="${RANGE_QUALITY_MIN_ENTRY_SCORE_LIST:-0.5,0.6,0.75}"
+RANGE_SR_SUPPORT_DISTANCE_MAX_LIST="${RANGE_SR_SUPPORT_DISTANCE_MAX_LIST:-1.0,1.5,2.0}"
+RANGE_SR_MIN_LEVEL_STRENGTH_LIST="${RANGE_SR_MIN_LEVEL_STRENGTH_LIST:-1,2,3}"
 
 TREND_TARGET_SYMBOLS="${TREND_TARGET_SYMBOLS:-ETHUSDT,ADAUSDT}"
 TREND_TARGET_TIMEFRAMES="${TREND_TARGET_TIMEFRAMES:-15m,1h}"
@@ -360,15 +362,15 @@ run_range_matrix() {
 }
 
 run_range_quality_matrix() {
-  local rsi_min rsi_max mr_dist exit_neutral entry_score label out_dir data_root
+  local rsi_min rsi_max mr_dist exit_neutral entry_score sr_dist sr_str label out_dir data_root
   local -a pids=()
   local -a labels=()
   for rsi_min in ${RANGE_RSI_MIN_LIST//,/ }; do
     for rsi_max in ${RANGE_RSI_MAX_LIST//,/ }; do
-      for mr_dist in ${RANGE_MR_DISTANCE_MAX_LIST//,/ }; do
-        for exit_neutral in ${RANGE_EXIT_NEUTRAL_ABS_LIST//,/ }; do
+      for sr_dist in ${RANGE_SR_SUPPORT_DISTANCE_MAX_LIST//,/ }; do
+        for sr_str in ${RANGE_SR_MIN_LEVEL_STRENGTH_LIST//,/ }; do
           for entry_score in ${RANGE_QUALITY_MIN_ENTRY_SCORE_LIST//,/ }; do
-            label="rsi${rsi_min}-${rsi_max}_mr${mr_dist}_exit${exit_neutral}_score${entry_score}"
+            label="rsi${rsi_min}-${rsi_max}_srd${sr_dist}_srs${sr_str}_score${entry_score}"
             out_dir="$RANGE_QUALITY_DIR/$label"
             data_root="$out_dir/run_data"
             (
@@ -384,8 +386,8 @@ run_range_quality_matrix() {
               TREND_ENABLED_SYMBOLS= \
               RANGE_RSI_MIN="$rsi_min" \
               RANGE_RSI_MAX="$rsi_max" \
-              RANGE_MEAN_REVERSION_DISTANCE_MAX="$mr_dist" \
-              RANGE_EXIT_MEAN_REVERSION_NEUTRAL_ABS="$exit_neutral" \
+              RANGE_MEAN_REVERSION_DISTANCE_MAX="${RANGE_MEAN_REVERSION_DISTANCE_MAX:--0.3}" \
+              RANGE_EXIT_MEAN_REVERSION_NEUTRAL_ABS="${RANGE_EXIT_MEAN_REVERSION_NEUTRAL_ABS:-0.15}" \
               RANGE_MIN_ENTRY_SCORE="$entry_score" \
               RANGE_WICK_RATIO_MIN=0.3 \
               RANGE_REQUIRE_REVERSAL_CANDLE=false \
@@ -401,6 +403,11 @@ run_range_quality_matrix() {
               RANGE_W_VOL="${RANGE_W_VOL:-1.0}" \
               RANGE_W_REVERSAL_BONUS="${RANGE_W_REVERSAL_BONUS:-0.5}" \
               RANGE_EXIT_ATR_TRAIL_MULTIPLIER="${RANGE_EXIT_ATR_TRAIL_MULTIPLIER:-2.0}" \
+              RANGE_SR_SUPPORT_DISTANCE_MAX="$sr_dist" \
+              RANGE_SR_MIN_LEVEL_STRENGTH="$sr_str" \
+              RANGE_SR_RESISTANCE_EXIT_ATR="${RANGE_SR_RESISTANCE_EXIT_ATR:-0.5}" \
+              RANGE_W_SR_PROXIMITY="${RANGE_W_SR_PROXIMITY:-2.0}" \
+              RANGE_W_SR_STRENGTH="${RANGE_W_SR_STRENGTH:-1.5}" \
               SKIP_FEATURE_CACHE="${SKIP_FEATURE_CACHE:-0}" \
               FEE_RATE="$FEE_RATE" \
               SLIPPAGE_RATE="$SLIPPAGE_RATE" \
