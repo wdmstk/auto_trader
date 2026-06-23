@@ -151,6 +151,42 @@ def save_model_artifacts(artifacts: ModelArtifacts, artifact_dir: str | Path) ->
     return str(meta_path)
 
 
+class _RestrictedUnpickler(pickle.Unpickler):
+    """Restrict pickle deserialization to safe LightGBM/numpy/pandas types."""
+
+    _ALLOWED_MODULES: frozenset[str] = frozenset(
+        {
+            "lightgbm.sklearn",
+            "lightgbm.basic",
+            "numpy",
+            "numpy.core.multiarray",
+            "numpy._core.multiarray",
+            "numpy.core.numeric",
+            "numpy._core.numeric",
+            "numpy.random",
+            "numpy.random._pickle",
+            "sklearn.tree._tree",
+            "sklearn.tree",
+            "copy_reg",
+            "copyreg",
+            "builtins",
+            "collections",
+        }
+    )
+
+    _BLOCKED_BUILTINS: frozenset[str] = frozenset(
+        {"eval", "exec", "compile", "__import__", "globals", "locals", "getattr", "setattr", "delattr", "open"}
+    )
+
+    def find_class(self, module: str, name: str) -> type:
+        if module == "builtins" and name in self._BLOCKED_BUILTINS:
+            raise pickle.UnpicklingError(f"blocked unsafe builtin: {module}.{name}")
+        top_module = module.split(".")[0]
+        if top_module not in {m.split(".")[0] for m in self._ALLOWED_MODULES} and module not in self._ALLOWED_MODULES:
+            raise pickle.UnpicklingError(f"blocked disallowed module: {module}.{name}")
+        return super().find_class(module, name)  # type: ignore[no-any-return]
+
+
 def load_model_artifacts(artifact_path: str | Path) -> ModelArtifacts:
     path = Path(artifact_path)
     meta_path = path
@@ -162,11 +198,15 @@ def load_model_artifacts(artifact_path: str | Path) -> ModelArtifacts:
     if not isinstance(meta, dict):
         raise ValueError("invalid model artifact metadata")
     model_filename = str(meta.get("model_filename", "model.pkl"))
+    if "/" in model_filename or "\\" in model_filename or model_filename.startswith(".."):
+        raise ValueError(f"invalid model_filename (path traversal): {model_filename}")
     model_path = meta_path.parent / model_filename
+    if not model_path.resolve().parent == meta_path.parent.resolve():
+        raise ValueError(f"model file escapes artifact directory: {model_path}")
     if not model_path.exists():
         raise FileNotFoundError(f"model artifact payload not found: {model_path}")
     with model_path.open("rb") as f:
-        model = pickle.load(f)
+        model = _RestrictedUnpickler(f).load()
     if not isinstance(model, LGBMClassifier):
         raise ValueError("invalid model artifact payload")
     return ModelArtifacts(

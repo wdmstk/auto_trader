@@ -26,6 +26,7 @@ from auto_trader.gui.data_loader import (
     _cached_exchange_positions_snapshot,
     _candidate_frame,
     _exchange_sync_cache_marker,
+    _is_safe_data_path,
     _load_walkforward_metric_map,
     _position_reconciliation_frame,
     _preferred_symbol_choices,
@@ -586,6 +587,9 @@ def _render_runtime_metrics_panel() -> None:
     st.subheader("Runtime Metrics")
     default_path = str(DATA_DIR / "validation" / "runtime_metrics.jsonl")
     path_text = st.text_input("Metrics JSONL path", value=default_path, key="runtime_metrics_path")
+    if not _is_safe_data_path(path_text):
+        st.error("Path must be within the project data directory.")
+        return
     latest = _read_latest_jsonl_row(Path(path_text))
     if not latest:
         st.info("No runtime metrics found. Run `python -m auto_trader.monitor --watch ...` first.")
