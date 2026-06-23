@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,6 +12,7 @@ from auto_trader.drift.metrics import (
     load_baseline,
     save_baseline,
 )
+from auto_trader.utils import write_json_file
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -69,8 +69,7 @@ def main() -> int:
                 "drift_trade_block": False,
                 "reason": "baseline_missing",
             }
-            report_path.parent.mkdir(parents=True, exist_ok=True)
-            report_path.write_text(json.dumps(out, ensure_ascii=True, indent=2), encoding="utf-8")
+            write_json_file(report_path, out)
             print(report_path)
             return 0
 
@@ -82,14 +81,10 @@ def main() -> int:
         result["status"] = "warn"
         result["bootstrap_note"] = "baseline_created_first_run"
 
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(json.dumps(result, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_json_file(report_path, result)
     online_stats = build_baseline_stats(features, bins=max(int(args.bins), 2))
     online_stats["checked_at"] = datetime.now(UTC).isoformat()
-    online_stats_path.parent.mkdir(parents=True, exist_ok=True)
-    online_stats_path.write_text(
-        json.dumps(online_stats, ensure_ascii=True, indent=2), encoding="utf-8"
-    )
+    write_json_file(online_stats_path, online_stats)
     print(report_path)
     return 0
 

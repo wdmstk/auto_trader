@@ -116,9 +116,7 @@ def _legacy_main() -> None:
     c3.metric("Exposure", _latest_value(risk_df, "portfolio_exposure_pct", "-"))
     c4.metric("MaxDD", dd)
     c5.metric("API", "CONNECTED")
-    st.caption(
-        f"vol_weighted_exposure_pct={_latest_value(risk_df, 'vol_weighted_exposure_pct', '-')}, " f"size_scale={_latest_value(risk_df, 'size_scale', '-')}"
-    )
+    st.caption(f"vol_weighted_exposure_pct={_latest_value(risk_df, 'vol_weighted_exposure_pct', '-')}, size_scale={_latest_value(risk_df, 'size_scale', '-')}")
 
     st.subheader("Stale Monitor")
     if not risk_df.empty and "timestamp" in risk_df.columns:
@@ -261,7 +259,7 @@ def main() -> None:
     st.set_page_config(page_title="Auto Trader Ops Console", layout="wide")
     _inject_ui_stability_styles()
     st.title("Auto Trader Operations Dashboard")
-    st.caption("Live Monitor auto-refreshes every 10 seconds. " "Analysis Workspace refreshes only on manual rerun.")
+    st.caption("Live Monitor auto-refreshes every 10 seconds. Analysis Workspace refreshes only on manual rerun.")
     _render_sidebar_controls()
     live_tab, analysis_tab = st.tabs(["Live Monitor", "Analysis Workspace"])
     with live_tab:

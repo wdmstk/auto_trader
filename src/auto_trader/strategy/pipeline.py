@@ -38,7 +38,7 @@ def build_and_save_range_signals(
     )
     resolved_ml_artifact_path = resolve_ml_artifact_path(ml_artifact_path)
     if resolved_ml_artifact_path is not None:
-        signals = _apply_ml_filter(
+        signals = apply_signal_ml_filter(
             features_df=features,
             regime_df=regime,
             signals_df=signals,
@@ -49,18 +49,3 @@ def build_and_save_range_signals(
     store = SignalParquetStore(output_dir, strategy="range")
     saved = store.save(symbol, timeframe, signals)
     return signals, str(saved)
-
-
-def _apply_ml_filter(
-    *,
-    features_df: pd.DataFrame,
-    regime_df: pd.DataFrame,
-    signals_df: pd.DataFrame,
-    artifact_path: str | Path,
-) -> pd.DataFrame:
-    return apply_signal_ml_filter(
-        features_df=features_df,
-        regime_df=regime_df,
-        signals_df=signals_df,
-        artifact_path=artifact_path,
-    )

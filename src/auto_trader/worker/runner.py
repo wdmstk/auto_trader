@@ -32,6 +32,7 @@ from auto_trader.strategy.ml_filter import apply_signal_ml_filter, resolve_ml_ar
 from auto_trader.strategy.range_strategy import RangeStrategyConfig, generate_range_signals
 from auto_trader.strategy.session_gate import apply_session_gate
 from auto_trader.strategy.trend_strategy import TrendStrategyConfig, generate_trend_signals
+from auto_trader.utils import coerce_int, parse_csv, safe_float
 from auto_trader.worker.execution_sync import reconcile_execution_events_once
 from auto_trader.worker.market_data import (
     BinanceKlineClient,
@@ -1477,20 +1478,7 @@ class LiveTradingWorker:
 
 
 def _csv_symbols(value: object) -> tuple[str, ...]:
-    if isinstance(value, list | tuple):
-        source = value
-    elif isinstance(value, str):
-        source = [item.strip() for item in value.split(",") if item.strip()]
-    else:
-        source = []
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for item in source:
-        symbol = str(item).strip()
-        if symbol and symbol not in seen:
-            seen.add(symbol)
-            ordered.append(symbol)
-    return tuple(ordered)
+    return parse_csv(value)
 
 
 def _now_iso() -> str:
@@ -1498,31 +1486,11 @@ def _now_iso() -> str:
 
 
 def _coerce_float(value: object, default: float = 0.0) -> float:
-    try:
-        if isinstance(value, bool):
-            return float(value)
-        if isinstance(value, int | float):
-            return float(value)
-        if isinstance(value, str):
-            return float(value)
-        return default
-    except (TypeError, ValueError):
-        return default
+    return safe_float(value, default)
 
 
 def _coerce_int(value: object, default: int = 0) -> int:
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return default
-    return default
+    return coerce_int(value, default)
 
 
 def _read_line_cursor(path: Path) -> int:

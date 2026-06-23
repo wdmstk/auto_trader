@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 
 import pandas as pd
 
+from auto_trader.strategy.merge import merge_strategy_inputs
+
 
 @dataclass(frozen=True)
 class RangeStrategyConfig:
@@ -29,7 +31,7 @@ def generate_range_signals(
     config: RangeStrategyConfig | None = None,
 ) -> pd.DataFrame:
     cfg = config or RangeStrategyConfig()
-    merged = _merge_inputs(features_df, regime_df, risk_df)
+    merged = merge_strategy_inputs(features_df, regime_df, risk_df)
     merged = merged.sort_values(["symbol", "timeframe", "timestamp"]).reset_index(drop=True)
 
     n_rows = len(merged)
@@ -147,35 +149,3 @@ def generate_range_signals(
     out["position_size_ratio"] = size_ratio
     out["generated_at"] = datetime.now(UTC)
     return out
-
-
-def _merge_inputs(
-    features_df: pd.DataFrame,
-    regime_df: pd.DataFrame,
-    risk_df: pd.DataFrame | None,
-) -> pd.DataFrame:
-    f = features_df.copy()
-    r = regime_df.copy()
-    f["timestamp"] = pd.to_datetime(f["timestamp"], utc=True)
-    r["timestamp"] = pd.to_datetime(r["timestamp"], utc=True)
-    merged = f.merge(r, on=["symbol", "timeframe", "timestamp"], how="inner")
-
-    if risk_df is not None:
-        k = risk_df.copy()
-        if "timestamp" in k.columns:
-            k["timestamp"] = pd.to_datetime(k["timestamp"], utc=True)
-            risk_merge_keys = ["symbol", "timestamp"]
-            if "timeframe" in k.columns:
-                risk_merge_keys = ["symbol", "timeframe", "timestamp"]
-            merged = merged.merge(k, on=risk_merge_keys, how="left")
-    if "risk_blocked" not in merged.columns:
-        merged["risk_blocked"] = False
-    merged["risk_blocked"] = merged["risk_blocked"].fillna(False).astype(bool)
-    return merged
-
-
-def _f(v: object) -> float:
-    try:
-        return float(v)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return 0.0
