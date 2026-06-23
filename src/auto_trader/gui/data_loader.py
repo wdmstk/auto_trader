@@ -67,7 +67,7 @@ def _is_safe_data_path(path_str: str) -> bool:
 
 
 
-@st.cache_data(ttl=10, show_spinner=False)  # type: ignore[misc]
+@st.cache_data(ttl=10, show_spinner=False)
 def _read_optional_cached(path_str: str) -> pd.DataFrame:
     path = Path(path_str)
     if not path.exists():
@@ -645,7 +645,7 @@ def _fetch_exchange_positions_snapshot() -> dict[str, object]:
     }
 
 
-@st.cache_data(ttl=15, show_spinner=False)  # type: ignore[misc]
+@st.cache_data(ttl=15, show_spinner=False)
 def _cached_exchange_positions_snapshot(refresh_token: int, cache_marker: str) -> dict[str, object]:
     _ = refresh_token
     _ = cache_marker
@@ -803,7 +803,7 @@ def _read_jsonl_table(path_str: str, tail_rows: int = 200) -> pd.DataFrame:
         return df
 
 
-@st.cache_data(ttl=10, show_spinner=False)  # type: ignore[misc]
+@st.cache_data(ttl=10, show_spinner=False)
 def _read_jsonl_table_cached(path_str: str, tail_rows: int = 200) -> pd.DataFrame:
     path = Path(path_str)
     if not path.exists():
