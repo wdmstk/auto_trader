@@ -60,14 +60,10 @@ def _is_safe_data_path(path_str: str) -> bool:
         resolved = Path(path_str).resolve()
     except (ValueError, OSError):
         return False
-    return any(
-        resolved == root or str(resolved).startswith(str(root) + os.sep)
-        for root in _ALLOWED_DATA_ROOTS
-    )
+    return any(resolved == root or str(resolved).startswith(str(root) + os.sep) for root in _ALLOWED_DATA_ROOTS)
 
 
-
-@st.cache_data(ttl=10, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def _read_optional_cached(path_str: str) -> pd.DataFrame:
     path = Path(path_str)
     if not path.exists():
@@ -398,7 +394,14 @@ def _symbol_snapshot(
 
 
 def _latest_symbol_price(symbol: str, *, timeframe: str = "1m") -> float | None:
-    price_df = _read_optional(DATA_DIR / "parquet" / f"{symbol}_{timeframe}.parquet")
+    # Try LivePnL dedicated directory first (for real-time price updates)
+    live_pnl_path = DATA_DIR / "live_pnl" / "ohlcv" / f"{symbol}_{timeframe}.parquet"
+    price_df = _read_optional(live_pnl_path)
+
+    # Fallback to main parquet directory if LivePnL data not available
+    if price_df.empty or "close" not in price_df.columns:
+        price_df = _read_optional(DATA_DIR / "parquet" / f"{symbol}_{timeframe}.parquet")
+
     if price_df.empty or "close" not in price_df.columns:
         return None
     try:
