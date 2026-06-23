@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
 import time
 from collections.abc import Callable
@@ -12,6 +13,8 @@ from typing import Protocol
 from auto_trader.exchange.errors import ErrorCode, gateway_error_from_code
 from auto_trader.exchange.models import OrderEvent, OrderRequest, now_utc
 from auto_trader.stateio import FileLock, atomic_write_json, read_json_with_recovery
+
+logger = logging.getLogger(__name__)
 
 
 class ExchangeTransport(Protocol):
@@ -238,12 +241,14 @@ def _runtime_gate_reason(config: GatewayConfig) -> ErrorCode | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
+        logger.warning("runtime state unreadable at %s", path, exc_info=True)
         return ErrorCode.RUNTIME_STATE_INVALID
     updated_at_raw = str(payload.get("updated_at", "")).strip()
     if config.runtime_state_max_age_sec is not None:
         try:
             updated_at = datetime.fromisoformat(updated_at_raw.replace("Z", "+00:00"))
-        except Exception:
+        except (ValueError, TypeError):
+            logger.warning("runtime state has invalid updated_at: %r", updated_at_raw)
             return ErrorCode.RUNTIME_STATE_INVALID
         age_sec = (now_utc() - updated_at).total_seconds()
         if age_sec > float(config.runtime_state_max_age_sec):

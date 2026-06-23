@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -8,6 +9,8 @@ from pathlib import Path
 import pandas as pd
 
 from auto_trader.stateio import read_json_with_recovery
+
+logger = logging.getLogger(__name__)
 
 
 def _read_json(path: Path) -> dict[str, object]:
@@ -115,7 +118,7 @@ def collect_runtime_metrics(
                     .iloc[-1]
                 )
         except Exception:
-            pass
+            logger.warning("risk_eval parquet unreadable at %s", rp, exc_info=True)
 
     load1, _, _ = os.getloadavg()
     events_path = Path(order_events_path)

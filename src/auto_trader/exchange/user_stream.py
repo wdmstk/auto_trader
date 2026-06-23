@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 from contextlib import suppress
 from dataclasses import dataclass
@@ -15,6 +16,8 @@ import websockets
 
 from auto_trader.exchange.ws_client import BinanceWsExecutionClient
 from auto_trader.stateio import FileLock
+
+logger = logging.getLogger(__name__)
 
 
 class HttpSender(Protocol):
@@ -142,6 +145,7 @@ class ExecutionEventCollector:
             try:
                 await self.stream_once()
             except Exception:
+                logger.exception("stream_once failed, reconnecting in %.1fs", self.config.reconnect_delay_sec)
                 await asyncio.sleep(max(self.config.reconnect_delay_sec, 0.1))
 
     async def _keepalive_loop(self, listen_key: str) -> None:
