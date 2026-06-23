@@ -35,6 +35,16 @@ RANGE_MIN_ENTRY_SCORE="${RANGE_MIN_ENTRY_SCORE:-1.0}"
 RANGE_REENTRY_COOLDOWN_BARS="${RANGE_REENTRY_COOLDOWN_BARS:-0}"
 RANGE_MAX_HOLD_BARS="${RANGE_MAX_HOLD_BARS:-0}"
 RANGE_ENABLED_SYMBOLS="${RANGE_ENABLED_SYMBOLS:-}"
+RANGE_BB_POSITION_MAX="${RANGE_BB_POSITION_MAX:-0.35}"
+RANGE_VOLUME_SPIKE_THRESHOLD="${RANGE_VOLUME_SPIKE_THRESHOLD:-1.3}"
+RANGE_PRICE_VS_RECENT_LOW_MAX="${RANGE_PRICE_VS_RECENT_LOW_MAX:-1.5}"
+RANGE_W_RSI="${RANGE_W_RSI:-1.0}"
+RANGE_W_WICK="${RANGE_W_WICK:-1.0}"
+RANGE_W_MR="${RANGE_W_MR:-1.5}"
+RANGE_W_BB_POS="${RANGE_W_BB_POS:-2.0}"
+RANGE_W_VOL="${RANGE_W_VOL:-1.0}"
+RANGE_W_REVERSAL_BONUS="${RANGE_W_REVERSAL_BONUS:-0.5}"
+RANGE_EXIT_ATR_TRAIL_MULTIPLIER="${RANGE_EXIT_ATR_TRAIL_MULTIPLIER:-2.0}"
 TREND_MIN_ENTRY_SCORE="${TREND_MIN_ENTRY_SCORE:-1.0}"
 TREND_BREAKOUT_PERSISTENCE_MIN="${TREND_BREAKOUT_PERSISTENCE_MIN:-0.6}"
 TREND_MOMENTUM_PERSISTENCE_MIN="${TREND_MOMENTUM_PERSISTENCE_MIN:-0.5}"
@@ -64,6 +74,7 @@ TAKER_FEE_RATE="${TAKER_FEE_RATE:-0.0}"
 LIMIT_OFFSET_RATE="${LIMIT_OFFSET_RATE:-0.0}"
 LIMIT_PARTIAL_FILL_RATIO="${LIMIT_PARTIAL_FILL_RATIO:-0.1}"
 PARALLEL="${PARALLEL:-1}"
+SKIP_FEATURE_CACHE="${SKIP_FEATURE_CACHE:-0}"
 CORE_MIN_PF="${CORE_MIN_PF:-1.2}"
 CORE_MIN_EXPECTANCY_BPS="${CORE_MIN_EXPECTANCY_BPS:-0.0}"
 CORE_MIN_PERIOD_PNL="${CORE_MIN_PERIOD_PNL:-0.0}"
@@ -95,7 +106,7 @@ echo "regime_cfg: trend_adx>=$REGIME_TREND_ADX_THRESHOLD trend_breakout_min_bars
 echo "session_gate: allowed_hours=${ALLOWED_HOURS:-off}"
 echo "backtest_cfg: mode=$ORDER_MODE fee=$FEE_RATE maker=$MAKER_FEE_RATE taker=$TAKER_FEE_RATE slippage=$SLIPPAGE_RATE spread=$SPREAD_RATE delay=$DELAY_BARS"
 echo "candidate_thresholds: core_pf>=$CORE_MIN_PF core_expbps>$CORE_MIN_EXPECTANCY_BPS core_pnl>$CORE_MIN_PERIOD_PNL core_dd<=$CORE_MAX_DRAWDOWN probe_pf>=$PROBE_MIN_PF probe_dd<=$PROBE_MAX_DRAWDOWN trades>=$MIN_CLOSED_TRADES"
-echo "data_roots: base=$BASE_DATA_ROOT run=$DATA_ROOT"
+echo "data_roots: base=$BASE_DATA_ROOT run=$DATA_ROOT skip_feature_cache=$SKIP_FEATURE_CACHE"
 
 run_symbol_timeframe() {
   local symbol="$1"
@@ -155,7 +166,10 @@ PY
     fi
   fi
 
-  if [[ ! -f "$feature_path" && -f "$base_feature_path" ]]; then
+  if [[ "$SKIP_FEATURE_CACHE" == "1" && -f "$feature_path" ]]; then
+    rm -f "$feature_path"
+  fi
+  if [[ ! -f "$feature_path" && -f "$base_feature_path" && "$SKIP_FEATURE_CACHE" != "1" ]]; then
     cp "$base_feature_path" "$feature_path"
   elif [[ ! -f "$feature_path" ]]; then
     "$PYTHON_BIN" -m auto_trader.features \
@@ -202,6 +216,16 @@ PY
         --range-reentry-cooldown-bars "$RANGE_REENTRY_COOLDOWN_BARS" \
         --range-max-hold-bars "$RANGE_MAX_HOLD_BARS" \
         --range-enabled-symbols "$RANGE_ENABLED_SYMBOLS" \
+        --range-bb-position-max "$RANGE_BB_POSITION_MAX" \
+        --range-volume-spike-threshold "$RANGE_VOLUME_SPIKE_THRESHOLD" \
+        --range-price-vs-recent-low-max "$RANGE_PRICE_VS_RECENT_LOW_MAX" \
+        --range-w-rsi "$RANGE_W_RSI" \
+        --range-w-wick "$RANGE_W_WICK" \
+        --range-w-mr "$RANGE_W_MR" \
+        --range-w-bb-pos "$RANGE_W_BB_POS" \
+        --range-w-vol "$RANGE_W_VOL" \
+        --range-w-reversal-bonus "$RANGE_W_REVERSAL_BONUS" \
+        --range-exit-atr-trail-multiplier "$RANGE_EXIT_ATR_TRAIL_MULTIPLIER" \
         ${DRIFT_REPORT_PATH:+--drift-report-path "$DRIFT_REPORT_PATH"} \
         ${ML_ARTIFACT_PATH:+--ml-artifact-path "$ML_ARTIFACT_PATH"} \
         ${ALLOWED_HOURS:+--allowed-hours "$ALLOWED_HOURS"}
