@@ -1,18 +1,38 @@
 from __future__ import annotations
 
 # mypy: disable-error-code=misc
+import sys
+import types
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from auto_trader.gui.data_loader import (
+import auto_trader.gui.data_loader as _data_loader
+from auto_trader.gui.data_loader import (  # noqa: F401 – re-exported for tests
     DATA_DIR,
+    REPO_ROOT,
+    _GUI_ENV_LOADED,
+    _active_worker_symbols,
+    _candidate_frame,
+    _candidate_trade_routes_frame,
+    _core_symbol_focus_rows,
     _discover_available_symbols,
+    _discover_backtest_runs,
     _discover_symbol_timeframes,
+    _load_candidate_report,
     _load_walkforward_artifact,
+    _load_weekly_candidate_report,
+    _manifest_weekly_diff_rows,
+    _operator_summary,
+    _position_reconciliation_frame,
     _read_optional,
+    _read_optional_cached,
+    _resolve_futures_testnet_credentials,
+    _route_selection_path,
+    _weekly_revalidation_report_path,
+    _worker_trade_routes_frame,
 )
 from auto_trader.gui.overlay import build_overlay_frame
 from auto_trader.gui.state import emergency_badge, is_stale
@@ -34,6 +54,20 @@ from auto_trader.gui.utils import (
     downsample_for_chart as _downsample_for_chart,
     latest_value as _latest_value,
 )
+
+# Propagate monkeypatch attribute changes to data_loader so tests that patch
+# gui_app.DATA_DIR (etc.) affect the functions that now live in data_loader.
+_PROPAGATE = frozenset({"DATA_DIR", "REPO_ROOT", "_GUI_ENV_LOADED"})
+
+
+class _Module(types.ModuleType):
+    def __setattr__(self, name: str, value: object) -> None:
+        super().__setattr__(name, value)
+        if name in _PROPAGATE:
+            setattr(_data_loader, name, value)
+
+
+sys.modules[__name__].__class__ = _Module
 
 
 def _legacy_main() -> None:
