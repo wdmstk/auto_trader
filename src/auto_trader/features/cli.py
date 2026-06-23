@@ -15,6 +15,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default="data/features")
     parser.add_argument("--feature-version", default="v1")
     parser.add_argument("--min-history-bars", type=int, default=50)
+    parser.add_argument("--htf-ohlcv-path", default=None,
+                        help="Path to higher-timeframe OHLCV for S/R level detection")
     return parser
 
 
@@ -32,6 +34,7 @@ def main() -> int:
         timeframe=args.timeframe,
         output_dir=Path(args.output_dir),
         config=cfg,
+        htf_ohlcv_path=Path(args.htf_ohlcv_path) if args.htf_ohlcv_path else None,
     )
     print(f"saved={saved_path} rows={len(features)} feature_version={cfg.feature_version}")
     return 0
