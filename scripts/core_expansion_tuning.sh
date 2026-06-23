@@ -408,7 +408,10 @@ run_range_quality_matrix() {
               RANGE_SR_RESISTANCE_EXIT_ATR="${RANGE_SR_RESISTANCE_EXIT_ATR:-0.5}" \
               RANGE_W_SR_PROXIMITY="${RANGE_W_SR_PROXIMITY:-2.0}" \
               RANGE_W_SR_STRENGTH="${RANGE_W_SR_STRENGTH:-1.5}" \
-              RANGE_SR_HTF_TIMEFRAME="${RANGE_SR_HTF_TIMEFRAME:-4h}" \
+<<<<<<< HEAD
+
+=======
+>>>>>>> 8f9c191 (feat: Replace BB mean reversion with horizontal S/R level reversal strategy (#42))
               SKIP_FEATURE_CACHE="${SKIP_FEATURE_CACHE:-0}" \
               FEE_RATE="$FEE_RATE" \
               SLIPPAGE_RATE="$SLIPPAGE_RATE" \
