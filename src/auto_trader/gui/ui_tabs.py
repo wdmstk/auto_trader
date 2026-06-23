@@ -23,8 +23,11 @@ except Exception:  # pragma: no cover - UI fallback
 
 from auto_trader.gui.data_loader import (
     DATA_DIR,
+    DATA_STALE_CRIT_SEC,
+    DATA_STALE_WARN_SEC,
     DEFAULT_RUNTIME_METRICS_PATH,
     _active_worker_symbols,
+    _build_return_matrix,
     _candidate_frame,
     _candidate_trade_routes_frame,
     _core_symbol_focus_rows,
@@ -51,15 +54,17 @@ from auto_trader.gui.data_loader import (
     _read_optional,
     _route_selection_path,
     _run_refresh_job,
+    _runtime_health_messages,
     _source_snapshot,
     _status_banner,
     _strategy_symbol_table,
+    _symbol_snapshot,
     _weekly_revalidation_report_path,
     _worker_last_results_frame,
     _worker_trade_routes_frame,
 )
 from auto_trader.gui.overlay import build_overlay_frame
-from auto_trader.gui.state import ControlEvent, append_control_event
+from auto_trader.gui.state import ControlEvent, append_control_event, is_stale
 from auto_trader.gui.ui_components import (
     CONTROL_LOG,
     _fragment,
@@ -70,10 +75,20 @@ from auto_trader.gui.ui_components import (
 )
 from auto_trader.gui.utils import (
     downsample_for_chart as _downsample_for_chart,
+)
+from auto_trader.gui.utils import (
     format_age as _format_age,
-    freshness_level as _freshness_level,
+)
+from auto_trader.gui.utils import (
+    latest_value as _latest_value,
+)
+from auto_trader.gui.utils import (
     safe_float as _safe_float,
+)
+from auto_trader.gui.utils import (
     worker_state_key_parts as _worker_state_key_parts,
+)
+from auto_trader.gui.utils import (
     worker_status_reason as _worker_status_reason,
 )
 from auto_trader.stateio import read_json_with_recovery

@@ -7,7 +7,6 @@ Small, composable rendering blocks used by the tab-level renderers in
 from __future__ import annotations
 
 import importlib
-import json
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path

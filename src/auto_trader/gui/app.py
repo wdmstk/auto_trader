@@ -4,16 +4,15 @@ from __future__ import annotations
 import sys
 import types
 from datetime import UTC, datetime
-from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
 import auto_trader.gui.data_loader as _data_loader
 from auto_trader.gui.data_loader import (  # noqa: F401 – re-exported for tests
+    _GUI_ENV_LOADED,
     DATA_DIR,
     REPO_ROOT,
-    _GUI_ENV_LOADED,
     _active_worker_symbols,
     _candidate_frame,
     _candidate_trade_routes_frame,
@@ -52,6 +51,8 @@ from auto_trader.gui.ui_tabs import (
 )
 from auto_trader.gui.utils import (
     downsample_for_chart as _downsample_for_chart,
+)
+from auto_trader.gui.utils import (
     latest_value as _latest_value,
 )
 
