@@ -50,6 +50,7 @@ RANGE_SR_MIN_LEVEL_STRENGTH="${RANGE_SR_MIN_LEVEL_STRENGTH:-2}"
 RANGE_SR_RESISTANCE_EXIT_ATR="${RANGE_SR_RESISTANCE_EXIT_ATR:-0.5}"
 RANGE_W_SR_PROXIMITY="${RANGE_W_SR_PROXIMITY:-2.0}"
 RANGE_W_SR_STRENGTH="${RANGE_W_SR_STRENGTH:-1.5}"
+RANGE_SR_HTF_TIMEFRAME="${RANGE_SR_HTF_TIMEFRAME:-4h}"
 TREND_MIN_ENTRY_SCORE="${TREND_MIN_ENTRY_SCORE:-1.0}"
 TREND_BREAKOUT_PERSISTENCE_MIN="${TREND_BREAKOUT_PERSISTENCE_MIN:-0.6}"
 TREND_MOMENTUM_PERSISTENCE_MIN="${TREND_MOMENTUM_PERSISTENCE_MIN:-0.5}"
@@ -171,6 +172,49 @@ PY
     fi
   fi
 
+  # Generate HTF OHLCV for S/R level detection if configured
+  local htf_ohlcv_path=""
+  if [[ -n "$RANGE_SR_HTF_TIMEFRAME" && "$RANGE_SR_HTF_TIMEFRAME" != "$timeframe" ]]; then
+    htf_ohlcv_path="$DATA_ROOT/parquet/${symbol}_${RANGE_SR_HTF_TIMEFRAME}.parquet"
+    if [[ ! -f "$htf_ohlcv_path" ]]; then
+      local base_htf_ohlcv="$BASE_DATA_ROOT/parquet/${symbol}_${RANGE_SR_HTF_TIMEFRAME}.parquet"
+      if [[ -f "$base_htf_ohlcv" ]]; then
+        cp "$base_htf_ohlcv" "$htf_ohlcv_path"
+      elif [[ -f "$base_1m" ]]; then
+        "$PYTHON_BIN" - "$base_1m" "$htf_ohlcv_path" "$RANGE_SR_HTF_TIMEFRAME" <<'HTFPY'
+import sys
+from pathlib import Path
+import pandas as pd
+
+src = Path(sys.argv[1])
+dst = Path(sys.argv[2])
+timeframe = sys.argv[3]
+rule_map = {"5m": "5min", "15m": "15min", "30m": "30min", "1h": "1h", "4h": "4h"}
+if timeframe not in rule_map:
+    raise SystemExit(f"unsupported timeframe: {timeframe}")
+
+df = pd.read_parquet(src).copy()
+df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+df = df.sort_values("timestamp")
+symbol = str(df["symbol"].iloc[0])
+
+res = (
+    df.set_index("timestamp")
+    .resample(rule_map[timeframe], label="right", closed="right")
+    .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+    .dropna(subset=["open", "high", "low", "close"])
+    .reset_index()
+)
+res["symbol"] = symbol
+res["timeframe"] = timeframe
+res = res[["symbol", "timeframe", "timestamp", "open", "high", "low", "close", "volume"]]
+res.to_parquet(dst, index=False)
+print(f"htf_ohlcv saved={dst} rows={len(res)}")
+HTFPY
+      fi
+    fi
+  fi
+
   if [[ "$SKIP_FEATURE_CACHE" == "1" && -f "$feature_path" ]]; then
     rm -f "$feature_path"
   fi
@@ -181,7 +225,8 @@ PY
       --ohlcv-path "$target_ohlcv" \
       --symbol "$symbol" \
       --timeframe "$timeframe" \
-      --output-dir "$DATA_ROOT/features"
+      --output-dir "$DATA_ROOT/features" \
+      ${htf_ohlcv_path:+--htf-ohlcv-path "$htf_ohlcv_path"}
   fi
 
   if [[ ! -f "$regime_path" && -f "$base_regime_path" ]]; then

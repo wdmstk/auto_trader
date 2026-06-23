@@ -408,6 +408,7 @@ run_range_quality_matrix() {
               RANGE_SR_RESISTANCE_EXIT_ATR="${RANGE_SR_RESISTANCE_EXIT_ATR:-0.5}" \
               RANGE_W_SR_PROXIMITY="${RANGE_W_SR_PROXIMITY:-2.0}" \
               RANGE_W_SR_STRENGTH="${RANGE_W_SR_STRENGTH:-1.5}" \
+              RANGE_SR_HTF_TIMEFRAME="${RANGE_SR_HTF_TIMEFRAME:-4h}" \
               SKIP_FEATURE_CACHE="${SKIP_FEATURE_CACHE:-0}" \
               FEE_RATE="$FEE_RATE" \
               SLIPPAGE_RATE="$SLIPPAGE_RATE" \
