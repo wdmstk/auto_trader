@@ -33,6 +33,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--range-reentry-cooldown-bars", type=int, default=0)
     p.add_argument("--range-max-hold-bars", type=int, default=0)
     p.add_argument("--range-enabled-symbols", default="")
+    p.add_argument("--range-bb-position-max", type=float, default=0.35)
+    p.add_argument("--range-volume-spike-threshold", type=float, default=1.3)
+    p.add_argument("--range-price-vs-recent-low-max", type=float, default=1.5)
+    p.add_argument("--range-w-rsi", type=float, default=1.0)
+    p.add_argument("--range-w-wick", type=float, default=1.0)
+    p.add_argument("--range-w-mr", type=float, default=1.5)
+    p.add_argument("--range-w-bb-pos", type=float, default=2.0)
+    p.add_argument("--range-w-vol", type=float, default=1.0)
+    p.add_argument("--range-w-reversal-bonus", type=float, default=0.5)
+    p.add_argument("--range-exit-atr-trail-multiplier", type=float, default=2.0)
     p.add_argument("--trend-min-entry-score", type=float, default=1.0)
     p.add_argument("--trend-breakout-persistence-min", type=float, default=0.6)
     p.add_argument("--trend-momentum-persistence-min", type=float, default=0.5)
@@ -74,6 +84,16 @@ def main() -> int:
                 reentry_cooldown_bars=args.range_reentry_cooldown_bars,
                 max_hold_bars=args.range_max_hold_bars,
                 enabled_symbols=range_enabled_symbols,
+                bb_position_max=args.range_bb_position_max,
+                volume_spike_threshold=args.range_volume_spike_threshold,
+                price_vs_recent_low_max=args.range_price_vs_recent_low_max,
+                w_rsi=args.range_w_rsi,
+                w_wick=args.range_w_wick,
+                w_mr=args.range_w_mr,
+                w_bb_pos=args.range_w_bb_pos,
+                w_vol=args.range_w_vol,
+                w_reversal_bonus=args.range_w_reversal_bonus,
+                exit_atr_trail_multiplier=args.range_exit_atr_trail_multiplier,
             ),
         )
     else:
