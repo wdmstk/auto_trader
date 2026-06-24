@@ -1,5 +1,7 @@
 # Phase 30 実装チェックリスト（Execution Reconciliation Service）
 
+**Phase 30C Worker統合完了** - 2026-06-24
+
 ## Phase 30A: 基礎コンポーネント
 
 ### データ構造
@@ -46,7 +48,7 @@
 - [x] 遅延イベント処理（Reconciler側で実装済み）
 - [x] エラーハンドリング（実装済み）
 
-### 残りの統合作業
+### Worker統合（Phase 30C）
 - [x] worker/runner.pyとの統合
 - [x] 既存FillEvent生成ロジックの置き換え（オプション化）
 - [x] 回帰テスト実行（ExecutionReconciler無効時）
@@ -54,8 +56,12 @@
 - [x] 統合テスト実装（ExecutionReconciler有効時）
 - [x] 高度な統合テスト（重複、復旧）
 - [x] gateway_state.jsonへのreconciliation_state追加（独立管理として維持）
+- [x] 設定ファイルからの実行設定ロード
+- [x] ExecutionConfigクラス実装
+- [x] FillEventコールバックハンドラ実装
+- [x] WebSocketイベント変換メソッド実装
 
-## Phase 30C: 高度な機能
+## Phase 30C: 高度な機能（Worker統合完了、高度な機能は未実装）
 
 ### 定期整合性チェック
 - [ ] 定期的な整合性チェック実装
@@ -122,8 +128,8 @@
 ### 回帰テスト
 - [x] 既存Gateway機能回帰（無効時）
 - [x] 既存PositionManager機能回帰
-- [ ] 既存Monitor機能回帰
-- [ ] 既存GUI機能回帰
+- [x] 既存Monitor機能回帰
+- [x] 既存GUI機能回帰
 
 ## Done定義
 
@@ -133,29 +139,30 @@
 - [x] 完全約定時のみポジションが更新される
 - [x] 重複イベントが適切に処理される
 - [x] 順序逆転が適切に処理される
-- [ ] 整合性チェックが正しく機能する（Phase 30C）
+- [ ] 整合性チェックが正しく機能する（Phase 30D）
 - [x] 再起動後の復旧が自動で成功する
 
 ### 品質要件
 - [x] 単体テストカバレッジ 77%（実用的なカバレッジ）
-- [x] 統合テストがすべてパス
+- [x] 統合テストがすべてパス（Worker統合含む）
 - [x] 回帰テストがすべてパス（無効時）
-- [ ] カオステストがパス（Phase 30C）
+- [ ] カオステストがパス（Phase 30D）
 - [x] コードレビュー承認（実装完了）
 - [x] mypy type checkパス
 - [x] ruff lintパス
 
 ### 運用要件
-- [ ] 不一致検出時に適切なアラート発報（Phase 30C）
-- [ ] GUIで状態が正しく表示（Phase 30C）
+- [ ] 不一致検出時に適切なアラート発報（Phase 30D）
+- [ ] GUIで状態が正しく表示（Phase 30D）
 - [x] パフォーマンスが許容範囲内（オプション機能）
-- [ ] モニタリングメトリクスが収集（Phase 30C）
-- [x] ドキュメント更新完了
+- [ ] モニタリングメトリクスが収集（Phase 30D）
+- [x] ドキュメント更新完了（Phase 30Cサマリー追加）
 - [x] 運用手順作成（ドキュメントあり）
 
 ### ドキュメント
 - [x] Spec更新
-- [x] Implementation checklist更新
+- [x] Implementation checklist更新（Phase 30C完了）
 - [x] APIドキュメント更新（docstring完備）
 - [x] 運用手順更新
 - [x] トラブルシューティング追加
+- [x] Phase 30C実装サマリー追加
