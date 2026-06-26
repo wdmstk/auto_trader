@@ -2,7 +2,6 @@ from __future__ import annotations
 
 # mypy: disable-error-code=misc
 import sys
-import time
 import types
 from datetime import UTC, datetime
 
@@ -44,11 +43,6 @@ from auto_trader.gui.ui_components import (
     _render_drift_panel,
     _render_multi_symbol_panel,
     _render_runtime_metrics_panel,
-)
-from auto_trader.gui.ui_tabs import (
-    _render_analysis_workspace,
-    _render_live_monitor,
-    _render_sidebar_controls,
 )
 from auto_trader.gui.utils import (
     downsample_for_chart as _downsample_for_chart,
@@ -257,28 +251,46 @@ def _legacy_main() -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Auto Trader Ops Console", layout="wide")
+    st.set_page_config(page_title="Auto Trader - Home", layout="wide")
     _inject_ui_stability_styles()
-    st.title("Auto Trader Operations Dashboard")
 
-    # Add refresh interval control in sidebar
+    # Sidebar navigation
     with st.sidebar:
-        refresh_interval = st.slider(
-            "Auto-refresh interval (seconds)", min_value=5, max_value=120, value=30, step=5, help="Lower values = more frequent updates but higher CPU usage"
+        st.title("Auto Trader")
+        st.subheader("Navigation")
+        page = st.radio(
+            "Select Workspace",
+            ["🏠 Home", "🔴 Live Monitor", "📊 Analysis Workspace"],
+            label_visibility="collapsed",
         )
 
-    st.caption(f"Live Monitor auto-refreshes every {refresh_interval} seconds. " "Analysis Workspace refreshes only on manual rerun.")
-    _render_sidebar_controls()
-    live_tab, analysis_tab = st.tabs(["Live Monitor", "Analysis Workspace"])
-    with live_tab:
-        _render_live_monitor()
-    with analysis_tab:
-        _render_analysis_workspace()
+    if page == "🏠 Home":
+        st.title("🚀 Auto Trader - Trading System")
 
-    # Auto-rerun with custom interval for live monitor
-    if st.session_state.get("active_tab") == "Live Monitor":
-        time.sleep(refresh_interval)
-        st.rerun()
+        st.markdown("""
+        ## Welcome to Auto Trader
+
+        Select a workspace to continue:
+
+        - **🔴 Live Monitor**: Real-time trading operations with auto-refresh
+        - **📊 Analysis Workspace**: Deep analysis, backtesting, and strategy evaluation
+
+        Use the navigation in the sidebar to switch between workspaces.
+        """)
+
+        st.info("👈 Use the sidebar navigation to access Live Monitor or Analysis Workspace")
+
+    elif page == "🔴 Live Monitor":
+        # Import and run live monitor
+        from auto_trader.gui.pages.live_monitor import main as live_monitor_main
+
+        live_monitor_main()
+
+    elif page == "📊 Analysis Workspace":
+        # Import and run analysis workspace
+        from auto_trader.gui.pages.analysis_workspace import main as analysis_workspace_main
+
+        analysis_workspace_main()
 
 
 if __name__ == "__main__":

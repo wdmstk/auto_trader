@@ -8,14 +8,21 @@ from pathlib import Path
 
 import pandas as pd
 
-import auto_trader.gui.app as gui_app
-from auto_trader.gui.app import (
+import auto_trader.gui.data_loader as data_loader
+from auto_trader.gui.data_loader import (
+    _active_worker_symbols,
     _candidate_frame,
     _candidate_trade_routes_frame,
+    _core_symbol_focus_rows,
+    _discover_available_symbols,
+    _discover_backtest_runs,
+    _discover_symbol_timeframes,
     _load_candidate_report,
     _load_weekly_candidate_report,
     _manifest_weekly_diff_rows,
     _operator_summary,
+    _read_optional,
+    _resolve_futures_testnet_credentials,
     _route_selection_path,
     _weekly_revalidation_report_path,
     _worker_trade_routes_frame,
@@ -239,7 +246,7 @@ def test_weekly_revalidation_report_path_prefers_runtime_env(tmp_path: Path, mon
         f"WEEKLY_REVALIDATION_REPORT_PATH={weekly_path}\n" f"ROUTE_SELECTION_PATH={weekly_path}\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(gui_app, "DATA_DIR", data_dir)
+    monkeypatch.setattr(data_loader, "DATA_DIR", data_dir)
 
     assert _weekly_revalidation_report_path() == weekly_path
     assert _route_selection_path() == weekly_path
@@ -273,7 +280,7 @@ def test_load_weekly_candidate_report_uses_runtime_env_default_path(tmp_path: Pa
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(gui_app, "DATA_DIR", data_dir)
+    monkeypatch.setattr(data_loader, "DATA_DIR", data_dir)
 
     out = _load_weekly_candidate_report()
 
@@ -399,7 +406,7 @@ def test_active_worker_symbols_normalizes_route_keys() -> None:
         },
     )
 
-    assert gui_app._active_worker_symbols(worker_state) == [
+    assert _active_worker_symbols(worker_state) == [
         "ADAUSDT",
         "BNBUSDT",
         "ETHUSDT",
@@ -412,12 +419,12 @@ def test_optional_read_falls_back_when_cache_breaks(tmp_path: Path, monkeypatch)
     pd.DataFrame([{"symbol": "BNBUSDT", "value": 1}]).to_parquet(parquet_path, index=False)
 
     monkeypatch.setattr(
-        gui_app,
+        data_loader,
         "_read_optional_cached",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyError("cache")),
     )
 
-    frame = gui_app._read_optional(parquet_path)
+    frame = _read_optional(parquet_path)
 
     assert not frame.empty
     assert frame.iloc[0]["symbol"] == "BNBUSDT"
@@ -432,7 +439,7 @@ def test_discover_available_symbols_reads_multiple_sources(tmp_path: Path) -> No
     pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(tmp_path / "signals" / "ETHUSDT_15m_trend_signals.parquet", index=False)
     pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(tmp_path / "regime" / "XRPUSDT_30m_regime.parquet", index=False)
 
-    symbols = gui_app._discover_available_symbols(tmp_path)
+    symbols = _discover_available_symbols(tmp_path)
 
     assert symbols == ["BTCUSDT", "ETHUSDT", "XRPUSDT"]
 
@@ -444,7 +451,7 @@ def test_discover_symbol_timeframes_prioritizes_1m(tmp_path: Path) -> None:
     pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(tmp_path / "parquet" / "BTCUSDT_1m.parquet", index=False)
     pd.DataFrame([{"timestamp": "2026-01-01T00:00:00Z"}]).to_parquet(tmp_path / "signals" / "BTCUSDT_5m_trend_signals.parquet", index=False)
 
-    timeframes = gui_app._discover_symbol_timeframes("BTCUSDT", tmp_path)
+    timeframes = _discover_symbol_timeframes("BTCUSDT", tmp_path)
 
     assert timeframes[0] == "1m"
     assert set(timeframes) >= {"1m", "5m", "30m"}
@@ -467,7 +474,7 @@ def test_discover_backtest_runs_reads_metadata(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    runs = gui_app._discover_backtest_runs(tmp_path)
+    runs = _discover_backtest_runs(tmp_path)
 
     assert len(runs) == 1
     assert runs[0]["symbol"] == "ETHUSDT"
@@ -476,15 +483,19 @@ def test_discover_backtest_runs_reads_metadata(tmp_path: Path) -> None:
 
 
 def test_inject_ui_stability_styles_adds_reload_css(monkeypatch) -> None:
+    from auto_trader.gui.ui_components import _inject_ui_stability_styles
+
     captured: dict[str, object] = {}
 
     def fake_markdown(*args: object, **kwargs: object) -> None:
         captured["args"] = args
         captured["kwargs"] = kwargs
 
-    monkeypatch.setattr(gui_app.st, "markdown", fake_markdown)
+    import streamlit as st
 
-    gui_app._inject_ui_stability_styles()
+    monkeypatch.setattr(st, "markdown", fake_markdown)
+
+    _inject_ui_stability_styles()
 
     assert captured["kwargs"]["unsafe_allow_html"] is True
     css = str(captured["args"][0])
@@ -498,12 +509,12 @@ def test_resolve_futures_testnet_credentials_loads_repo_env(tmp_path: Path, monk
         "BINANCE_FUTURES_TESTNET_API_KEY=from_env_file\n" "BINANCE_FUTURES_TESTNET_API_SECRET=from_env_secret\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(gui_app, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(gui_app, "_GUI_ENV_LOADED", False)
+    monkeypatch.setattr(data_loader, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(data_loader, "_GUI_ENV_LOADED", False)
     monkeypatch.delenv("BINANCE_FUTURES_TESTNET_API_KEY", raising=False)
     monkeypatch.delenv("BINANCE_FUTURES_TESTNET_API_SECRET", raising=False)
 
-    key, secret = gui_app._resolve_futures_testnet_credentials()
+    key, secret = _resolve_futures_testnet_credentials()
 
     assert key == "from_env_file"
     assert secret == "from_env_secret"
@@ -544,7 +555,7 @@ def test_core_symbol_focus_rows_uses_core_candidates_only() -> None:
         ],
     }
 
-    rows = gui_app._core_symbol_focus_rows(candidate_report)
+    rows = _core_symbol_focus_rows(candidate_report)
 
     assert [row["symbol"] for row in rows] == ["AAAUSDT", "BBBUSDT"]
     assert rows[0]["timeframe"] == "15m"
@@ -553,6 +564,8 @@ def test_core_symbol_focus_rows_uses_core_candidates_only() -> None:
 
 
 def test_position_reconciliation_frame_compares_net_exchange_positions() -> None:
+    from auto_trader.gui.ui_components import _position_reconciliation_frame
+
     local = pd.DataFrame(
         [
             {
@@ -584,7 +597,7 @@ def test_position_reconciliation_frame_compares_net_exchange_positions() -> None
         ]
     )
 
-    out = gui_app._position_reconciliation_frame(local, exchange)
+    out = _position_reconciliation_frame(local, exchange)
 
     assert list(out["symbol"]) == ["BTCUSDT", "SOLUSDT"]
     btc = out[out["symbol"] == "BTCUSDT"].iloc[0]
@@ -596,6 +609,8 @@ def test_position_reconciliation_frame_compares_net_exchange_positions() -> None
 
 
 def test_downsample_for_chart_preserves_signal_rows() -> None:
+    from auto_trader.gui.utils import downsample_for_chart
+
     frame = pd.DataFrame(
         [
             {
@@ -611,7 +626,7 @@ def test_downsample_for_chart_preserves_signal_rows() -> None:
     frame.loc[20, "exit_signal"] = True
     frame.loc[30, "risk_blocked"] = True
 
-    out = gui_app._downsample_for_chart(frame, max_points=10)
+    out = downsample_for_chart(frame, max_points=10)
 
     assert bool(out["entry_signal"].any()) is True
     assert bool(out["exit_signal"].any()) is True
