@@ -474,12 +474,14 @@ def overlay_htf_sr(
     features: pd.DataFrame,
     htf_ohlcv: pd.DataFrame,
     ltf_ohlcv: pd.DataFrame,
-    config: FeatureConfig,
+    config: FeatureConfig | None,
 ) -> pd.DataFrame:
     """Overlay HTF-derived S/R values onto LTF feature dataframe.
 
     Matches by timestamp order; returns a new DataFrame with S/R columns replaced.
+    If config is None, a default FeatureConfig() is used.
     """
+    cfg = config or FeatureConfig()
     # Prepare arrays from HTF and LTF ohlcv
     htf_high = htf_ohlcv["high"].to_numpy(dtype=np.float64)
     htf_low = htf_ohlcv["low"].to_numpy(dtype=np.float64)
@@ -501,7 +503,7 @@ def overlay_htf_sr(
             ]
         )
         # simple window
-        win = max(1, config.sr_pivot_left_bars + config.sr_pivot_right_bars + 1)
+        win = max(1, cfg.sr_pivot_left_bars + cfg.sr_pivot_right_bars + 1)
         ltf_atr = np.array([np.nanmean(tr[max(0, i - win + 1) : i + 1]) for i in range(len(tr))], dtype=np.float64)
 
     ltf_ts = ltf_ohlcv["timestamp"].to_numpy()
@@ -514,11 +516,11 @@ def overlay_htf_sr(
         ltf_close=ltf_close,
         ltf_atr=ltf_atr,
         ltf_timestamps=ltf_ts,
-        pivot_left=config.sr_pivot_left_bars,
-        pivot_right=config.sr_pivot_right_bars,
-        cluster_atr_mult=config.sr_cluster_atr_mult,
-        max_levels=config.sr_max_levels,
-        max_age=config.sr_level_max_age_bars,
+        pivot_left=cfg.sr_pivot_left_bars,
+        pivot_right=cfg.sr_pivot_right_bars,
+        cluster_atr_mult=cfg.sr_cluster_atr_mult,
+        max_levels=cfg.sr_max_levels,
+        max_age=cfg.sr_level_max_age_bars,
     )
 
     out = features.copy()
