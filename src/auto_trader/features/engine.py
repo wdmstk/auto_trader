@@ -103,9 +103,7 @@ def compute_features(
         breakout = (g2["close"] > rolling_max).astype(int)
         g2["breakout_persistence"] = breakout.rolling(cfg.persistence_window).mean()
         rolling_low = g2["low"].rolling(cfg.persistence_window).min()
-        g2["pullback_shallowness"] = (g2["close"] - rolling_low) / (
-            rolling_max - rolling_low
-        ).replace(0.0, pd.NA)
+        g2["pullback_shallowness"] = (g2["close"] - rolling_low) / (rolling_max - rolling_low).replace(0.0, pd.NA)
         higher_high = (g2["high"] > g2["high"].shift(1)).astype(int)
         g2["higher_high_persistence"] = higher_high.rolling(cfg.persistence_window).mean()
 
@@ -166,9 +164,10 @@ def _compute_sr_features(
     Distances are ATR-normalized.  NaN when no level found.
     """
     n = len(close)
-    sr_support_dist = np.full(n, np.nan)
-    sr_resistance_dist = np.full(n, np.nan)
-    sr_strength = np.full(n, 0.0)
+    # Use Python lists for intermediate storage to keep typing simple for mypy
+    sr_support_dist: list[float] = [float("nan")] * n
+    sr_resistance_dist: list[float] = [float("nan")] * n
+    sr_strength: list[float] = [0.0] * n
 
     # levels: list of (price, strength, last_bar_index)
     levels: list[list[float | int]] = []
@@ -182,13 +181,18 @@ def _compute_sr_features(
         candidate = i - pivot_right
         if candidate >= pivot_left:
             _detect_and_add_pivot(
-                high, low, candidate, pivot_left, pivot_right, levels, cur_atr, cluster_atr_mult,
+                high,
+                low,
+                candidate,
+                pivot_left,
+                pivot_right,
+                levels,
+                cur_atr,
+                cluster_atr_mult,
             )
 
         # Expire old levels
-        levels = [
-            lv for lv in levels if (i - int(lv[2])) <= max_age
-        ]
+        levels = [lv for lv in levels if (i - int(lv[2])) <= max_age]
 
         # Keep strongest levels only
         if len(levels) > max_levels:
@@ -226,7 +230,7 @@ def _compute_sr_features(
         if best_sup_dist < np.inf:
             sr_support_dist[i] = best_sup_dist
         if best_res_dist < np.inf:
-            sr_resistance_dist[i] = best_res_dist
+            sr_resistance_dist[i] = best_res_strength
 
         # Use strength of the nearest level (support preferred for range entry)
         if best_sup_dist <= best_res_dist and best_sup_dist < np.inf:
@@ -235,9 +239,9 @@ def _compute_sr_features(
             sr_strength[i] = best_res_strength
 
     return {
-        "sr_support_distance": sr_support_dist,
-        "sr_resistance_distance": sr_resistance_dist,
-        "sr_level_strength": sr_strength,
+        "sr_support_distance": np.array(sr_support_dist, dtype=np.float64),
+        "sr_resistance_distance": np.array(sr_resistance_dist, dtype=np.float64),
+        "sr_level_strength": np.array(sr_strength, dtype=np.float64),
     }
 
 
@@ -295,214 +299,6 @@ def _merge_or_add_level(
     levels.append([price, 1.0, float(bar_index)])
 
 
-def compute_htf_sr_features(
-    *,
-    htf_high: np.ndarray,
-    htf_low: np.ndarray,
-    htf_close: np.ndarray,
-    htf_timestamps: np.ndarray,
-    ltf_close: np.ndarray,
-    ltf_atr: np.ndarray,
-    ltf_timestamps: np.ndarray,
-    pivot_left: int,
-    pivot_right: int,
-    cluster_atr_mult: float,
-    max_levels: int,
-    max_age: int,
-) -> dict[str, np.ndarray]:
-    """Compute S/R levels on higher timeframe, evaluate distances on lower timeframe.
-
-    Pivots are detected on HTF data. For each LTF bar, the set of active levels
-    (as of the most recent completed HTF bar) is used to compute distances
-    normalized by LTF ATR. This avoids future leakage.
-
-    Returns arrays aligned to LTF bars:
-      sr_support_distance, sr_resistance_distance, sr_level_strength.
-    """
-    n_htf = len(htf_close)
-    n_ltf = len(ltf_close)
-
-    # Compute HTF ATR for clustering distance
-    htf_atr = _atr_array(htf_high, htf_low, htf_close, window=14)
-
-    # Step 1: Build level snapshots at each HTF bar
-    # levels_at_bar[i] = list of active levels after processing HTF bar i
-    levels: list[list[float | int]] = []
-    levels_snapshots: list[list[list[float | int]]] = []
-
-    for i in range(n_htf):
-        cur_atr = float(htf_atr[i])
-        if np.isnan(cur_atr) or cur_atr <= 0:
-            levels_snapshots.append([lv[:] for lv in levels])
-            continue
-
-        candidate = i - pivot_right
-        if candidate >= pivot_left:
-            _detect_and_add_pivot(
-                htf_high, htf_low, candidate, pivot_left, pivot_right,
-                levels, cur_atr, cluster_atr_mult,
-            )
-
-        levels = [lv for lv in levels if (i - int(lv[2])) <= max_age]
-
-        if len(levels) > max_levels:
-            levels.sort(key=lambda lv: lv[1], reverse=True)
-            levels = levels[:max_levels]
-
-        levels_snapshots.append([lv[:] for lv in levels])
-
-    # Step 2: Map LTF bars to HTF bar indices (backward lookup)
-    # For each LTF timestamp, find the latest HTF timestamp <= LTF timestamp
-    htf_ts_sorted = htf_timestamps  # assumed sorted
-    ltf_htf_idx = np.searchsorted(htf_ts_sorted, ltf_timestamps, side="right") - 1
-
-    # Step 3: Compute distances at LTF resolution using LTF ATR
-    sr_support_dist = np.full(n_ltf, np.nan)
-    sr_resistance_dist = np.full(n_ltf, np.nan)
-    sr_strength = np.full(n_ltf, 0.0)
-
-    for i in range(n_ltf):
-        htf_idx = int(ltf_htf_idx[i])
-        if htf_idx < 0:
-            continue
-
-        cur_atr_ltf = float(ltf_atr[i])
-        if np.isnan(cur_atr_ltf) or cur_atr_ltf <= 0:
-            continue
-
-        active_levels = levels_snapshots[htf_idx]
-        if not active_levels:
-            continue
-
-        cur_close = float(ltf_close[i])
-        best_sup_dist = np.inf
-        best_sup_strength = 0.0
-        best_res_dist = np.inf
-        best_res_strength = 0.0
-
-        for lv in active_levels:
-            price = float(lv[0])
-            strength = float(lv[1])
-            dist = (cur_close - price) / cur_atr_ltf
-
-            if dist >= 0:
-                if dist < best_sup_dist:
-                    best_sup_dist = dist
-                    best_sup_strength = strength
-            else:
-                abs_dist = abs(dist)
-                if abs_dist < best_res_dist:
-                    best_res_dist = abs_dist
-                    best_res_strength = strength
-
-        if best_sup_dist < np.inf:
-            sr_support_dist[i] = best_sup_dist
-        if best_res_dist < np.inf:
-            sr_resistance_dist[i] = best_res_dist
-
-        if best_sup_dist <= best_res_dist and best_sup_dist < np.inf:
-            sr_strength[i] = best_sup_strength
-        elif best_res_dist < np.inf:
-            sr_strength[i] = best_res_strength
-
-    return {
-        "sr_support_distance": sr_support_dist,
-        "sr_resistance_distance": sr_resistance_dist,
-        "sr_level_strength": sr_strength,
-    }
-
-
-def overlay_htf_sr(
-    features_df: pd.DataFrame,
-    htf_ohlcv_df: pd.DataFrame,
-    ltf_ohlcv_df: pd.DataFrame,
-    config: FeatureConfig | None = None,
-) -> pd.DataFrame:
-    """Replace same-TF S/R columns with higher-TF S/R values.
-
-    Detects S/R on htf_ohlcv_df, maps to features_df timestamps, normalizes
-    distances using the LTF ATR from features_df and close from ltf_ohlcv_df.
-    """
-    cfg = config or FeatureConfig()
-    result = features_df.copy()
-
-    htf = htf_ohlcv_df.copy()
-    htf["timestamp"] = pd.to_datetime(htf["timestamp"], utc=True)
-    htf = htf.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
-
-    ltf = ltf_ohlcv_df.copy()
-    ltf["timestamp"] = pd.to_datetime(ltf["timestamp"], utc=True)
-    ltf = ltf.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
-
-    for (symbol, timeframe), _g in result.groupby(["symbol", "timeframe"], sort=False):
-        mask = (result["symbol"] == symbol) & (result["timeframe"] == timeframe)
-        ltf_subset = result.loc[mask].copy().reset_index(drop=True)
-
-        htf_symbol = htf[htf["symbol"] == symbol].reset_index(drop=True)
-        if htf_symbol.empty:
-            continue
-
-        ltf_ohlcv_symbol = ltf[ltf["symbol"] == symbol].reset_index(drop=True)
-        if ltf_ohlcv_symbol.empty:
-            continue
-
-        # Align LTF close values to feature timestamps via merge
-        ltf_ohlcv_symbol["timestamp"] = pd.to_datetime(ltf_ohlcv_symbol["timestamp"], utc=True)
-        merged_close = pd.merge(
-            ltf_subset[["timestamp"]],
-            ltf_ohlcv_symbol[["timestamp", "close"]],
-            on="timestamp",
-            how="left",
-        )
-        ltf_close_arr = merged_close["close"].to_numpy(dtype=np.float64, copy=True)
-        ltf_atr_arr = ltf_subset["atr"].to_numpy(dtype=np.float64, copy=True)
-        ltf_ts = ltf_subset["timestamp"].to_numpy()
-
-        htf_high = htf_symbol["high"].to_numpy(dtype=np.float64, copy=True)
-        htf_low = htf_symbol["low"].to_numpy(dtype=np.float64, copy=True)
-        htf_close_arr = htf_symbol["close"].to_numpy(dtype=np.float64, copy=True)
-        htf_timestamps = htf_symbol["timestamp"].to_numpy()
-
-        sr = compute_htf_sr_features(
-            htf_high=htf_high,
-            htf_low=htf_low,
-            htf_close=htf_close_arr,
-            htf_timestamps=htf_timestamps,
-            ltf_close=ltf_close_arr,
-            ltf_atr=ltf_atr_arr,
-            ltf_timestamps=ltf_ts,
-            pivot_left=cfg.sr_pivot_left_bars,
-            pivot_right=cfg.sr_pivot_right_bars,
-            cluster_atr_mult=cfg.sr_cluster_atr_mult,
-            max_levels=cfg.sr_max_levels,
-            max_age=cfg.sr_level_max_age_bars,
-        )
-
-        result.loc[mask, "sr_support_distance"] = sr["sr_support_distance"]
-        result.loc[mask, "sr_resistance_distance"] = sr["sr_resistance_distance"]
-        result.loc[mask, "sr_level_strength"] = sr["sr_level_strength"]
-
-    return result
-
-
-def _atr_array(high: np.ndarray, low: np.ndarray, close: np.ndarray, window: int) -> np.ndarray:
-    """Compute ATR as numpy array (for HTF computation)."""
-    n = len(close)
-    tr = np.empty(n)
-    tr[0] = high[0] - low[0]
-    for i in range(1, n):
-        hl = high[i] - low[i]
-        hc = abs(high[i] - close[i - 1])
-        lc = abs(low[i] - close[i - 1])
-        tr[i] = max(hl, hc, lc)
-    atr = np.full(n, np.nan)
-    if n >= window:
-        atr[window - 1] = np.mean(tr[:window])
-        for i in range(window, n):
-            atr[i] = (atr[i - 1] * (window - 1) + tr[i]) / window
-    return atr
-
-
 def _rsi(close: pd.Series, window: int) -> pd.Series:
     delta = close.diff()
     gain = delta.clip(lower=0.0)
@@ -516,9 +312,7 @@ def _rsi(close: pd.Series, window: int) -> pd.Series:
 
 def _atr(high: pd.Series, low: pd.Series, close: pd.Series, window: int) -> pd.Series:
     prev_close = close.shift(1)
-    tr = pd.concat([(high - low), (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(
-        axis=1
-    )
+    tr = pd.concat([(high - low), (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
     return tr.rolling(window).mean()
 
 
@@ -534,3 +328,204 @@ def _trend_efficiency(close: pd.Series, window: int) -> pd.Series:
     direction = (close - close.shift(window)).abs()
     volatility = close.diff().abs().rolling(window).sum()
     return direction / volatility.replace(0.0, pd.NA)
+
+
+def compute_htf_sr_features(
+    *,
+    htf_high: np.ndarray,
+    htf_low: np.ndarray,
+    htf_close: np.ndarray,
+    htf_timestamps: np.ndarray,
+    ltf_close: np.ndarray,
+    ltf_atr: np.ndarray,
+    ltf_timestamps: np.ndarray,
+    pivot_left: int,
+    pivot_right: int,
+    cluster_atr_mult: float,
+    max_levels: int,
+    max_age: int,
+) -> dict[str, np.ndarray]:
+    """Detect S/R levels on HTF data and compute distances for LTF bars.
+
+    Returns dict with keys: sr_support_distance, sr_resistance_distance, sr_level_strength
+    Arrays are aligned with ltf_close/ltf_timestamps and distances are normalized by ltf_atr.
+    """
+    # Ensure numpy arrays
+    htf_high = np.asarray(htf_high, dtype=np.float64)
+    htf_low = np.asarray(htf_low, dtype=np.float64)
+    htf_close = np.asarray(htf_close, dtype=np.float64)
+    htf_ts = np.asarray(htf_timestamps)
+
+    ltf_close = np.asarray(ltf_close, dtype=np.float64)
+    ltf_atr = np.asarray(ltf_atr, dtype=np.float64)
+    ltf_ts = np.asarray(ltf_timestamps)
+
+    n_htf = len(htf_close)
+    n_ltf = len(ltf_close)
+
+    # Compute a simple HTF ATR (rolling mean of True Range) with window covering pivot region
+    atr_win = max(1, pivot_left + pivot_right + 1)
+    prev = np.concatenate(([np.nan], htf_close[:-1]))
+    tr = np.maximum.reduce([htf_high - htf_low, np.abs(htf_high - prev), np.abs(htf_low - prev)])
+    atr_htf: list[float] = [float("nan")] * n_htf
+    for i in range(n_htf):
+        start = max(0, i - atr_win + 1)
+        window = tr[start : i + 1]
+        if window.size == 0:
+            atr_htf[i] = np.nan
+        else:
+            atr_htf[i] = float(np.nanmean(window))
+
+    # Build level history at each HTF bar (list of levels as of that bar)
+    levels: list[list[float | int]] = []
+    levels_history: list[list[list[float | int]]] = []
+
+    for i in range(n_htf):
+        cur_atr = float(atr_htf[i]) if not np.isnan(atr_htf[i]) else np.nan
+        # Detect pivot candidate at i - pivot_right
+        candidate = i - pivot_right
+        if candidate >= pivot_left and not np.isnan(cur_atr) and cur_atr > 0:
+            _detect_and_add_pivot(
+                htf_high,
+                htf_low,
+                candidate,
+                pivot_left,
+                pivot_right,
+                levels,
+                cur_atr,
+                cluster_atr_mult,
+            )
+        # Expire old levels
+        levels = [lv for lv in levels if (i - int(lv[2])) <= max_age]
+        # Keep strongest only
+        if len(levels) > max_levels:
+            levels.sort(key=lambda lv: lv[1], reverse=True)
+            levels = levels[:max_levels]
+        # Store a deep copy of current levels
+        levels_history.append([lv.copy() for lv in levels])
+
+    # For each LTF bar, find corresponding most recent HTF index and compute distances
+    sr_support: list[float] = [float("nan")] * n_ltf
+    sr_resistance: list[float] = [float("nan")] * n_ltf
+    sr_strength: list[float] = [0.0] * n_ltf
+
+    # Convert timestamps to numpy datetime64 for comparison if not already
+    try:
+        htf_np_ts = htf_ts.astype("datetime64[ns]")
+    except Exception:
+        htf_np_ts = np.array(htf_ts)
+    try:
+        ltf_np_ts = ltf_ts.astype("datetime64[ns]")
+    except Exception:
+        ltf_np_ts = np.array(ltf_ts)
+
+    # For efficient lookup, keep current htf index pointer
+    htf_idx = 0
+    for j in range(n_ltf):
+        ts = ltf_np_ts[j]
+        # advance htf_idx while next HTF timestamp <= current LTF ts
+        while htf_idx + 1 < n_htf and htf_np_ts[htf_idx + 1] <= ts:
+            htf_idx += 1
+        # If current HTF timestamp > LTF ts, there is no completed HTF bar yet
+        if htf_np_ts[htf_idx] > ts:
+            # No levels yet
+            continue
+        levels_at = levels_history[htf_idx]
+        if not levels_at:
+            continue
+        cur_close = float(ltf_close[j])
+        cur_atr = float(ltf_atr[j])
+        if np.isnan(cur_atr) or cur_atr <= 0:
+            continue
+        best_sup_dist = np.inf
+        best_sup_strength = 0.0
+        best_res_dist = np.inf
+        best_res_strength = 0.0
+        for lv in levels_at:
+            price = float(lv[0])
+            strength = float(lv[1])
+            dist = (cur_close - price) / cur_atr
+            if dist >= 0:
+                if dist < best_sup_dist:
+                    best_sup_dist = dist
+                    best_sup_strength = strength
+            else:
+                abs_dist = abs(dist)
+                if abs_dist < best_res_dist:
+                    best_res_dist = abs_dist
+                    best_res_strength = strength
+        if best_sup_dist < np.inf:
+            sr_support[j] = best_sup_dist
+        if best_res_dist < np.inf:
+            sr_resistance[j] = best_res_dist
+        if best_sup_dist <= best_res_dist and best_sup_dist < np.inf:
+            sr_strength[j] = best_sup_strength
+        elif best_res_dist < np.inf:
+            sr_strength[j] = best_res_strength
+
+    return {
+        "sr_support_distance": np.array(sr_support, dtype=np.float64),
+        "sr_resistance_distance": np.array(sr_resistance, dtype=np.float64),
+        "sr_level_strength": np.array(sr_strength, dtype=np.float64),
+    }
+
+
+def overlay_htf_sr(
+    features: pd.DataFrame,
+    htf_ohlcv: pd.DataFrame,
+    ltf_ohlcv: pd.DataFrame,
+    config: FeatureConfig | None,
+) -> pd.DataFrame:
+    """Overlay HTF-derived S/R values onto LTF feature dataframe.
+
+    Matches by timestamp order; returns a new DataFrame with S/R columns replaced.
+    If config is None, a default FeatureConfig() is used.
+    """
+    cfg = config or FeatureConfig()
+    # Prepare arrays from HTF and LTF ohlcv
+    htf_high = htf_ohlcv["high"].to_numpy(dtype=np.float64)
+    htf_low = htf_ohlcv["low"].to_numpy(dtype=np.float64)
+    htf_close = htf_ohlcv["close"].to_numpy(dtype=np.float64)
+    htf_ts = htf_ohlcv["timestamp"].to_numpy()
+
+    ltf_close = ltf_ohlcv["close"].to_numpy(dtype=np.float64)
+    # Use provided LTF ATR if present in features or compute simple proxy
+    if "atr" in features.columns:
+        ltf_atr = features["atr"].to_numpy(dtype=np.float64)
+    else:
+        # Fallback: use rolling range from ltf_ohlcv
+        prev = np.concatenate(([np.nan], ltf_close[:-1]))
+        tr = np.maximum.reduce(
+            [
+                ltf_ohlcv["high"].to_numpy(dtype=np.float64) - ltf_ohlcv["low"].to_numpy(dtype=np.float64),
+                np.abs(ltf_ohlcv["high"].to_numpy(dtype=np.float64) - prev),
+                np.abs(ltf_ohlcv["low"].to_numpy(dtype=np.float64) - prev),
+            ]
+        )
+        # simple window
+        win = max(1, cfg.sr_pivot_left_bars + cfg.sr_pivot_right_bars + 1)
+        ltf_atr = np.array([np.nanmean(tr[max(0, i - win + 1) : i + 1]) for i in range(len(tr))], dtype=np.float64)
+
+    ltf_ts = ltf_ohlcv["timestamp"].to_numpy()
+
+    sr = compute_htf_sr_features(
+        htf_high=htf_high,
+        htf_low=htf_low,
+        htf_close=htf_close,
+        htf_timestamps=htf_ts,
+        ltf_close=ltf_close,
+        ltf_atr=ltf_atr,
+        ltf_timestamps=ltf_ts,
+        pivot_left=cfg.sr_pivot_left_bars,
+        pivot_right=cfg.sr_pivot_right_bars,
+        cluster_atr_mult=cfg.sr_cluster_atr_mult,
+        max_levels=cfg.sr_max_levels,
+        max_age=cfg.sr_level_max_age_bars,
+    )
+
+    out = features.copy()
+    # Ensure target columns exist
+    out["sr_support_distance"] = sr["sr_support_distance"]
+    out["sr_resistance_distance"] = sr["sr_resistance_distance"]
+    out["sr_level_strength"] = sr["sr_level_strength"]
+    return out
